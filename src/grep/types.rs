@@ -91,15 +91,27 @@ pub struct HitContent {
     pub snippet: String,
 }
 
-/// A repository with its match count
+/// A single line of code with metadata
+#[derive(Debug, Clone)]
+pub struct CodeLine {
+    pub line_number: u32,
+    pub content: String,
+    pub has_match: bool,
+    pub is_jump: bool, // indicates non-contiguous section
+}
+
+/// A parsed snippet from a file
+#[derive(Debug, Clone)]
+pub struct ParsedSnippet {
+    pub path: String,
+    pub lines: Vec<CodeLine>,
+    pub total_matches: u32,
+}
+
+/// A repository with its match count and file matches
 #[derive(Debug, Clone)]
 pub struct RepoMatch {
     pub name: String,
     pub hits: u64,
-}
-
-impl std::fmt::Display for RepoMatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.name, self.hits)
-    }
+    pub files: Vec<ParsedSnippet>,
 }

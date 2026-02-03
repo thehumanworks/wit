@@ -1,1 +1,25 @@
+# Build artifacts
 /target
+debug/
+*.pdb
+
+# Rust backup files
+**/*.rs.bk
+
+# Environment
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
