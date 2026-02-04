@@ -16,7 +16,7 @@ cargo install --path .
 
 ### Caching
 
-Repositories are automatically cached locally on first use by commands like `tree`, `cat`, `rg`, `head`, `tail`, and `search`. Cached repos are reused on subsequent commands to improve performance.
+Repositories are automatically cached locally on first use by commands like `tree`, `cat`, `rg`, `sed`, `head`, `tail`, and `search`. Cached repos are reused on subsequent commands to improve performance.
 
 To force a refresh of an existing cache:
 
@@ -58,12 +58,33 @@ wit repo-search -p "ratatui" -q "Table" -w -c
 | `-w` | `--with-snippets` | Show code snippets with context |
 | `-c` | `--compact` | Show only matching lines (requires `-w`) |
 
+### sed
+
+Stream-edit a file from a repository (POSIX-style):
+
+```bash
+# Print line range (sed -n)
+wit sed -n '320,460p' modal-labs/modal-client modal/image.py
+
+# Regex filter
+wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs
+
+# Substitute text
+wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs
+```
+
+**Notes:**
+- Regex uses Rust syntax (not POSIX BRE).
+- `sed` operates on a single repo file (no stdin or in-place edits).
+- `head`/`tail` remain as convenience wrappers (sed can replace them via ranges).
+
 ## Architecture
 
 ```
 src/
 ├── cli.rs          # CLI entry point and display logic
 ├── lib.rs          # Library exports
+├── sed.rs          # POSIX-style sed engine
 └── grep/
     ├── mod.rs
     ├── client.rs   # grep.app API client

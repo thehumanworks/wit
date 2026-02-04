@@ -6,6 +6,7 @@
 - `src/lib.rs`: Library crate root; re-exports modules for reuse.
 - `src/grep/`: grep.app client + response types (`client.rs`, `types.rs`, `mod.rs`).
 - `src/gitops/`: Git operations module for repository caching and file access (`ops.rs`, `mod.rs`).
+- `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`.
 - `README.md`: User-facing installation and usage examples.
 - `target/`: Build artifacts (ignored via `.gitignore`).
 
@@ -51,3 +52,4 @@
 - Prefer `rg` / `rg --files` for repo search while working on changes.
 - Keep patches focused and avoid committing generated artifacts under `target/`.
 - Before handing off, run `cargo fmt` and `cargo clippy -- -D warnings`.
+- The `sed` subcommand aims for broad POSIX coverage; update tests and docs alongside behavior changes.

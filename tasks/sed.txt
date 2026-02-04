@@ -1,0 +1,16 @@
+PLAN
+- enable `sed` like commands for the `wit` CLI
+- consider whether - after enabling `sed` as a command - commands like `head` or `tail` are still useful. If not, remove them.
+
+EXAMPLE COMMAND
+"""
+wit sed -n '320,460p' modal-labs/modal-client modal/image.py
+"""
+
+REQUIREMENTS
+- the implementation must deliver on near-100% pararity with POSIX sed (within reason - maximise this percentual goal)
+- tests must be added to validate the solution, covering edge cases exhaustively so there are no surprises at runtime.
+- documentation about the tool, both in the help message, the README, AGENTS.md and the skill in ~/.codex/skills/wit must be updated to reflect the changes this feature brings.
+
+DELIVERABLE
+- deliver a plan that delivers on the goal and requirements above

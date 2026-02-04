@@ -1,11 +1,12 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use std::fs;
 use wit::{
     gitops::ops::{
         GrepOptions, GrepResult, build_tree, cache_github_repo, grep_repo_with_options, head,
         read_file, tail,
     },
-    grep,
+    grep, sed,
 };
 
 #[derive(Parser)]
@@ -167,6 +168,30 @@ enum Commands {
         /// Only show count of matches per file
         #[arg(short = 'c', long)]
         count: bool,
+    },
+    #[command(
+        name = "sed",
+        about = "Stream-edit file contents (POSIX-style sed)",
+        override_usage = "wit sed [OPTIONS] <SCRIPT> <REPO> <PATH>",
+        after_help = "Examples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py\n  wit sed -e '1,10p' ratatui/ratatui README.md\n  wit sed -n -e '/TODO/p' ratatui/ratatui src/lib.rs\n  wit sed -f script.sed ratatui/ratatui src/lib.rs\n\nNotes:\n  - Regex uses Rust syntax (not POSIX BRE).\n  - -e/-f scripts run before the positional SCRIPT (if provided).",
+        trailing_var_arg = true
+    )]
+    Sed {
+        /// Suppress automatic printing of pattern space
+        #[arg(short = 'n', long = "quiet", alias = "silent")]
+        quiet: bool,
+
+        /// Add script to the commands to be executed
+        #[arg(short = 'e', long = "expression")]
+        expressions: Vec<String>,
+
+        /// Add script file to the commands to be executed
+        #[arg(short = 'f', long = "file", value_name = "FILE")]
+        files: Vec<String>,
+
+        /// Script, repo, path (positional). With -e/-f, SCRIPT is optional.
+        #[arg(allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     #[command(
         name = "head",
@@ -407,6 +432,22 @@ async fn main() -> anyhow::Result<()> {
             let output = head(&repository, &path, lines, number)?;
             println!("{}", output);
         }
+        Commands::Sed {
+            quiet,
+            expressions,
+            files,
+            args,
+        } => {
+            let (scripts, repo, path) = parse_sed_invocation(expressions, files, args)?;
+            let repository = cache_github_repo(&repo, false).await?;
+            let content = read_file(&repository, &path)?;
+            let program = sed::parse_script(&scripts)?;
+            let output = sed::run(&program, &content, &sed::SedOptions { quiet })?;
+            print!("{}", output.output);
+            if output.exit_code != 0 {
+                std::process::exit(output.exit_code);
+            }
+        }
         Commands::Tail {
             repo,
             path,
@@ -421,6 +462,43 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_sed_invocation(
+    expressions: Vec<String>,
+    files: Vec<String>,
+    args: Vec<String>,
+) -> anyhow::Result<(Vec<String>, String, String)> {
+    let mut scripts = Vec::new();
+    scripts.extend(expressions);
+
+    for file in files {
+        let content = fs::read_to_string(&file)
+            .map_err(|e| anyhow::anyhow!("failed to read sed script file '{}': {}", file, e))?;
+        scripts.push(content);
+    }
+
+    let (script_arg, repo, path) = match args.len() {
+        3 => (Some(args[0].clone()), args[1].clone(), args[2].clone()),
+        2 => (None, args[0].clone(), args[1].clone()),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "sed expects <SCRIPT> <REPO> <PATH> or <REPO> <PATH> with -e/-f"
+            ));
+        }
+    };
+
+    if let Some(script) = script_arg {
+        scripts.push(script);
+    }
+
+    if scripts.is_empty() {
+        return Err(anyhow::anyhow!(
+            "missing sed script (provide SCRIPT or use -e/-f)"
+        ));
+    }
+
+    Ok((scripts, repo, path))
 }
 
 async fn search(
