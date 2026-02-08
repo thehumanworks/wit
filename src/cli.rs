@@ -4,14 +4,14 @@ use std::fs;
 use wit::{
     gitops::ops::{
         GrepOptions, GrepResult, build_tree, cache_github_repo, grep_repo_with_options, head,
-        read_file, tail,
+        list_dir, read_file, tail,
     },
     grep, sed,
 };
 
 #[derive(Parser)]
 #[command(name = "wit")]
-#[command(about = "Github for AI Agents", long_about = None)]
+#[command(about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in /tmp/.wit/cache/.", long_about = None)]
 struct WitCli {
     #[command(subcommand)]
     command: Commands,
@@ -22,9 +22,9 @@ enum Commands {
     #[command(
         name = "search",
         visible_alias = "s",
-        about = "Find repositories matching a pattern",
+        about = "Find GitHub repositories by name and search their code via grep.app",
         override_usage = "wit <search|s> [--lang <LANG>] --pattern <PATTERN>",
-        after_help = "Examples:\n  wit search -p 'deepagents' -l 'pyth'\n  wit search -p 'ratatui' -l 'Rust' -q 'Table'\n  wit search -p 'ratatui' -l 'Rust' -q 'Table' -w\n  wit search -p 'ratatui' -l 'Rust' -q 'Table' -w -c"
+        after_help = "Use this to discover repositories. Combine -p (repo name pattern) with -q (code pattern) to find repos containing specific implementations. Add -w for code snippets, -c to strip context.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust'                  # Find Rust repos named 'ratatui'\n  wit search -p 'auth' -q 'JWT' -l 'Go' -w           # Find Go auth repos using JWT, show code\n  wit search -p 'ratatui' -q 'impl Widget' -w -c      # Matching lines only, no context"
     )]
     Search {
         /// Regex pattern to match repository names
@@ -54,8 +54,8 @@ enum Commands {
     #[command(
         name = "cache",
         visible_alias = "c",
-        about = "Cache a new repository locally or refresh the cache of an existing one.",
-        after_help = "Examples:\n  wit cache ratatui/ratatui"
+        about = "Clone a repository into the local cache (or refresh an existing one)",
+        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh a stale cache.\n\nExamples:\n  wit cache ratatui/ratatui          # Force re-clone of ratatui"
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -64,9 +64,9 @@ enum Commands {
     #[command(
         name = "tree",
         visible_alias = "t",
-        about = "Display repository file tree",
-        override_usage = "wit <tree|t> <REPO> [PATH]",
-        after_help = "Examples:\n  wit tree ratatui/ratatui\n  wit tree ratatui/ratatui src"
+        about = "Show the file tree of a repository (or subtree). Use -l for line counts",
+        override_usage = "wit <tree|t> [OPTIONS] <REPO> [PATH]",
+        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nExamples:\n  wit tree ratatui/ratatui                # Full repo tree\n  wit tree ratatui/ratatui src/widgets    # Only the widgets subtree\n  wit tree -l ratatui/ratatui src         # With line counts and token estimates"
     )]
     Tree {
         /// Repository in "owner/repo" format
@@ -74,12 +74,33 @@ enum Commands {
 
         /// Optional subdirectory path to display tree from
         path: Option<String>,
+
+        /// Show file sizes: lines and approximate token count
+        #[arg(short = 'l', long = "long")]
+        long: bool,
+    },
+    #[command(
+        name = "ls",
+        about = "List directory contents (non-recursive). Use -l for file sizes",
+        override_usage = "wit ls [OPTIONS] <REPO> [PATH]",
+        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nExamples:\n  wit ls ratatui/ratatui                    # List repo root\n  wit ls ratatui/ratatui src/widgets        # List a subdirectory\n  wit ls -l ratatui/ratatui src             # With file sizes"
+    )]
+    Ls {
+        /// Repository in "owner/repo" format
+        repo: String,
+
+        /// Directory path within the repository (default: root)
+        path: Option<String>,
+
+        /// Show file sizes: lines and approximate token count
+        #[arg(short = 'l', long = "long")]
+        long: bool,
     },
     #[command(
         name = "cat",
-        about = "Display contents of a file from a repository (POSIX-style)",
+        about = "Print a file's contents. Use -n for line numbers",
         override_usage = "wit cat [OPTIONS] <REPO> <PATH>",
-        after_help = "Examples:\n  wit cat ratatui/ratatui src/lib.rs\n  wit cat -n ratatui/ratatui Cargo.toml\n  wit cat -b ratatui/ratatui README.md"
+        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml             # Print file\n  wit cat -n ratatui/ratatui src/lib.rs           # With line numbers\n  wit cat -b ratatui/ratatui README.md            # Number non-blank lines only"
     )]
     Cat {
         /// Repository in "owner/repo" format
@@ -114,9 +135,9 @@ enum Commands {
     },
     #[command(
         name = "rg",
-        about = "Search for a pattern in repository files (ripgrep-style)",
+        about = "Search file contents (ripgrep-style). Use -l to find files, -g to filter by type",
         override_usage = "wit rg [OPTIONS] <PATTERN> <REPO>",
-        after_help = "Examples:\n  wit rg 'impl Widget' ratatui/ratatui\n  wit rg -i -g '*.rs' 'widget' ratatui/ratatui\n  wit rg -l 'struct.*Frame' ratatui/ratatui\n  wit rg -C 3 'fn render' ratatui/ratatui"
+        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nExamples:\n  wit rg 'impl Widget' ratatui/ratatui              # Find implementations\n  wit rg -l 'struct.*Frame' ratatui/ratatui          # List files containing pattern\n  wit rg -g '*.rs' -i 'todo' ratatui/ratatui         # Case-insensitive in .rs files\n  wit rg -C 3 'fn render' ratatui/ratatui             # 3 lines of context"
     )]
     Rg {
         /// Regex pattern to search for
@@ -168,12 +189,16 @@ enum Commands {
         /// Only show count of matches per file
         #[arg(short = 'c', long)]
         count: bool,
+
+        /// Show file sizes alongside file names (useful with -l)
+        #[arg(long = "long")]
+        long_format: bool,
     },
     #[command(
         name = "sed",
-        about = "Stream-edit file contents (POSIX-style sed)",
+        about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
         override_usage = "wit sed [OPTIONS] <SCRIPT> <REPO> <PATH>",
-        after_help = "Examples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py\n  wit sed -e '1,10p' ratatui/ratatui README.md\n  wit sed -n -e '/TODO/p' ratatui/ratatui src/lib.rs\n  wit sed -f script.sed ratatui/ratatui src/lib.rs\n\nNotes:\n  - Regex uses Rust syntax (not POSIX BRE).\n  - -e/-f scripts run before the positional SCRIPT (if provided).",
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py    # Print line range\n  wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs                 # Lines matching pattern\n  wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs       # Substitute text\n  wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs              # Extract function signatures",
         trailing_var_arg = true
     )]
     Sed {
@@ -195,9 +220,9 @@ enum Commands {
     },
     #[command(
         name = "head",
-        about = "Output the first part of a file",
+        about = "Print the first N lines of a file (default: 10)",
         override_usage = "wit head [OPTIONS] <REPO> <PATH>",
-        after_help = "Examples:\n  wit head ratatui/ratatui src/lib.rs\n  wit head -n 20 ratatui/ratatui Cargo.toml\n  wit head -N ratatui/ratatui README.md"
+        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nExamples:\n  wit head ratatui/ratatui src/lib.rs            # First 10 lines\n  wit head -n 50 ratatui/ratatui Cargo.toml      # First 50 lines\n  wit head -N ratatui/ratatui README.md           # With line numbers"
     )]
     Head {
         /// Repository in "owner/repo" format
@@ -216,9 +241,9 @@ enum Commands {
     },
     #[command(
         name = "tail",
-        about = "Output the last part of a file",
+        about = "Print the last N lines of a file, or from line N onward",
         override_usage = "wit tail [OPTIONS] <REPO> <PATH>",
-        after_help = "Examples:\n  wit tail ratatui/ratatui src/lib.rs\n  wit tail -n 20 ratatui/ratatui Cargo.toml\n  wit tail -p 100 ratatui/ratatui file.rs  # From line 100 to end"
+        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nExamples:\n  wit tail ratatui/ratatui src/lib.rs              # Last 10 lines\n  wit tail -n 20 ratatui/ratatui Cargo.toml        # Last 20 lines\n  wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end"
     )]
     Tail {
         /// Repository in "owner/repo" format
@@ -268,9 +293,59 @@ async fn main() -> anyhow::Result<()> {
             let repo = cache_github_repo(&repo, true).await?;
             println!("Cached repository: {}", repo.path().display());
         }
-        Commands::Tree { repo, path } => {
+        Commands::Tree { repo, path, long } => {
             let repository = cache_github_repo(&repo, false).await?;
-            build_tree(&repository, path.as_deref())?;
+            build_tree(&repository, path.as_deref(), long)?;
+        }
+        Commands::Ls { repo, path, long } => {
+            let repository = cache_github_repo(&repo, false).await?;
+            let entries = list_dir(&repository, path.as_deref(), long)?;
+
+            if entries.is_empty() {
+                println!("{}", "Directory is empty or does not exist.".yellow());
+                return Ok(());
+            }
+
+            if long {
+                // Find max line count width for alignment
+                let max_lines = entries.iter().filter_map(|e| e.lines).max().unwrap_or(0);
+                let lines_width = max_lines.to_string().len().max(1);
+
+                for entry in &entries {
+                    if entry.is_dir {
+                        println!(
+                            "{:>width$}  {}/",
+                            "",
+                            entry.name,
+                            width = lines_width + 3 + 3
+                        );
+                    } else if entry.is_binary {
+                        println!(
+                            "{:>width$}   {}",
+                            "[bin]",
+                            entry.name,
+                            width = lines_width + 3 + 2
+                        );
+                    } else if let Some(lines) = entry.lines {
+                        let tokens = lines * 5;
+                        println!(
+                            "{:>width$} ln  {:<30} (~{} tok)",
+                            lines,
+                            entry.name,
+                            tokens,
+                            width = lines_width
+                        );
+                    }
+                }
+            } else {
+                for entry in &entries {
+                    if entry.is_dir {
+                        println!("{}/", entry.name);
+                    } else {
+                        println!("{}", entry.name);
+                    }
+                }
+            }
         }
         Commands::Cat {
             repo,
@@ -343,6 +418,7 @@ async fn main() -> anyhow::Result<()> {
             glob,
             files_with_matches,
             count,
+            long_format,
         } => {
             let repository = cache_github_repo(&repo, false).await?;
 
@@ -411,8 +487,29 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 GrepResult::Files(files) => {
-                    for file in files {
-                        println!("{}", file.magenta());
+                    if long_format {
+                        for file in &files {
+                            let content = read_file(&repository, file);
+                            match content {
+                                Ok(text) => {
+                                    let lines = text.lines().count();
+                                    let tokens = lines * 5;
+                                    println!(
+                                        "{:>6} ln  {:<40} (~{} tok)",
+                                        lines,
+                                        file.magenta(),
+                                        tokens
+                                    );
+                                }
+                                Err(_) => {
+                                    println!("{}", file.magenta());
+                                }
+                            }
+                        }
+                    } else {
+                        for file in files {
+                            println!("{}", file.magenta());
+                        }
                     }
                 }
                 GrepResult::Counts(counts) => {

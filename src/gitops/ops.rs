@@ -416,7 +416,120 @@ pub fn tail(
     }
 }
 
-pub fn build_tree(repo: &gix::Repository, subdir: Option<&str>) -> anyhow::Result<()> {
+/// Count lines in a byte slice. Empty data is 0 lines; any content starts at 1.
+fn count_lines(data: &[u8]) -> usize {
+    if data.is_empty() {
+        return 0;
+    }
+    let newlines = data.iter().filter(|&&b| b == b'\n').count();
+    if data.last() == Some(&b'\n') {
+        newlines
+    } else {
+        newlines + 1
+    }
+}
+
+/// Metadata about a file in the repository
+pub struct FileMetadata {
+    pub name: String,
+    pub is_dir: bool,
+    pub size_bytes: Option<u64>,
+    pub lines: Option<usize>,
+    pub is_binary: bool,
+}
+
+/// List immediate children of a directory in the repository.
+/// If `long` is true, includes byte size, line count, and token estimate for files.
+pub fn list_dir(
+    repo: &gix::Repository,
+    path: Option<&str>,
+    long: bool,
+) -> anyhow::Result<Vec<FileMetadata>> {
+    let tree = repo.head_commit()?.tree()?;
+
+    let mut recorder = gix::traverse::tree::Recorder::default();
+    tree.traverse().breadthfirst(&mut recorder)?;
+
+    let prefix = path.map(|s| s.trim_end_matches('/')).unwrap_or("");
+
+    // Collect immediate children: deduplicate directory components
+    let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // file_name -> (oid, is first occurrence)
+    let mut files: std::collections::BTreeMap<String, gix::ObjectId> =
+        std::collections::BTreeMap::new();
+
+    for entry in recorder.records.iter().filter(|e| e.mode.is_blob()) {
+        let full_path = entry.filepath.to_str()?.to_string();
+
+        let relative = if prefix.is_empty() {
+            full_path.as_str()
+        } else if let Some(rest) = full_path.strip_prefix(prefix) {
+            if let Some(rest) = rest.strip_prefix('/') {
+                rest
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        // Split into first component and rest
+        if let Some(slash_pos) = relative.find('/') {
+            // This blob is inside a subdirectory -- record the dir name
+            dirs.insert(relative[..slash_pos].to_string());
+        } else {
+            // Direct child file
+            files.insert(relative.to_string(), entry.oid);
+        }
+    }
+
+    let mut results: Vec<FileMetadata> = Vec::new();
+
+    // Directories first (sorted)
+    for name in &dirs {
+        results.push(FileMetadata {
+            name: name.clone(),
+            is_dir: true,
+            size_bytes: None,
+            lines: None,
+            is_binary: false,
+        });
+    }
+
+    // Files (sorted)
+    for (name, oid) in &files {
+        if long {
+            let object = repo.find_object(*oid)?;
+            let blob = object.into_blob();
+            let is_binary = blob.data.find_byte(0).is_some();
+            let (size_bytes, lines) = if is_binary {
+                (Some(blob.data.len() as u64), None)
+            } else {
+                let line_count = count_lines(&blob.data);
+                (Some(blob.data.len() as u64), Some(line_count))
+            };
+            results.push(FileMetadata {
+                name: name.clone(),
+                is_dir: false,
+                size_bytes,
+                lines,
+                is_binary,
+            });
+        } else {
+            results.push(FileMetadata {
+                name: name.clone(),
+                is_dir: false,
+                size_bytes: None,
+                lines: None,
+                is_binary: false,
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+pub fn build_tree(repo: &gix::Repository, subdir: Option<&str>, long: bool) -> anyhow::Result<()> {
     let tree = repo.head_commit()?.tree()?;
 
     let mut recorder = gix::traverse::tree::Recorder::default();
@@ -491,7 +604,21 @@ pub fn build_tree(repo: &gix::Repository, subdir: Option<&str>) -> anyhow::Resul
 
         // Add the file (last part)
         if let Some(&filename) = parts.last() {
-            builder.add_empty_child(filename.to_string());
+            if long {
+                let object = repo.find_object(entry.oid)?;
+                let blob = object.into_blob();
+                let is_binary = blob.data.find_byte(0).is_some();
+                let label = if is_binary {
+                    format!("{} [bin]", filename)
+                } else {
+                    let lines = count_lines(&blob.data);
+                    let tokens = lines * 5;
+                    format!("{} ({} ln, ~{} tok)", filename, lines, tokens)
+                };
+                builder.add_empty_child(label);
+            } else {
+                builder.add_empty_child(filename.to_string());
+            }
         }
     }
 
@@ -849,6 +976,108 @@ mod tests {
         assert!(
             result.is_ok(),
             "Should be able to read file from refreshed cache"
+        );
+    }
+
+    // ==================== list_dir Tests ====================
+
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn test_list_dir_root() {
+        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let entries = list_dir(&repo, None, false).unwrap();
+        assert!(!entries.is_empty(), "Root should have entries");
+
+        // Should have both dirs and files
+        let has_dirs = entries.iter().any(|e| e.is_dir);
+        let has_files = entries.iter().any(|e| !e.is_dir);
+        assert!(has_dirs, "Root should contain directories");
+        assert!(has_files, "Root should contain files");
+
+        // Directories should come before files
+        let first_file_idx = entries.iter().position(|e| !e.is_dir);
+        let last_dir_idx = entries.iter().rposition(|e| e.is_dir);
+        if let (Some(first_file), Some(last_dir)) = (first_file_idx, last_dir_idx) {
+            assert!(
+                last_dir < first_file,
+                "Directories should be listed before files"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn test_list_dir_subdir() {
+        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let entries = list_dir(&repo, Some("ratatui/src"), false).unwrap();
+        assert!(!entries.is_empty(), "ratatui/src/ should have entries");
+
+        // All entries should be immediate children (no slashes in names)
+        for entry in &entries {
+            assert!(
+                !entry.name.contains('/'),
+                "Entry '{}' should not contain slashes",
+                entry.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn test_list_dir_long() {
+        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let entries = list_dir(&repo, Some("ratatui/src"), true).unwrap();
+        assert!(!entries.is_empty());
+
+        // Files should have size and line info populated
+        for entry in entries.iter().filter(|e| !e.is_dir && !e.is_binary) {
+            assert!(
+                entry.size_bytes.is_some(),
+                "File '{}' should have size_bytes in long mode",
+                entry.name
+            );
+            assert!(
+                entry.lines.is_some(),
+                "File '{}' should have line count in long mode",
+                entry.name
+            );
+        }
+
+        // Directories should have None for size/lines
+        for entry in entries.iter().filter(|e| e.is_dir) {
+            assert!(
+                entry.size_bytes.is_none(),
+                "Dir '{}' should not have size_bytes",
+                entry.name
+            );
+            assert!(
+                entry.lines.is_none(),
+                "Dir '{}' should not have line count",
+                entry.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn test_list_dir_nonexistent() {
+        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let entries = list_dir(&repo, Some("nonexistent_dir_xyz"), false).unwrap();
+        assert!(
+            entries.is_empty(),
+            "Nonexistent directory should return empty vec"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access"]
+    async fn test_list_dir_file_path() {
+        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let entries = list_dir(&repo, Some("Cargo.toml"), false).unwrap();
+        // Cargo.toml is a file, not a directory, so nothing is "under" it
+        assert!(
+            entries.is_empty(),
+            "File path should return empty vec (not a directory)"
         );
     }
 }
