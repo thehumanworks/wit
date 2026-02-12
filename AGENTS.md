@@ -30,6 +30,7 @@
 - `cargo build`: Compile the project.
 - `cargo run -- search -p "ratatui" -l "Rust"`: Run the CLI from source.
 - `cargo install --path .`: Install `wit` locally from the working tree.
+- `sh install.sh`: Install from GitHub release artifacts using the repository installer script.
 - `cargo fmt`: Format code with rustfmt (standard Rust style).
 - `cargo clippy -- -D warnings`: Lint and treat warnings as errors.
 - `cargo test`: Run unit tests. `cargo test -- --ignored` for integration tests (require network).
@@ -60,7 +61,13 @@
 
 - `wit` queries `https://grep.app` over the network; avoid adding tokens/secrets to logs or CLI output.
 - Be mindful of rate limits and handle HTTP failures gracefully in client code (`src/grep/client.rs`).
-- Repos are cached as bare git repos in `/tmp/.wit/cache/`; the `cache_github_repo` function handles both initial caching and forced refresh.
+- Repos are cached as bare git repos in the system temp directory under `.wit/cache` (override with `WIT_CACHE_DIR`); the `cache_github_repo` function handles both initial caching and forced refresh.
+
+## Release Packaging
+
+- `.github/workflows/release.yml` publishes tagged releases (`v*`) with prebuilt artifacts for Linux/macOS/Windows targets.
+- Release assets are named `wit-<target>.tar.gz` (Unix) and `wit-<target>.zip` (Windows), plus `wit-checksums.txt`.
+- Keep artifact naming in sync with `install.sh`; changes to one should update the other in the same patch.
 
 ## Agent-Specific Notes
 

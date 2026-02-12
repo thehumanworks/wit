@@ -2,8 +2,18 @@ use gix::{Repository, bstr::ByteSlice};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ptree::{TreeBuilder, print_tree};
+use std::path::PathBuf;
 
-pub const WIT_CACHE_DIR: &str = "/tmp/.wit/cache";
+pub const WIT_CACHE_DIR_ENV: &str = "WIT_CACHE_DIR";
+pub const WIT_CACHE_SUBDIR: &str = ".wit/cache";
+
+pub fn wit_cache_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os(WIT_CACHE_DIR_ENV).filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+
+    std::env::temp_dir().join(WIT_CACHE_SUBDIR)
+}
 
 /// Options for grep search (mirrors ripgrep CLI options)
 #[derive(Debug, Clone, Default)]
@@ -116,7 +126,7 @@ pub enum GrepResult {
 pub async fn cache_github_repo(owner_repo: &str, refresh: bool) -> anyhow::Result<Repository> {
     let repo_url = format!("https://github.com/{owner_repo}", owner_repo = owner_repo);
 
-    let cache_path = std::path::Path::new(WIT_CACHE_DIR).join(owner_repo);
+    let cache_path = wit_cache_dir().join(owner_repo);
     if cache_path.exists() && !refresh {
         Ok(gix::open(&cache_path)?)
     } else {

@@ -1,12 +1,40 @@
 # wit
 
-GitHub for AI Agents -- explore GitHub repositories without cloning. Repos are cached as shallow bare clones in `/tmp/.wit/cache/`.
+GitHub for AI Agents -- explore GitHub repositories without cloning. Repos are cached as shallow bare clones under your system temp directory by default (override with `WIT_CACHE_DIR`).
 
 ## Status
 
 **v0.1.0** - Early development
 
 ## Installation
+
+### Install from binary release (`.sh` installer)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh | sh
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh | sh -s -- --version v0.1.0
+```
+
+Install to a specific bin directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh | sh -s -- --bin-dir ~/.local/bin
+```
+
+The installer auto-detects platform and fetches these release artifacts:
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+- `aarch64-pc-windows-msvc` (best effort; falls back to x64 in shell environments if unavailable)
+
+### Install from source
 
 ```bash
 cargo install --path .
@@ -154,6 +182,12 @@ wit tail ratatui/ratatui src/lib.rs              # Last 10 lines
 wit tail -n 20 ratatui/ratatui Cargo.toml        # Last 20 lines
 wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
 ```
+
+## Packaging & Release
+
+- Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
+- The workflow builds and uploads platform archives plus `wit-checksums.txt` to the GitHub release.
+- `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 
 ## Architecture
 

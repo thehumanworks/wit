@@ -11,7 +11,10 @@ use wit::{
 
 #[derive(Parser)]
 #[command(name = "wit")]
-#[command(about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in /tmp/.wit/cache/.", long_about = None)]
+#[command(
+    about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
+    long_about = None
+)]
 struct WitCli {
     #[command(subcommand)]
     command: Commands,
