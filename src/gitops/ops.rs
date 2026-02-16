@@ -1,8 +1,12 @@
+use anyhow::Context;
 use gix::{Repository, bstr::ByteSlice};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ptree::{TreeBuilder, print_tree};
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub const WIT_CACHE_DIR_ENV: &str = "WIT_CACHE_DIR";
 pub const WIT_CACHE_SUBDIR: &str = ".wit/cache";
@@ -125,23 +129,104 @@ pub enum GrepResult {
 
 pub async fn cache_github_repo(owner_repo: &str, refresh: bool) -> anyhow::Result<Repository> {
     let repo_url = format!("https://github.com/{owner_repo}", owner_repo = owner_repo);
-
     let cache_path = wit_cache_dir().join(owner_repo);
     if cache_path.exists() && !refresh {
-        Ok(gix::open(&cache_path)?)
-    } else {
-        if cache_path.exists() {
-            std::fs::remove_dir_all(&cache_path)?;
+        match gix::open(&cache_path) {
+            Ok(repo) if cache_has_head_commit(&repo) => return Ok(repo),
+            Ok(_) | Err(_) => {
+                // A prior failed fetch can leave a cache directory with an unborn HEAD.
+                // Treat it as stale and re-clone.
+            }
         }
-        std::fs::create_dir_all(&cache_path)?;
-        let (repo, _) = gix::prepare_clone_bare(repo_url, &cache_path)?
-            .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
-                1.try_into().unwrap(),
-            ))
-            .fetch_only(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?;
-
-        Ok(repo)
     }
+
+    recache_repo(&repo_url, &cache_path)
+}
+
+fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+    remove_cache_dir(cache_path)?;
+
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create cache parent '{}'", parent.display()))?;
+    }
+
+    match clone_with_gix(repo_url, cache_path) {
+        Ok(repo) => Ok(repo),
+        Err(err) => {
+            remove_cache_dir(cache_path)?;
+            if should_fallback_to_git_cli(&err) {
+                if let Some(parent) = cache_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create cache parent '{}'", parent.display())
+                    })?;
+                }
+                clone_with_git_cli(repo_url, cache_path).with_context(|| {
+                    format!("gix clone timed out and git fallback failed for '{repo_url}'")
+                })
+            } else {
+                Err(err).with_context(|| format!("failed to cache repository from '{repo_url}'"))
+            }
+        }
+    }
+}
+
+fn remove_cache_dir(cache_path: &Path) -> anyhow::Result<()> {
+    if cache_path.exists() {
+        std::fs::remove_dir_all(cache_path)
+            .with_context(|| format!("failed to remove cache '{}'", cache_path.display()))?;
+    }
+    Ok(())
+}
+
+fn clone_with_gix(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+    std::fs::create_dir_all(cache_path)
+        .with_context(|| format!("failed to create cache '{}'", cache_path.display()))?;
+
+    let (repo, _) = gix::prepare_clone_bare(repo_url, cache_path)?
+        .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
+            1.try_into().unwrap(),
+        ))
+        .fetch_only(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?;
+
+    Ok(repo)
+}
+
+fn clone_with_git_cli(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+    let output = Command::new("git")
+        .arg("clone")
+        .arg("--bare")
+        .arg("--depth")
+        .arg("1")
+        .arg(repo_url)
+        .arg(cache_path)
+        .output()
+        .context("failed to invoke git for cache fallback")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        anyhow::bail!(
+            "git clone fallback failed (status: {}) stderr: '{}' stdout: '{}'",
+            output.status,
+            stderr,
+            stdout
+        );
+    }
+
+    gix::open(cache_path)
+        .with_context(|| format!("failed to open fallback cache '{}'", cache_path.display()))
+}
+
+fn should_fallback_to_git_cli(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        message.contains("timed out") || message.contains("timeout")
+    })
+}
+
+fn cache_has_head_commit(repo: &Repository) -> bool {
+    repo.head_commit().is_ok()
 }
 
 struct MatchCollector<'a> {
@@ -646,6 +731,21 @@ pub fn build_tree(repo: &gix::Repository, subdir: Option<&str>, long: bool) -> a
 mod tests {
     use super::*;
 
+    fn run_git(args: &[&str], workdir: Option<&Path>) {
+        let mut command = Command::new("git");
+        command.args(args);
+        if let Some(dir) = workdir {
+            command.current_dir(dir);
+        }
+        let output = command.output().expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     // ==================== Glob Matching Tests ====================
 
     #[test]
@@ -764,6 +864,63 @@ mod tests {
 
         assert!(!match_line.is_context);
         assert!(context_line.is_context);
+    }
+
+    #[test]
+    fn test_should_fallback_to_git_cli_on_timeout_error() {
+        let timeout_err = anyhow::anyhow!("operation timed out while streaming");
+        assert!(should_fallback_to_git_cli(&timeout_err));
+    }
+
+    #[test]
+    fn test_should_not_fallback_to_git_cli_on_non_timeout_error() {
+        let auth_err = anyhow::anyhow!("received HTTP status 401");
+        assert!(!should_fallback_to_git_cli(&auth_err));
+    }
+
+    #[test]
+    fn test_cache_has_head_commit_false_for_empty_bare_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let bare_repo = temp.path().join("empty.git");
+        run_git(&["init", "--bare", bare_repo.to_str().unwrap()], None);
+
+        let repo = gix::open(&bare_repo).unwrap();
+        assert!(!cache_has_head_commit(&repo));
+    }
+
+    #[test]
+    fn test_cache_has_head_commit_true_for_repo_with_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let worktree = temp.path().join("worktree");
+        let bare_repo = temp.path().join("with-commit.git");
+
+        run_git(&["init", worktree.to_str().unwrap()], None);
+        std::fs::write(worktree.join("README.md"), "hello").unwrap();
+        run_git(&["add", "README.md"], Some(&worktree));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&worktree),
+        );
+        run_git(
+            &[
+                "clone",
+                "--bare",
+                worktree.to_str().unwrap(),
+                bare_repo.to_str().unwrap(),
+            ],
+            None,
+        );
+
+        let repo = gix::open(&bare_repo).unwrap();
+        assert!(cache_has_head_commit(&repo));
     }
 
     // ==================== Integration Tests (require network) ====================
