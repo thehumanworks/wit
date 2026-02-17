@@ -1,15 +1,24 @@
 use anyhow::Context;
+use fs2::FileExt;
 use gix::{Repository, bstr::ByteSlice};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ptree::{TreeBuilder, print_tree};
 use std::{
+    fs::File,
     path::{Path, PathBuf},
     process::Command,
+    sync::Mutex,
 };
 
 pub const WIT_CACHE_DIR_ENV: &str = "WIT_CACHE_DIR";
 pub const WIT_CACHE_SUBDIR: &str = ".wit/cache";
+static CACHE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+
+struct CacheLock {
+    _file_lock: File,
+    _process_lock: std::sync::MutexGuard<'static, ()>,
+}
 
 pub fn wit_cache_dir() -> PathBuf {
     if let Some(path) = std::env::var_os(WIT_CACHE_DIR_ENV).filter(|value| !value.is_empty()) {
@@ -30,8 +39,8 @@ pub struct GrepOptions {
     pub word_regexp: bool,
     /// Invert match - show non-matching lines (-v)
     pub invert_match: bool,
-    /// Max matches total (0 = unlimited)
-    pub max_count: usize,
+    /// Max matches total (None = unlimited)
+    pub max_count: Option<usize>,
     /// Lines of context before match (-B)
     pub before_context: usize,
     /// Lines of context after match (-A)
@@ -70,7 +79,7 @@ impl GrepOptions {
     }
 
     pub fn max_count(mut self, count: usize) -> Self {
-        self.max_count = count;
+        self.max_count = Some(count);
         self
     }
 
@@ -130,6 +139,8 @@ pub enum GrepResult {
 pub async fn cache_github_repo(owner_repo: &str, refresh: bool) -> anyhow::Result<Repository> {
     let repo_url = format!("https://github.com/{owner_repo}", owner_repo = owner_repo);
     let cache_path = wit_cache_dir().join(owner_repo);
+    let _cache_lock = acquire_cache_lock()?;
+
     if cache_path.exists() && !refresh {
         match gix::open(&cache_path) {
             Ok(repo) if cache_has_head_commit(&repo) => return Ok(repo),
@@ -141,6 +152,39 @@ pub async fn cache_github_repo(owner_repo: &str, refresh: bool) -> anyhow::Resul
     }
 
     recache_repo(&repo_url, &cache_path)
+}
+
+fn acquire_cache_lock() -> anyhow::Result<CacheLock> {
+    let process_lock = CACHE_PROCESS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock_path = cache_lock_path();
+
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create cache lock parent '{}'", parent.display())
+        })?;
+    }
+
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open cache lock '{}'", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("failed to lock cache '{}'", lock_path.display()))?;
+
+    Ok(CacheLock {
+        _file_lock: lock_file,
+        _process_lock: process_lock,
+    })
+}
+
+fn cache_lock_path() -> PathBuf {
+    wit_cache_dir().join(".cache.lock")
 }
 
 fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
@@ -240,6 +284,10 @@ impl Sink for MatchCollector<'_> {
     type Error = std::io::Error;
 
     fn matched(&mut self, _: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        if self.total_count >= self.max_count {
+            return Ok(false);
+        }
+
         self.matches.push(GrepMatch {
             path: self.path.to_string(),
             line_number: mat.line_number().unwrap_or(0),
@@ -248,11 +296,8 @@ impl Sink for MatchCollector<'_> {
         });
         self.total_count += 1;
 
-        // Return false to stop if we've hit max count
-        if self.max_count > 0 && self.total_count >= self.max_count {
-            return Ok(false);
-        }
-        Ok(true)
+        // Return false to stop once we've hit max count.
+        Ok(self.total_count < self.max_count)
     }
 
     fn context(&mut self, _: &Searcher, ctx: &SinkContext<'_>) -> Result<bool, Self::Error> {
@@ -378,14 +423,12 @@ pub fn grep_repo_with_options(
             continue;
         }
 
-        let remaining = if opts.max_count > 0 {
-            opts.max_count.saturating_sub(total_match_count)
-        } else {
-            0
-        };
+        let remaining = opts
+            .max_count
+            .map_or(usize::MAX, |max| max.saturating_sub(total_match_count));
 
         // Early exit if we've hit max count
-        if opts.max_count > 0 && remaining == 0 {
+        if remaining == 0 {
             break;
         }
 
@@ -793,7 +836,7 @@ mod tests {
         assert!(!opts.smart_case);
         assert!(!opts.word_regexp);
         assert!(!opts.invert_match);
-        assert_eq!(opts.max_count, 0);
+        assert_eq!(opts.max_count, None);
         assert_eq!(opts.before_context, 0);
         assert_eq!(opts.after_context, 0);
         assert!(opts.glob.is_none());
@@ -813,7 +856,7 @@ mod tests {
 
         assert!(opts.ignore_case);
         assert!(opts.word_regexp);
-        assert_eq!(opts.max_count, 10);
+        assert_eq!(opts.max_count, Some(10));
         assert_eq!(opts.before_context, 3);
         assert_eq!(opts.after_context, 3);
         assert_eq!(opts.glob, Some("*.rs".to_string()));
@@ -921,6 +964,73 @@ mod tests {
 
         let repo = gix::open(&bare_repo).unwrap();
         assert!(cache_has_head_commit(&repo));
+    }
+
+    #[test]
+    fn test_acquire_cache_lock_blocks_parallel_calls() {
+        let _temp = tempfile::tempdir().unwrap();
+        let first_lock = acquire_cache_lock().unwrap();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _second_lock = acquire_cache_lock().unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("worker thread did not start");
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "second lock should block while first lock is held"
+        );
+
+        drop(first_lock);
+
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("worker thread did not acquire lock after release");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_grep_repo_max_count_zero_returns_no_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_dir = temp.path().join("repo");
+
+        run_git(&["init", repo_dir.to_str().unwrap()], None);
+        std::fs::write(repo_dir.join("README.md"), "Hello\nHello\n").unwrap();
+        run_git(&["add", "README.md"], Some(&repo_dir));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&repo_dir),
+        );
+
+        let repo = gix::open(&repo_dir).unwrap();
+        let opts = GrepOptions::new().max_count(0);
+        let result = grep_repo_with_options(&repo, "Hello", &opts).unwrap();
+
+        if let GrepResult::Matches(matches) = result {
+            assert!(
+                matches.is_empty(),
+                "max_count=0 should behave like ripgrep and return no matches"
+            );
+        } else {
+            panic!("Expected Matches result");
+        }
     }
 
     // ==================== Integration Tests (require network) ====================

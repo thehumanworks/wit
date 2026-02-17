@@ -32,6 +32,7 @@ gix-diff = "0.58.0"
 grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 grep-matcher = "0.1.8"
+fs2 = "0.4.3"
 regex = "1"
 
 [dev-dependencies]

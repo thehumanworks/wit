@@ -165,9 +165,9 @@ enum Commands {
         #[arg(short = 'v', long)]
         invert_match: bool,
 
-        /// Maximum number of matches to show (0 = unlimited)
-        #[arg(short = 'm', long, default_value_t = 0)]
-        max_count: usize,
+        /// Maximum number of matches to show (-m 0 disables searching, like rg)
+        #[arg(short = 'm', long)]
+        max_count: Option<usize>,
 
         /// Lines of context to show before and after matches
         #[arg(short = 'C', long, default_value_t = 0)]
@@ -426,17 +426,19 @@ async fn main() -> anyhow::Result<()> {
             let repository = cache_github_repo(&repo, false).await?;
 
             // Build options from CLI flags
-            let opts = GrepOptions::new()
+            let mut opts = GrepOptions::new()
                 .ignore_case(ignore_case)
                 .smart_case(smart_case)
                 .word_regexp(word_regexp)
                 .invert_match(invert_match)
-                .max_count(max_count)
                 .before_context(if context > 0 { context } else { before_context })
                 .after_context(if context > 0 { context } else { after_context })
                 .glob(glob)
                 .files_with_matches(files_with_matches)
                 .count(count);
+            if let Some(max_count) = max_count {
+                opts = opts.max_count(max_count);
+            }
 
             let result = grep_repo_with_options(&repository, &pattern, &opts)?;
 
