@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: build ${{ matrix.target }}
+    name: build ${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
@@ -22,32 +22,44 @@ jobs:
             archive: tar.gz
             bin: wit
             use_cross: true
+            platform: linux
+            arch: x86_64
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-latest
             archive: tar.gz
             bin: wit
             use_cross: true
+            platform: linux
+            arch: aarch64
           - target: x86_64-apple-darwin
             runner: macos-14
             archive: tar.gz
             bin: wit
             use_cross: false
+            platform: macos
+            arch: x86_64
           - target: aarch64-apple-darwin
             runner: macos-14
             archive: tar.gz
             bin: wit
             use_cross: false
+            platform: macos
+            arch: aarch64
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             archive: zip
             bin: wit.exe
             use_cross: false
+            platform: windows
+            arch: x86_64
           - target: aarch64-pc-windows-msvc
             runner: windows-latest
             archive: zip
             bin: wit.exe
             use_cross: false
             experimental: true
+            platform: windows
+            arch: aarch64
 
     steps:
       - uses: actions/checkout@v4
@@ -85,21 +97,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          artifact="wit-${{ matrix.target }}.tar.gz"
+          artifact="wit-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
           tar -C "target/${{ matrix.target }}/release" -czf "${artifact}" "${{ matrix.bin }}"
 
       - name: Package binary (zip)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $artifact = "wit-${{ matrix.target }}.zip"
+          $artifact = "wit-${{ matrix.platform }}-${{ matrix.arch }}.zip"
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.bin }}" -DestinationPath $artifact -Force
 
       - name: Upload packaged binary
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.target }}
-          path: wit-${{ matrix.target }}.${{ matrix.archive }}
+          name: dist-${{ matrix.platform }}-${{ matrix.arch }}
+          path: wit-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.archive }}
           if-no-files-found: error
 
   release:

@@ -27,12 +27,12 @@ curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh |
 ```
 
 The installer auto-detects platform and fetches these release artifacts:
-- `x86_64-unknown-linux-musl`
-- `aarch64-unknown-linux-musl`
-- `x86_64-apple-darwin`
-- `aarch64-apple-darwin`
-- `x86_64-pc-windows-msvc`
-- `aarch64-pc-windows-msvc` (best effort; falls back to x64 in shell environments if unavailable)
+- `wit-linux-x86_64.tar.gz`
+- `wit-linux-aarch64.tar.gz`
+- `wit-macos-x86_64.tar.gz`
+- `wit-macos-aarch64.tar.gz`
+- `wit-windows-x86_64.zip`
+- `wit-windows-aarch64.zip` (best effort; falls back to x64 in shell environments if unavailable)
 
 ### Install from source
 
@@ -186,7 +186,7 @@ wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
 ## Packaging & Release
 
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
-- The workflow builds and uploads platform archives plus `wit-checksums.txt` to the GitHub release.
+- The workflow builds and uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt` to the GitHub release.
 - `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 
 ## Architecture
