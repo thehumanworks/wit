@@ -70,7 +70,7 @@
 ## Release Packaging
 
 - `.github/workflows/release.yml` publishes tagged releases (`v*`) with prebuilt artifacts for Linux/macOS/Windows targets.
-- Release assets are named `wit-<target>.tar.gz` (Unix) and `wit-<target>.zip` (Windows), plus `wit-checksums.txt`.
+- Release assets are named `wit-<platform>-<arch>.tar.gz` (Unix) and `wit-<platform>-<arch>.zip` (Windows), plus `wit-checksums.txt`.
 - Keep artifact naming in sync with `install.sh`; changes to one should update the other in the same patch.
 
 ## Agent-Specific Notes
