@@ -118,17 +118,17 @@ fi
 uname_s="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 case "$uname_s" in
     linux*)
-        os_part="unknown-linux-musl"
+        platform="linux"
         archive_ext="tar.gz"
         binary_name="${PROGRAM}"
         ;;
     darwin*)
-        os_part="apple-darwin"
+        platform="macos"
         archive_ext="tar.gz"
         binary_name="${PROGRAM}"
         ;;
     msys*|mingw*|cygwin*)
-        os_part="pc-windows-msvc"
+        platform="windows"
         archive_ext="zip"
         binary_name="${PROGRAM}.exe"
         ;;
@@ -140,18 +140,17 @@ esac
 uname_m="$(uname -m 2>/dev/null)"
 case "$uname_m" in
     x86_64|amd64)
-        arch_part="x86_64"
+        arch="x86_64"
         ;;
     aarch64|arm64)
-        arch_part="aarch64"
+        arch="aarch64"
         ;;
     *)
         fail "unsupported architecture: ${uname_m}"
         ;;
 esac
 
-target="${arch_part}-${os_part}"
-asset="${PROGRAM}-${target}.${archive_ext}"
+asset="${PROGRAM}-${platform}-${arch}.${archive_ext}"
 checksums_file="${PROGRAM}-checksums.txt"
 download_base="https://github.com/${REPO}/releases/download/${VERSION}"
 asset_url="${download_base}/${asset}"
@@ -167,10 +166,10 @@ archive_path="${tmp_dir}/${asset}"
 
 log "Downloading ${asset}..."
 if ! download "$asset_url" "$archive_path"; then
-    if [ "$target" = "aarch64-pc-windows-msvc" ]; then
+    if [ "$platform" = "windows" ] && [ "$arch" = "aarch64" ]; then
         warn "No Windows arm64 artifact found. Falling back to x86_64."
-        target="x86_64-pc-windows-msvc"
-        asset="${PROGRAM}-${target}.zip"
+        arch="x86_64"
+        asset="${PROGRAM}-${platform}-${arch}.zip"
         archive_ext="zip"
         archive_path="${tmp_dir}/${asset}"
         asset_url="${download_base}/${asset}"
