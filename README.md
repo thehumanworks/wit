@@ -50,7 +50,25 @@ wit rg -l 'impl Widget' ratatui/ratatui                    # Find files
 wit cat -n ratatui/ratatui src/lib.rs                      # Read a file
 wit head -n 30 ratatui/ratatui Cargo.toml                  # Preview a file
 wit sed -n '100,150p' ratatui/ratatui src/lib.rs           # Extract range
+wit rg 'TODO' ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 ```
+
+## Global Options
+
+| Flag | Description |
+|------|-------------|
+| `--ignore <PATH\|GLOB>` | Exclude files/directories/globs from file operations. Repeat the flag to provide multiple patterns. |
+
+Ignore examples:
+
+```bash
+wit tree ratatui/ratatui --ignore '.github' --ignore 'assets/**'
+wit ls ratatui/ratatui src --ignore 'generated'
+wit rg 'fn main' ratatui/ratatui --ignore '.git' --ignore '*.lock'
+wit cat ratatui/ratatui src/main.rs --ignore 'src/main.rs'   # blocked (explicitly ignored)
+```
+
+`search` accepts `--ignore`, but applies it only when `--with-snippets` is enabled.
 
 ## Commands
 

@@ -1,10 +1,12 @@
 use anyhow::Context;
 use fs2::FileExt;
 use gix::{Repository, bstr::ByteSlice};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ptree::{TreeBuilder, print_tree};
 use std::{
+    collections::HashSet,
     fs::File,
     path::{Path, PathBuf},
     process::Command,
@@ -26,6 +28,99 @@ pub fn wit_cache_dir() -> PathBuf {
     }
 
     std::env::temp_dir().join(WIT_CACHE_SUBDIR)
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IgnoreMatcher {
+    literal_paths: Vec<String>,
+    literal_components: HashSet<String>,
+    glob_set: Option<GlobSet>,
+}
+
+impl IgnoreMatcher {
+    pub fn new(patterns: &[String]) -> anyhow::Result<Self> {
+        let mut literal_paths = Vec::new();
+        let mut literal_components = HashSet::new();
+        let mut glob_builder = GlobSetBuilder::new();
+        let mut has_globs = false;
+
+        for raw_pattern in patterns {
+            let normalized = normalize_repo_path(raw_pattern);
+            if normalized.is_empty() {
+                continue;
+            }
+
+            if pattern_has_glob_chars(&normalized) {
+                glob_builder.add(Glob::new(&normalized)?);
+                if !normalized.contains('/') {
+                    glob_builder.add(Glob::new(&format!("**/{}", normalized))?);
+                }
+                has_globs = true;
+                continue;
+            }
+
+            if normalized.contains('/') {
+                literal_paths.push(normalized);
+            } else {
+                literal_components.insert(normalized);
+            }
+        }
+
+        let glob_set = if has_globs {
+            Some(glob_builder.build()?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            literal_paths,
+            literal_components,
+            glob_set,
+        })
+    }
+
+    pub fn is_ignored(&self, path: &str) -> bool {
+        let path = normalize_repo_path(path);
+        if path.is_empty() {
+            return false;
+        }
+
+        if self
+            .glob_set
+            .as_ref()
+            .is_some_and(|set| set.is_match(&path))
+        {
+            return true;
+        }
+
+        if self.literal_paths.iter().any(|prefix| {
+            path == *prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        }) {
+            return true;
+        }
+
+        path.split('/')
+            .any(|component| self.literal_components.contains(component))
+    }
+}
+
+fn pattern_has_glob_chars(pattern: &str) -> bool {
+    pattern
+        .chars()
+        .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+}
+
+fn normalize_repo_path(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// Options for grep search (mirrors ripgrep CLI options)
@@ -51,6 +146,8 @@ pub struct GrepOptions {
     pub files_with_matches: bool,
     /// Only show count of matches (-c)
     pub count: bool,
+    /// Ignore patterns (files, directories, globs)
+    pub ignore: Vec<String>,
 }
 
 impl GrepOptions {
@@ -111,6 +208,11 @@ impl GrepOptions {
 
     pub fn count(mut self, yes: bool) -> Self {
         self.count = yes;
+        self
+    }
+
+    pub fn ignore(mut self, patterns: Vec<String>) -> Self {
+        self.ignore = patterns;
         self
     }
 }
@@ -393,6 +495,7 @@ pub fn grep_repo_with_options(
         .build(pattern)?;
 
     let tree = repo.head_commit()?.tree()?;
+    let ignore_matcher = IgnoreMatcher::new(&opts.ignore)?;
 
     let mut recorder = gix::traverse::tree::Recorder::default();
     tree.traverse().breadthfirst(&mut recorder)?;
@@ -405,6 +508,10 @@ pub fn grep_repo_with_options(
 
     for entry in recorder.records.iter().filter(|e| e.mode.is_blob()) {
         let path = entry.filepath.to_str()?.to_string();
+
+        if ignore_matcher.is_ignored(&path) {
+            continue;
+        }
 
         // Apply glob filter if specified
         if opts
@@ -478,6 +585,20 @@ pub fn grep_repo_with_options(
 }
 
 pub fn read_file(repo: &gix::Repository, path: &str) -> anyhow::Result<String> {
+    read_file_with_ignore(repo, path, &[])
+}
+
+pub fn read_file_with_ignore(
+    repo: &gix::Repository,
+    path: &str,
+    ignore_patterns: &[String],
+) -> anyhow::Result<String> {
+    let ignore_matcher = IgnoreMatcher::new(ignore_patterns)?;
+    let normalized_path = normalize_repo_path(path);
+    if ignore_matcher.is_ignored(&normalized_path) {
+        anyhow::bail!("File '{}' is excluded by --ignore", path);
+    }
+
     let tree = repo.head_commit()?.tree()?;
 
     let entry = tree
@@ -501,7 +622,17 @@ pub fn head(
     count: usize,
     number: bool,
 ) -> anyhow::Result<String> {
-    let content = read_file(repo, path)?;
+    head_with_ignore(repo, path, count, number, &[])
+}
+
+pub fn head_with_ignore(
+    repo: &gix::Repository,
+    path: &str,
+    count: usize,
+    number: bool,
+    ignore_patterns: &[String],
+) -> anyhow::Result<String> {
+    let content = read_file_with_ignore(repo, path, ignore_patterns)?;
     let selected: Vec<&str> = content.lines().take(count).collect();
 
     if number {
@@ -528,7 +659,18 @@ pub fn tail(
     from_line: Option<usize>,
     number: bool,
 ) -> anyhow::Result<String> {
-    let content = read_file(repo, path)?;
+    tail_with_ignore(repo, path, count, from_line, number, &[])
+}
+
+pub fn tail_with_ignore(
+    repo: &gix::Repository,
+    path: &str,
+    count: usize,
+    from_line: Option<usize>,
+    number: bool,
+    ignore_patterns: &[String],
+) -> anyhow::Result<String> {
+    let content = read_file_with_ignore(repo, path, ignore_patterns)?;
     let all_lines: Vec<&str> = content.lines().collect();
     let total = all_lines.len();
 
@@ -583,6 +725,16 @@ pub fn list_dir(
     path: Option<&str>,
     long: bool,
 ) -> anyhow::Result<Vec<FileMetadata>> {
+    list_dir_with_ignore(repo, path, long, &[])
+}
+
+pub fn list_dir_with_ignore(
+    repo: &gix::Repository,
+    path: Option<&str>,
+    long: bool,
+    ignore_patterns: &[String],
+) -> anyhow::Result<Vec<FileMetadata>> {
+    let ignore_matcher = IgnoreMatcher::new(ignore_patterns)?;
     let tree = repo.head_commit()?.tree()?;
 
     let mut recorder = gix::traverse::tree::Recorder::default();
@@ -598,6 +750,9 @@ pub fn list_dir(
 
     for entry in recorder.records.iter().filter(|e| e.mode.is_blob()) {
         let full_path = entry.filepath.to_str()?.to_string();
+        if ignore_matcher.is_ignored(&full_path) {
+            continue;
+        }
 
         let relative = if prefix.is_empty() {
             full_path.as_str()
@@ -668,6 +823,16 @@ pub fn list_dir(
 }
 
 pub fn build_tree(repo: &gix::Repository, subdir: Option<&str>, long: bool) -> anyhow::Result<()> {
+    build_tree_with_ignore(repo, subdir, long, &[])
+}
+
+pub fn build_tree_with_ignore(
+    repo: &gix::Repository,
+    subdir: Option<&str>,
+    long: bool,
+    ignore_patterns: &[String],
+) -> anyhow::Result<()> {
+    let ignore_matcher = IgnoreMatcher::new(ignore_patterns)?;
     let tree = repo.head_commit()?.tree()?;
 
     let mut recorder = gix::traverse::tree::Recorder::default();
@@ -692,6 +857,12 @@ pub fn build_tree(repo: &gix::Repository, subdir: Option<&str>, long: bool) -> a
         .records
         .iter()
         .filter(|e| e.mode.is_blob())
+        .filter(|e| {
+            e.filepath
+                .to_str()
+                .map(|path| !ignore_matcher.is_ignored(path))
+                .unwrap_or(false)
+        })
         .filter(|e| match prefix_to_strip {
             Some(prefix) => {
                 let path = e.filepath.to_str().unwrap();
@@ -827,6 +998,39 @@ mod tests {
         assert!(!matches_glob("Cargo.lock", "Cargo.toml"));
     }
 
+    // ==================== IgnoreMatcher Tests ====================
+
+    #[test]
+    fn test_ignore_matcher_literal_file_path() {
+        let matcher = IgnoreMatcher::new(&["src/main.rs".to_string()]).unwrap();
+        assert!(matcher.is_ignored("src/main.rs"));
+        assert!(!matcher.is_ignored("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_ignore_matcher_literal_directory_path() {
+        let matcher = IgnoreMatcher::new(&["src/generated".to_string()]).unwrap();
+        assert!(matcher.is_ignored("src/generated/output.rs"));
+        assert!(matcher.is_ignored("src/generated"));
+        assert!(!matcher.is_ignored("src/core/mod.rs"));
+    }
+
+    #[test]
+    fn test_ignore_matcher_component_name() {
+        let matcher = IgnoreMatcher::new(&[".git".to_string()]).unwrap();
+        assert!(matcher.is_ignored(".git/config"));
+        assert!(matcher.is_ignored("vendor/.git/HEAD"));
+        assert!(!matcher.is_ignored("src/gitops/mod.rs"));
+    }
+
+    #[test]
+    fn test_ignore_matcher_glob_pattern() {
+        let matcher = IgnoreMatcher::new(&["*.png".to_string()]).unwrap();
+        assert!(matcher.is_ignored("assets/logo.png"));
+        assert!(matcher.is_ignored("logo.png"));
+        assert!(!matcher.is_ignored("assets/logo.svg"));
+    }
+
     // ==================== GrepOptions Builder Tests ====================
 
     #[test]
@@ -842,6 +1046,7 @@ mod tests {
         assert!(opts.glob.is_none());
         assert!(!opts.files_with_matches);
         assert!(!opts.count);
+        assert!(opts.ignore.is_empty());
     }
 
     #[test]
@@ -852,6 +1057,7 @@ mod tests {
             .max_count(10)
             .context(3)
             .glob(Some("*.rs".to_string()))
+            .ignore(vec![".git".to_string(), "*.png".to_string()])
             .files_with_matches(true);
 
         assert!(opts.ignore_case);
@@ -860,6 +1066,7 @@ mod tests {
         assert_eq!(opts.before_context, 3);
         assert_eq!(opts.after_context, 3);
         assert_eq!(opts.glob, Some("*.rs".to_string()));
+        assert_eq!(opts.ignore, vec![".git".to_string(), "*.png".to_string()]);
         assert!(opts.files_with_matches);
     }
 
@@ -1031,6 +1238,105 @@ mod tests {
         } else {
             panic!("Expected Matches result");
         }
+    }
+
+    #[test]
+    fn test_grep_repo_with_ignore_patterns_skips_ignored_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_dir = temp.path().join("repo");
+
+        run_git(&["init", repo_dir.to_str().unwrap()], None);
+        std::fs::create_dir_all(repo_dir.join(".hidden")).unwrap();
+        std::fs::write(repo_dir.join("README.md"), "needle\n").unwrap();
+        std::fs::write(repo_dir.join(".hidden").join("secret.txt"), "needle\n").unwrap();
+        run_git(&["add", "."], Some(&repo_dir));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&repo_dir),
+        );
+
+        let repo = gix::open(&repo_dir).unwrap();
+        let opts = GrepOptions::new().ignore(vec![".hidden".to_string()]);
+        let result = grep_repo_with_options(&repo, "needle", &opts).unwrap();
+
+        if let GrepResult::Matches(matches) = result {
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].path, "README.md");
+        } else {
+            panic!("Expected Matches result");
+        }
+    }
+
+    #[test]
+    fn test_read_file_with_ignore_blocks_explicit_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_dir = temp.path().join("repo");
+
+        run_git(&["init", repo_dir.to_str().unwrap()], None);
+        std::fs::write(repo_dir.join("allowed.txt"), "ok").unwrap();
+        std::fs::write(repo_dir.join("blocked.txt"), "nope").unwrap();
+        run_git(&["add", "."], Some(&repo_dir));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&repo_dir),
+        );
+
+        let repo = gix::open(&repo_dir).unwrap();
+        let allowed =
+            read_file_with_ignore(&repo, "allowed.txt", &["blocked.txt".to_string()]).unwrap();
+        assert_eq!(allowed, "ok");
+
+        let err = read_file_with_ignore(&repo, "blocked.txt", &["blocked.txt".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("excluded by --ignore"));
+    }
+
+    #[test]
+    fn test_list_dir_with_ignore_hides_ignored_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_dir = temp.path().join("repo");
+
+        run_git(&["init", repo_dir.to_str().unwrap()], None);
+        std::fs::create_dir_all(repo_dir.join("src")).unwrap();
+        std::fs::create_dir_all(repo_dir.join("vendor")).unwrap();
+        std::fs::write(repo_dir.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repo_dir.join("vendor").join("lib.rs"), "pub fn x() {}\n").unwrap();
+        run_git(&["add", "."], Some(&repo_dir));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&repo_dir),
+        );
+
+        let repo = gix::open(&repo_dir).unwrap();
+        let entries = list_dir_with_ignore(&repo, None, false, &["vendor".to_string()]).unwrap();
+        let names: Vec<String> = entries.into_iter().map(|entry| entry.name).collect();
+        assert!(names.contains(&"src".to_string()));
+        assert!(!names.contains(&"vendor".to_string()));
     }
 
     // ==================== Integration Tests (require network) ====================

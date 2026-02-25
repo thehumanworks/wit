@@ -1,10 +1,11 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use colored::Colorize;
 use std::fs;
 use wit::{
     gitops::ops::{
-        GrepOptions, GrepResult, build_tree, cache_github_repo, grep_repo_with_options, head,
-        list_dir, read_file, tail,
+        GrepOptions, GrepResult, IgnoreMatcher, build_tree_with_ignore, cache_github_repo,
+        grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
+        read_file_with_ignore, tail_with_ignore,
     },
     grep, sed,
 };
@@ -16,6 +17,15 @@ use wit::{
     long_about = None
 )]
 struct WitCli {
+    /// Exclude files, directories, or glob patterns (repeatable)
+    #[arg(
+        long = "ignore",
+        value_name = "PATH|GLOB",
+        global = true,
+        action = ArgAction::Append
+    )]
+    ignore: Vec<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -201,8 +211,7 @@ enum Commands {
         name = "sed",
         about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
         override_usage = "wit sed [OPTIONS] <SCRIPT> <REPO> <PATH>",
-        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py    # Print line range\n  wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs                 # Lines matching pattern\n  wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs       # Substitute text\n  wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs              # Extract function signatures",
-        trailing_var_arg = true
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py    # Print line range\n  wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs                 # Lines matching pattern\n  wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs       # Substitute text\n  wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs              # Extract function signatures"
     )]
     Sed {
         /// Suppress automatic printing of pattern space
@@ -272,6 +281,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = WitCli::parse();
+    let ignore_patterns = cli.ignore;
 
     match cli.command {
         Commands::Search {
@@ -289,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
                 &query,
                 with_snippets,
                 compact,
+                &ignore_patterns,
             )
             .await?;
         }
@@ -298,11 +309,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Tree { repo, path, long } => {
             let repository = cache_github_repo(&repo, false).await?;
-            build_tree(&repository, path.as_deref(), long)?;
+            build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
         }
         Commands::Ls { repo, path, long } => {
             let repository = cache_github_repo(&repo, false).await?;
-            let entries = list_dir(&repository, path.as_deref(), long)?;
+            let entries =
+                list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
 
             if entries.is_empty() {
                 println!("{}", "Directory is empty or does not exist.".yellow());
@@ -361,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
             show_all,
         } => {
             let repository = cache_github_repo(&repo, false).await?;
-            let content = read_file(&repository, &path)?;
+            let content = read_file_with_ignore(&repository, &path, &ignore_patterns)?;
 
             // -A is equivalent to -ET
             let show_ends = show_ends || show_all;
@@ -434,6 +446,7 @@ async fn main() -> anyhow::Result<()> {
                 .before_context(if context > 0 { context } else { before_context })
                 .after_context(if context > 0 { context } else { after_context })
                 .glob(glob)
+                .ignore(ignore_patterns.clone())
                 .files_with_matches(files_with_matches)
                 .count(count);
             if let Some(max_count) = max_count {
@@ -531,7 +544,7 @@ async fn main() -> anyhow::Result<()> {
             number,
         } => {
             let repository = cache_github_repo(&repo, false).await?;
-            let output = head(&repository, &path, lines, number)?;
+            let output = head_with_ignore(&repository, &path, lines, number, &ignore_patterns)?;
             println!("{}", output);
         }
         Commands::Sed {
@@ -540,9 +553,13 @@ async fn main() -> anyhow::Result<()> {
             files,
             args,
         } => {
+            let (args, inline_ignores) = extract_sed_inline_ignores(args)?;
+            let mut effective_ignore_patterns = ignore_patterns.clone();
+            effective_ignore_patterns.extend(inline_ignores);
+
             let (scripts, repo, path) = parse_sed_invocation(expressions, files, args)?;
             let repository = cache_github_repo(&repo, false).await?;
-            let content = read_file(&repository, &path)?;
+            let content = read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?;
             let program = sed::parse_script(&scripts)?;
             let output = sed::run(&program, &content, &sed::SedOptions { quiet })?;
             print!("{}", output.output);
@@ -558,7 +575,14 @@ async fn main() -> anyhow::Result<()> {
             number,
         } => {
             let repository = cache_github_repo(&repo, false).await?;
-            let output = tail(&repository, &path, lines, from_line, number)?;
+            let output = tail_with_ignore(
+                &repository,
+                &path,
+                lines,
+                from_line,
+                number,
+                &ignore_patterns,
+            )?;
             println!("{}", output);
         }
     }
@@ -603,6 +627,34 @@ fn parse_sed_invocation(
     Ok((scripts, repo, path))
 }
 
+fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let mut remaining_args = Vec::new();
+    let mut ignores = Vec::new();
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        if arg == "--ignore" {
+            let pattern = iter
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--ignore requires a value"))?;
+            ignores.push(pattern);
+            continue;
+        }
+
+        if let Some(pattern) = arg.strip_prefix("--ignore=") {
+            if pattern.is_empty() {
+                return Err(anyhow::anyhow!("--ignore requires a value"));
+            }
+            ignores.push(pattern.to_string());
+            continue;
+        }
+
+        remaining_args.push(arg);
+    }
+
+    Ok((remaining_args, ignores))
+}
+
 async fn search(
     pattern: &str,
     lang: Option<&str>,
@@ -610,11 +662,19 @@ async fn search(
     query: &str,
     with_snippets: bool,
     compact: bool,
+    ignore_patterns: &[String],
 ) -> anyhow::Result<()> {
     let client = grep::client::GrepClient::new();
-    let repos = client
+    let mut repos = client
         .repo_search(pattern, lang, regex, query, with_snippets)
         .await?;
+
+    if !ignore_patterns.is_empty() && with_snippets {
+        let matcher = IgnoreMatcher::new(ignore_patterns)?;
+        for repo in &mut repos {
+            repo.files.retain(|file| !matcher.is_ignored(&file.path));
+        }
+    }
 
     if repos.is_empty() {
         println!("{}", "No repositories found.".yellow());
@@ -627,6 +687,15 @@ async fn search(
         repos.len().to_string().cyan().bold(),
         "repositories:".green().bold()
     );
+
+    if !ignore_patterns.is_empty() && !with_snippets {
+        println!(
+            "{}",
+            "note: search --ignore is applied only when snippets are enabled with --with-snippets"
+                .dimmed()
+        );
+        println!();
+    }
 
     // Find max name length for alignment
     let max_name_len = repos.iter().map(|r| r.name.len()).max().unwrap_or(0);
@@ -699,4 +768,62 @@ async fn search(
 
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_global_ignore_parses_for_rg() {
+        let cli = WitCli::try_parse_from([
+            "wit",
+            "rg",
+            "needle",
+            "owner/repo",
+            "--ignore",
+            ".git",
+            "--ignore",
+            "*.png",
+        ])
+        .expect("rg args should parse");
+
+        assert_eq!(cli.ignore, vec![".git".to_string(), "*.png".to_string()]);
+    }
+
+    #[test]
+    fn test_global_ignore_parses_for_sed_after_positionals() {
+        let cli = WitCli::try_parse_from([
+            "wit",
+            "sed",
+            "-n",
+            "1,3p",
+            "owner/repo",
+            "src/lib.rs",
+            "--ignore",
+            "vendor",
+        ])
+        .expect("sed args should parse");
+
+        assert!(cli.ignore.is_empty());
+
+        match cli.command {
+            Commands::Sed {
+                quiet,
+                expressions,
+                files,
+                args,
+            } => {
+                let (filtered_args, inline_ignores) =
+                    extract_sed_inline_ignores(args).expect("inline sed ignores should parse");
+
+                assert!(quiet);
+                assert!(expressions.is_empty());
+                assert!(files.is_empty());
+                assert_eq!(inline_ignores, vec!["vendor".to_string()]);
+                assert_eq!(filtered_args, vec!["1,3p", "owner/repo", "src/lib.rs"]);
+            }
+            _ => panic!("expected sed command"),
+        }
+    }
 }
