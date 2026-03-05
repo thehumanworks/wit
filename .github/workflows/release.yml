@@ -281,10 +281,11 @@ jobs:
         run: |
           set -euo pipefail
           package="${{ needs.publish_npm.outputs.base_package_name }}@${{ needs.publish_npm.outputs.version }}"
+          max_attempts=20
           attempts=0
           until npm install -g "${package}"; do
             attempts=$((attempts + 1))
-            if [ "${attempts}" -ge 5 ]; then
+            if [ "${attempts}" -ge "${max_attempts}" ]; then
               exit 1
             fi
             sleep 15
@@ -299,6 +300,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $package = "${{ needs.publish_npm.outputs.base_package_name }}@${{ needs.publish_npm.outputs.version }}"
+          $maxAttempts = 20
           $attempt = 0
           while ($true) {
             try {
@@ -306,7 +308,7 @@ jobs:
               break
             } catch {
               $attempt += 1
-              if ($attempt -ge 5) {
+              if ($attempt -ge $maxAttempts) {
                 throw
               }
               Start-Sleep -Seconds 15
