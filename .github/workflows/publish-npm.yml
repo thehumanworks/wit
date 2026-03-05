@@ -1,0 +1,173 @@
+name: publish npm
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z release tag to publish or re-publish from
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish npm package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release_metadata.outputs.version }}
+      package_name: ${{ steps.npm_metadata.outputs.package_name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: release_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            release_tag="${{ github.event.release.tag_name }}"
+          else
+            release_tag="${{ inputs.release_tag }}"
+          fi
+
+          version="$(node scripts/npm/assert-release-version.mjs --tag "${release_tag}")"
+          echo "RELEASE_TAG=${release_tag}" >> "${GITHUB_ENV}"
+          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm token is configured
+        shell: bash
+        env:
+          NPM_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_AUTH_TOKEN:-}" ]; then
+            echo "NPM_AUTH_TOKEN secret is required to publish npm packages."
+            exit 1
+          fi
+
+      - name: Download GitHub release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "wit-*" \
+            --dir dist
+
+      - name: Build npm package from release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/npm/build-packages.mjs \
+            --version "${VERSION}" \
+            --artifacts-dir dist \
+            --output-dir dist/npm
+
+      - name: Capture npm package metadata
+        id: npm_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$(jq -r '.packageName' dist/npm/manifest.json)"
+          if [ -z "${package_name}" ] || [ "${package_name}" = "null" ]; then
+            echo "Unable to resolve package name from dist/npm/manifest.json"
+            exit 1
+          fi
+          echo "package_name=${package_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate npm tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist/npm/package && npm pack >/dev/null)
+
+      - name: Publish npm package
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm publish dist/npm/package --access public
+
+  smoke:
+    name: npm smoke (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    needs: publish
+    continue-on-error: ${{ matrix.allow_failure == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            allow_failure: false
+          - runner: macos-14
+            allow_failure: false
+          - runner: windows-latest
+            allow_failure: false
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install and smoke test package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="${{ needs.publish.outputs.package_name }}@${{ needs.publish.outputs.version }}"
+          max_attempts=20
+          attempts=0
+          until npm install -g "${package}"; do
+            attempts=$((attempts + 1))
+            if [ "${attempts}" -ge "${max_attempts}" ]; then
+              exit 1
+            fi
+            sleep 15
+          done
+          wit --help
+          wit rg --help
+          npx "${package}" --help
+
+      - name: Install and smoke test package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = "${{ needs.publish.outputs.package_name }}@${{ needs.publish.outputs.version }}"
+          $maxAttempts = 20
+          $attempt = 0
+          while ($true) {
+            try {
+              npm install -g $package
+              break
+            } catch {
+              $attempt += 1
+              if ($attempt -ge $maxAttempts) {
+                throw
+              }
+              Start-Sleep -Seconds 15
+            }
+          }
+          wit --help
+          wit rg --help
+          npx $package --help

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const CHECKSUM_FILE = "wit-checksums.txt";
 
 function fail(message) {
   console.error(`error: ${message}`);
@@ -16,6 +16,7 @@ function fail(message) {
 
 function parseArgs(argv) {
   const args = {};
+
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--version") {
@@ -33,11 +34,6 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--npm-scope") {
-      args.npmScope = argv[i + 1];
-      i += 1;
-      continue;
-    }
     fail(`unknown argument: ${arg}`);
   }
 
@@ -50,34 +46,8 @@ function parseArgs(argv) {
   if (!args.outputDir) {
     fail("missing required --output-dir");
   }
+
   return args;
-}
-
-function normalizeScope(scope) {
-  if (!scope) {
-    return null;
-  }
-
-  const trimmed = scope.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-
-  const withoutPrefix = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
-  if (withoutPrefix.length === 0) {
-    fail(`invalid npm scope: ${scope}`);
-  }
-
-  if (
-    withoutPrefix.includes("/") ||
-    /\s/.test(withoutPrefix) ||
-    /^[._]/.test(withoutPrefix) ||
-    !/^[a-z0-9._-]+$/i.test(withoutPrefix)
-  ) {
-    fail(`invalid npm scope: ${scope}`);
-  }
-
-  return `@${withoutPrefix}`;
 }
 
 async function ensureDir(dirPath) {
@@ -90,182 +60,91 @@ async function readTargetsConfig() {
   return JSON.parse(raw);
 }
 
-function replacePackageScope(packageName, npmScope) {
-  const match = packageName.match(/^@[^/]+\/(.+)$/);
-  if (!match) {
-    fail(`expected scoped package name in targets config: ${packageName}`);
-  }
-  return `${npmScope}/${match[1]}`;
+function checksumEntries(rawManifest) {
+  return new Map(
+    rawManifest
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^([a-f0-9]{64})\s+\*?(.+)$/i);
+        if (!match) {
+          fail(`invalid checksum entry: ${line}`);
+        }
+        return [match[2], match[1]];
+      }),
+  );
 }
 
-function applyScopeOverride(config, npmScope) {
-  if (!npmScope) {
-    return config;
-  }
+async function assertArtifactsExist(artifactsDir, targets) {
+  const checksumsPath = path.join(artifactsDir, CHECKSUM_FILE);
+  let rawChecksums;
 
-  return {
-    ...config,
-    basePackageName: replacePackageScope(config.basePackageName, npmScope),
-    targets: config.targets.map((target) => ({
-      ...target,
-      packageName: replacePackageScope(target.packageName, npmScope),
-    })),
-  };
-}
-
-function runCommand(command, commandArgs, cwd) {
-  const result = spawnSync(command, commandArgs, { cwd, stdio: "inherit" });
-  if (result.error) {
-    fail(`failed to run ${command}: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    fail(`command failed (${result.status}): ${command} ${commandArgs.join(" ")}`);
-  }
-}
-
-async function findFile(rootDir, fileName) {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(rootDir, entry.name);
-    if (entry.isFile() && entry.name === fileName) {
-      return fullPath;
-    }
-    if (entry.isDirectory()) {
-      const nested = await findFile(fullPath, fileName);
-      if (nested) {
-        return nested;
-      }
-    }
-  }
-  return null;
-}
-
-async function extractBinary({
-  artifactsDir,
-  target,
-  extractionDir,
-}) {
-  const artifactPath = path.join(artifactsDir, target.artifact);
   try {
-    await fs.access(artifactPath);
+    rawChecksums = await fs.readFile(checksumsPath, "utf8");
   } catch {
-    fail(`artifact missing for ${target.id}: ${artifactPath}`);
+    fail(`checksum manifest missing: ${checksumsPath}`);
   }
 
-  await ensureDir(extractionDir);
-  if (target.artifact.endsWith(".tar.gz")) {
-    runCommand("tar", ["-xzf", artifactPath, "-C", extractionDir], repoRoot);
-  } else if (target.artifact.endsWith(".zip")) {
-    runCommand("unzip", ["-oq", artifactPath, "-d", extractionDir], repoRoot);
-  } else {
-    fail(`unsupported artifact format for ${target.id}: ${target.artifact}`);
-  }
+  const checksums = checksumEntries(rawChecksums);
 
-  const directPath = path.join(extractionDir, target.binaryFile);
-  try {
-    await fs.access(directPath);
-    return directPath;
-  } catch {
-    const foundPath = await findFile(extractionDir, target.binaryFile);
-    if (!foundPath) {
-      fail(`unable to locate extracted binary ${target.binaryFile} for ${target.id}`);
+  for (const target of targets) {
+    const artifactPath = path.join(artifactsDir, target.artifact);
+    try {
+      await fs.access(artifactPath);
+    } catch {
+      fail(`artifact missing for ${target.id}: ${artifactPath}`);
     }
-    return foundPath;
+
+    if (!checksums.has(target.artifact)) {
+      fail(`checksum entry missing for ${target.artifact} in ${checksumsPath}`);
+    }
   }
 }
 
-async function writePlatformPackage({
-  outputDir,
-  version,
-  config,
-  target,
-  artifactsDir,
-}) {
-  const packageDir = path.join(outputDir, "platform", target.id);
-  const binDir = path.join(packageDir, "bin");
-  const extractionDir = path.join(outputDir, ".extract", target.id);
-
-  await ensureDir(binDir);
-  const sourceBinary = await extractBinary({ artifactsDir, target, extractionDir });
-  const binaryRelativePath = path.join("bin", target.binaryFile);
-  const targetBinaryPath = path.join(packageDir, binaryRelativePath);
-  await fs.copyFile(sourceBinary, targetBinaryPath);
-
-  if (!target.binaryFile.endsWith(".exe")) {
-    await fs.chmod(targetBinaryPath, 0o755);
-  }
-
-  const packageJson = {
-    name: target.packageName,
-    version,
-    description: `Prebuilt ${config.binaryName} binary for ${target.os}-${target.cpu}`,
-    license: "UNLICENSED",
-    repository: {
-      type: "git",
-      url: `${config.repositoryUrl}.git`,
-    },
-    os: [target.os],
-    cpu: [target.cpu],
-    files: [binaryRelativePath],
-  };
-
-  await fs.writeFile(
-    path.join(packageDir, "package.json"),
-    `${JSON.stringify(packageJson, null, 2)}\n`,
-    "utf8",
+function buildLauncher({ binaryName, packageName }, targets) {
+  const mapping = Object.fromEntries(
+    targets.map((target) => [
+      `${target.os}-${target.cpu}`,
+      {
+        binaryFile: target.binaryFile,
+      },
+    ]),
   );
 
-  const readme = [
-    `# ${target.packageName}`,
-    "",
-    `Prebuilt ${config.binaryName} binary package for ${target.os}-${target.cpu}.`,
-    "",
-    `This package is published for platform resolution by \`${config.basePackageName}\`.`,
-    "",
-  ].join("\n");
-  await fs.writeFile(path.join(packageDir, "README.md"), readme, "utf8");
-}
-
-function buildLauncher(targets) {
-  const mapping = targets.reduce((acc, target) => {
-    acc[`${target.os}-${target.cpu}`] = {
-      packageName: target.packageName,
-      binaryFile: target.binaryFile,
-    };
-    return acc;
-  }, {});
-
-  return ({ repositoryUrl, basePackageName }) => `#!/usr/bin/env node
+  return `#!/usr/bin/env node
 "use strict";
 
+const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const TARGETS = ${JSON.stringify(mapping, null, 2)};
+const PACKAGE_NAME = ${JSON.stringify(packageName)};
 
 function fail(message) {
   console.error(message);
   process.exit(1);
 }
 
-function resolveBinary() {
+function resolveBinaryPath() {
   const key = \`\${process.platform}-\${process.arch}\`;
   const target = TARGETS[key];
   if (!target) {
-    fail(
-      \`Unsupported platform/arch: \${process.platform}/\${process.arch}. Install from GitHub releases: ${repositoryUrl}/releases\`,
-    );
+    fail(\`Unsupported platform/arch: \${process.platform}/\${process.arch}\`);
   }
 
+  const binaryPath = path.join(__dirname, target.binaryFile);
   try {
-    return require.resolve(\`\${target.packageName}/bin/\${target.binaryFile}\`);
-  } catch (error) {
+    require("node:fs").accessSync(binaryPath);
+    return binaryPath;
+  } catch {
     fail(
-      \`Unable to resolve native binary package \${target.packageName}. Try reinstalling ${basePackageName}.\`,
+      \`Binary not installed for \${process.platform}/\${process.arch}. Reinstall \${PACKAGE_NAME} without --ignore-scripts.\`,
     );
   }
 }
 
-const binaryPath = resolveBinary();
+const binaryPath = resolveBinaryPath();
 const result = spawnSync(binaryPath, process.argv.slice(2), { stdio: "inherit" });
 
 if (result.error) {
@@ -281,22 +160,207 @@ process.exit(result.status ?? 1);
 `;
 }
 
-async function writeBasePackage({
-  outputDir,
-  version,
-  config,
-  targets,
-}) {
-  const baseDir = path.join(outputDir, "base");
-  const baseBinDir = path.join(baseDir, "bin");
-  await ensureDir(baseBinDir);
-
-  const optionalDependencies = Object.fromEntries(
-    targets.map((target) => [target.packageName, version]),
+function buildInstaller({ binaryName, packageName, repositoryUrl }, targets) {
+  const mapping = Object.fromEntries(
+    targets.map((target) => [
+      `${target.os}-${target.cpu}`,
+      {
+        artifact: target.artifact,
+        binaryFile: target.binaryFile,
+      },
+    ]),
   );
 
+  return `#!/usr/bin/env node
+"use strict";
+
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+const { createHash } = require("node:crypto");
+const { spawnSync } = require("node:child_process");
+const packageJson = require("../package.json");
+
+const TARGETS = ${JSON.stringify(mapping, null, 2)};
+const BINARY_NAME = ${JSON.stringify(binaryName)};
+const PACKAGE_NAME = ${JSON.stringify(packageName)};
+const REPOSITORY_URL = ${JSON.stringify(repositoryUrl)};
+const CHECKSUM_FILE = ${JSON.stringify(CHECKSUM_FILE)};
+
+function log(message) {
+  console.log(\`\${PACKAGE_NAME}: \${message}\`);
+}
+
+function warn(message) {
+  console.warn(\`\${PACKAGE_NAME}: \${message}\`);
+}
+
+function fail(message) {
+  console.error(\`\${PACKAGE_NAME}: \${message}\`);
+  process.exit(1);
+}
+
+function resolveTarget() {
+  const key = \`\${process.platform}-\${process.arch}\`;
+  const target = TARGETS[key];
+  if (!target) {
+    fail(
+      \`unsupported platform/arch: \${process.platform}/\${process.arch}. Install from \${REPOSITORY_URL}/releases instead.\`,
+    );
+  }
+  return target;
+}
+
+async function sha256(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
+}
+
+function parseChecksums(rawManifest) {
+  const manifest = new Map();
+  for (const line of rawManifest.split(/\\r?\\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const match = trimmed.match(/^([a-f0-9]{64})\\s+\\*?(.+)$/i);
+    if (!match) {
+      throw new Error(\`invalid checksum entry: \${trimmed}\`);
+    }
+    manifest.set(match[2], match[1]);
+  }
+  return manifest;
+}
+
+function runCommand(command, args) {
+  const result = spawnSync(command, args, { stdio: "inherit" });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(\`command failed (\${result.status}): \${command} \${args.join(" ")}\`);
+  }
+}
+
+function extractArchive(archivePath, destination) {
+  if (archivePath.endsWith(".tar.gz")) {
+    runCommand("tar", ["-xzf", archivePath, "-C", destination]);
+    return;
+  }
+
+  if (archivePath.endsWith(".zip")) {
+    runCommand(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+        archivePath,
+        destination,
+      ],
+    );
+    return;
+  }
+
+  throw new Error(\`unsupported archive format: \${archivePath}\`);
+}
+
+async function findFile(rootDir, fileName) {
+  const entries = await fsp.readdir(rootDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isFile() && entry.name === fileName) {
+      return fullPath;
+    }
+    if (entry.isDirectory()) {
+      const nested = await findFile(fullPath, fileName);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return null;
+}
+
+async function installBinary({ target }) {
+  const packageRoot = path.resolve(__dirname, "..");
+  const binDir = path.join(packageRoot, "bin");
+  const distsDir = path.join(packageRoot, "dists");
+  const binaryPath = path.join(binDir, target.binaryFile);
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "wit-npm-"));
+  const archivePath = path.join(distsDir, target.artifact);
+  const checksumsPath = path.join(distsDir, CHECKSUM_FILE);
+  const extractDir = path.join(tempDir, "extract");
+
+  try {
+    log(\`installing \${target.artifact} for \${process.platform}/\${process.arch}\`);
+    await fsp.access(archivePath);
+
+    const checksums = parseChecksums(await fsp.readFile(checksumsPath, "utf8"));
+    const expectedChecksum = checksums.get(target.artifact);
+    if (!expectedChecksum) {
+      throw new Error(\`checksum entry missing for \${target.artifact}\`);
+    }
+
+    const actualChecksum = await sha256(archivePath);
+    if (actualChecksum !== expectedChecksum) {
+      throw new Error(\`checksum mismatch for \${target.artifact}\`);
+    }
+
+    await fsp.mkdir(extractDir, { recursive: true });
+    extractArchive(archivePath, extractDir);
+
+    const sourceBinary =
+      (await findFile(extractDir, target.binaryFile)) || path.join(extractDir, target.binaryFile);
+    await fsp.access(sourceBinary);
+
+    await fsp.mkdir(binDir, { recursive: true });
+    await fsp.rm(binaryPath, { force: true });
+    await fsp.copyFile(sourceBinary, binaryPath);
+    if (!binaryPath.endsWith(".exe")) {
+      await fsp.chmod(binaryPath, 0o755);
+    }
+
+    log(\`installed \${BINARY_NAME} \${packageJson.version}\`);
+  } finally {
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function main() {
+  const target = resolveTarget();
+  await installBinary({ target });
+}
+
+main().catch((error) => {
+  fail(error instanceof Error ? error.message : String(error));
+});
+`;
+}
+
+async function writePackage({ artifactsDir, outputDir, version, config, targets }) {
+  const packageDir = path.join(outputDir, "package");
+  const binDir = path.join(packageDir, "bin");
+  const distsDir = path.join(packageDir, "dists");
+  const scriptsDir = path.join(packageDir, "scripts");
+  await ensureDir(binDir);
+  await ensureDir(distsDir);
+  await ensureDir(scriptsDir);
+
+  const launcherRelativePath = path.posix.join("bin", `${config.binaryName}.js`);
+  const installerRelativePath = path.posix.join("scripts", "postinstall.js");
+
   const packageJson = {
-    name: config.basePackageName,
+    name: config.packageName,
     version,
     description: config.description,
     license: "UNLICENSED",
@@ -309,44 +373,52 @@ async function writeBasePackage({
       url: `${config.repositoryUrl}/issues`,
     },
     bin: {
-      [config.binaryName]: "bin/wit.js",
+      [config.binaryName]: launcherRelativePath,
+    },
+    scripts: {
+      postinstall: "node scripts/postinstall.js",
     },
     engines: {
       node: ">=18",
     },
-    files: ["bin/wit.js", "README.md"],
-    optionalDependencies,
+    files: [launcherRelativePath, installerRelativePath, "README.md", "dists/*"],
   };
 
   await fs.writeFile(
-    path.join(baseDir, "package.json"),
+    path.join(packageDir, "package.json"),
     `${JSON.stringify(packageJson, null, 2)}\n`,
     "utf8",
   );
 
-  const launcher = buildLauncher(targets)({
-    repositoryUrl: config.repositoryUrl,
-    basePackageName: config.basePackageName,
-  });
-  const launcherPath = path.join(baseBinDir, "wit.js");
+  const launcher = buildLauncher(config, targets);
+  const launcherPath = path.join(binDir, `${config.binaryName}.js`);
   await fs.writeFile(launcherPath, launcher, "utf8");
   await fs.chmod(launcherPath, 0o755);
 
+  const installer = buildInstaller(config, targets);
+  const installerPath = path.join(scriptsDir, "postinstall.js");
+  await fs.writeFile(installerPath, installer, "utf8");
+  await fs.chmod(installerPath, 0o755);
+
   const rootReadmePath = path.join(repoRoot, "README.md");
-  await fs.copyFile(rootReadmePath, path.join(baseDir, "README.md"));
+  await fs.copyFile(rootReadmePath, path.join(packageDir, "README.md"));
+
+  for (const target of targets) {
+    await fs.copyFile(
+      path.join(artifactsDir, target.artifact),
+      path.join(distsDir, target.artifact),
+    );
+  }
+  await fs.copyFile(path.join(artifactsDir, CHECKSUM_FILE), path.join(distsDir, CHECKSUM_FILE));
 }
 
-async function writeManifest({ outputDir, version, config, targets }) {
+async function writeManifest({ outputDir, version, config }) {
   const manifest = {
     version,
-    basePackageName: config.basePackageName,
-    basePackageDir: path.join(outputDir, "base"),
-    platformPackageDirs: targets.map((target) => path.join(outputDir, "platform", target.id)),
-    platformPackages: targets.map((target) => ({
-      id: target.id,
-      packageName: target.packageName,
-    })),
+    packageName: config.packageName,
+    packageDir: path.join(outputDir, "package"),
   };
+
   await fs.writeFile(
     path.join(outputDir, "manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
@@ -358,36 +430,24 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const artifactsDir = path.resolve(args.artifactsDir);
   const outputDir = path.resolve(args.outputDir);
-  const npmScope = normalizeScope(args.npmScope);
-  const baseConfig = await readTargetsConfig();
-  const config = applyScopeOverride(baseConfig, npmScope);
-  const publishTargets = config.targets.filter((target) => target.publishToNpm);
+  const config = await readTargetsConfig();
 
+  await assertArtifactsExist(artifactsDir, config.targets);
   await fs.rm(outputDir, { recursive: true, force: true });
   await ensureDir(outputDir);
 
-  for (const target of publishTargets) {
-    await writePlatformPackage({
-      outputDir,
-      version: args.version,
-      config,
-      target,
-      artifactsDir,
-    });
-  }
-
-  await writeBasePackage({
+  await writePackage({
+    artifactsDir,
     outputDir,
     version: args.version,
     config,
-    targets: publishTargets,
+    targets: config.targets,
   });
 
   await writeManifest({
     outputDir,
     version: args.version,
     config,
-    targets: publishTargets,
   });
 }
 

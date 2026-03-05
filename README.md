@@ -11,23 +11,22 @@ GitHub for AI Agents -- explore GitHub repositories without cloning. Repos are c
 ### Install from npm
 
 ```bash
-npm install -g @thehumanworks/wit
+npm install -g @nothumanwork/wit
 ```
 
 Run without global install:
 
 ```bash
-npx @thehumanworks/wit --help
+npx @nothumanwork/wit --help
 ```
 
-`@thehumanworks/wit` currently publishes native npm binaries for:
+`@nothumanwork/wit` is a single npm package. During `npm install`, its `postinstall` script detects the host platform, selects the matching bundled release archive, and extracts it into npm's bin-managed install location, so one package covers:
 - `darwin-x64`
 - `darwin-arm64`
 - `linux-x64`
 - `linux-arm64`
 - `win32-x64`
-
-`win32-arm64` remains available via GitHub release archives and `install.sh`.
+- `win32-arm64`
 
 ### Install from binary release (`.sh` installer)
 
@@ -228,7 +227,7 @@ wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
 - `.github/workflows/release.yml` can also be triggered manually with `workflow_dispatch` (select a `vX.Y.Z` tag ref).
 - The workflow builds and uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt` to the GitHub release.
-- The same tag flow publishes npm platform packages first and then publishes `@thehumanworks/wit`.
+- `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the GitHub release assets and can be re-run manually for an existing release tag without rebuilding Rust binaries.
 - `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 
 ## Architecture

@@ -28,9 +28,6 @@ function parseArgs(argv) {
   if (!args.tag) {
     fail("missing required --tag");
   }
-  if (!args.cargoToml) {
-    fail("missing required --cargo-toml");
-  }
   return args;
 }
 
@@ -59,13 +56,19 @@ function parsePackageVersion(cargoTomlContents) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const cargoTomlPath = path.resolve(args.cargoToml);
-  const cargoToml = await fs.readFile(cargoTomlPath, "utf8");
-  const version = parsePackageVersion(cargoToml);
-  const expectedTag = `v${version}`;
+  const tagMatch = args.tag.match(/^v(\d+\.\d+\.\d+)$/);
+  if (!tagMatch) {
+    fail(`invalid release tag: ${args.tag}`);
+  }
 
-  if (args.tag !== expectedTag) {
-    fail(`tag/version mismatch: got tag ${args.tag}, expected ${expectedTag}`);
+  const version = tagMatch[1];
+  if (args.cargoToml) {
+    const cargoTomlPath = path.resolve(args.cargoToml);
+    const cargoToml = await fs.readFile(cargoTomlPath, "utf8");
+    const cargoVersion = parsePackageVersion(cargoToml);
+    if (cargoVersion !== version) {
+      fail(`tag/version mismatch: got tag ${args.tag}, Cargo.toml has ${cargoVersion}`);
+    }
   }
 
   process.stdout.write(version);
