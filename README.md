@@ -224,6 +224,7 @@ wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
 
 ## Packaging & Release
 
+- Every push to `main` triggers `.github/workflows/auto-tag.yml`, which increments the patch version in `Cargo.toml`, creates a new `vX.Y.Z` tag, and pushes it.
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
 - The workflow builds and uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt` to the GitHub release.
 - The same tag flow publishes npm platform packages first and then publishes `@thehumanworks/wit`.
