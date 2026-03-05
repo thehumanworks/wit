@@ -98,7 +98,20 @@ jobs:
           set -euo pipefail
           (cd dist/npm/package && npm pack >/dev/null)
 
+      - name: Check whether npm version already exists
+        id: npm_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="${{ steps.npm_metadata.outputs.package_name }}@${VERSION}"
+          if npm view "${package}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Publish npm package
+        if: steps.npm_version.outputs.exists != 'true'
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
