@@ -198,12 +198,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo "NPM_TOKEN secret is required to publish npm packages."
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NODE_AUTH_TOKEN secret is required to publish npm packages."
             exit 1
           fi
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
       - name: Publish platform npm packages
         shell: bash
@@ -213,7 +213,7 @@ jobs:
             npm publish "${package_dir}" --access public
           done
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
       - name: Publish base npm package
         shell: bash
@@ -221,7 +221,7 @@ jobs:
           set -euo pipefail
           npm publish dist/npm/base --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
   npm_smoke:
     name: npm smoke (${{ matrix.runner }})
