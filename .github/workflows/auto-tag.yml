@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -74,8 +75,6 @@ jobs:
           tag="${{ steps.next.outputs.tag }}"
           git commit \
             -m "chore: release ${tag}" \
-            -m "Automated version bump and release tag for a push to main.
-
-Co-authored-by: Codex <noreply@openai.com>"
+            -m "Automated version bump and release tag for a push to main."
           git tag "${tag}"
           git push origin HEAD:main "${tag}"
