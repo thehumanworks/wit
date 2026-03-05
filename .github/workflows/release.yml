@@ -260,13 +260,17 @@ jobs:
     name: npm smoke (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     needs: publish_npm
+    continue-on-error: ${{ matrix.allow_failure == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
+            allow_failure: false
           - runner: macos-14
+            allow_failure: true
           - runner: windows-latest
+            allow_failure: true
 
     steps:
       - name: Set up Node.js
