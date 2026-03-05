@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -37,6 +38,8 @@ jobs:
 
       - name: Commit, tag, and push
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           max_attempts=5
@@ -83,6 +86,8 @@ jobs:
 
             if git push origin main "${tag}"; then
               echo "Published ${tag}"
+              gh workflow run release --ref "${tag}"
+              echo "Dispatched release workflow for ${tag}"
               exit 0
             fi
 
