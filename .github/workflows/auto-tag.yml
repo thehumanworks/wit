@@ -73,7 +73,7 @@ jobs:
               --version "${next_version}" \
               --cargo-toml Cargo.toml
 
-            git add Cargo.toml
+            git add Cargo.toml Cargo.lock
             if git diff --cached --quiet; then
               echo "Cargo.toml version already set to ${next_version}."
               exit 0
