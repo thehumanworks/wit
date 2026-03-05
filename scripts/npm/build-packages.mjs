@@ -257,15 +257,15 @@ function extractArchive(archivePath, destination) {
   }
 
   if (archivePath.endsWith(".zip")) {
+    const escapedArchivePath = archivePath.replace(/'/g, "''");
+    const escapedDestination = destination.replace(/'/g, "''");
     runCommand(
       "powershell.exe",
       [
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-        archivePath,
-        destination,
+        \`Expand-Archive -LiteralPath '\${escapedArchivePath}' -DestinationPath '\${escapedDestination}' -Force\`,
       ],
     );
     return;
