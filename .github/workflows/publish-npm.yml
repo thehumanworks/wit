@@ -135,15 +135,16 @@ jobs:
         run: |
           set -euo pipefail
           package="${{ needs.publish.outputs.package_name }}@${{ needs.publish.outputs.version }}"
-          max_attempts=20
+          max_attempts=40
           attempts=0
-          until npm install -g "${package}"; do
+          until npm view "${package}" version >/dev/null 2>&1; do
             attempts=$((attempts + 1))
             if [ "${attempts}" -ge "${max_attempts}" ]; then
               exit 1
             fi
             sleep 15
           done
+          npm install -g "${package}"
           wit --help
           wit rg --help
           npx "${package}" --help
@@ -154,11 +155,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $package = "${{ needs.publish.outputs.package_name }}@${{ needs.publish.outputs.version }}"
-          $maxAttempts = 20
+          $maxAttempts = 40
           $attempt = 0
           while ($true) {
             try {
-              npm install -g $package
+              npm view $package version | Out-Null
               break
             } catch {
               $attempt += 1
@@ -168,6 +169,7 @@ jobs:
               Start-Sleep -Seconds 15
             }
           }
+          npm install -g $package
           wit --help
           wit rg --help
           npx $package --help
