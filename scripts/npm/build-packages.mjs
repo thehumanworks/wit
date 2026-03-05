@@ -63,11 +63,21 @@ function normalizeScope(scope) {
     return null;
   }
 
-  if (!/^@?[a-z0-9][a-z0-9-]*$/i.test(trimmed)) {
+  const withoutPrefix = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+  if (withoutPrefix.length === 0) {
     fail(`invalid npm scope: ${scope}`);
   }
 
-  return trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
+  if (
+    withoutPrefix.includes("/") ||
+    /\s/.test(withoutPrefix) ||
+    /^[._]/.test(withoutPrefix) ||
+    !/^[a-z0-9._-]+$/i.test(withoutPrefix)
+  ) {
+    fail(`invalid npm scope: ${scope}`);
+  }
+
+  return `@${withoutPrefix}`;
 }
 
 async function ensureDir(dirPath) {
