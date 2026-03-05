@@ -2,14 +2,15 @@
 set -euo pipefail
 
 TAG="${1:-}"
+AUTH_TOKEN="${NPM_AUTH_TOKEN:-${NODE_AUTH_TOKEN:-}}"
 
 if [ -z "${TAG}" ]; then
   echo "usage: ./publish.sh vX.Y.Z" >&2
   exit 1
 fi
 
-if [ -z "${NPM_AUTH_TOKEN:-}" ]; then
-  echo "error: NPM_AUTH_TOKEN is required" >&2
+if [ -z "${AUTH_TOKEN}" ]; then
+  echo "error: NODE_AUTH_TOKEN or NPM_AUTH_TOKEN is required" >&2
   exit 1
 fi
 
@@ -32,4 +33,4 @@ node scripts/npm/build-packages.mjs \
   --output-dir "${WORK_DIR}/dist/npm"
 
 (cd "${WORK_DIR}/dist/npm/package" && npm pack >/dev/null)
-NODE_AUTH_TOKEN="${NPM_AUTH_TOKEN}" npm publish "${WORK_DIR}/dist/npm/package" --access public
+NODE_AUTH_TOKEN="${AUTH_TOKEN}" npm publish "${WORK_DIR}/dist/npm/package" --access public
