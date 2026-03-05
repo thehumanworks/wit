@@ -152,6 +152,7 @@ jobs:
     needs: release
     outputs:
       version: ${{ steps.release_version.outputs.version }}
+      base_package_name: ${{ steps.npm_metadata.outputs.base_package_name }}
 
     steps:
       - uses: actions/checkout@v4
@@ -161,6 +162,24 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Resolve npm scope
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_SCOPE: ${{ vars.NPM_SCOPE }}
+        run: |
+          set -euo pipefail
+          scope_input="${NPM_SCOPE:-}"
+          if [ -z "${scope_input}" ]; then
+            scope_input="$(npm whoami)"
+          fi
+          scope_input="${scope_input#@}"
+          if [ -z "${scope_input}" ]; then
+            echo "Unable to determine npm scope."
+            exit 1
+          fi
+          echo "NPM_SCOPE=@${scope_input}" >> "${GITHUB_ENV}"
 
       - uses: actions/download-artifact@v4
         with:
@@ -184,7 +203,20 @@ jobs:
           node scripts/npm/build-packages.mjs \
             --version "${VERSION}" \
             --artifacts-dir dist \
-            --output-dir dist/npm
+            --output-dir dist/npm \
+            --npm-scope "${NPM_SCOPE}"
+
+      - name: Capture npm package metadata
+        id: npm_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_package_name="$(jq -r '.basePackageName' dist/npm/manifest.json)"
+          if [ -z "${base_package_name}" ] || [ "${base_package_name}" = "null" ]; then
+            echo "Unable to resolve base npm package name from dist/npm/manifest.json"
+            exit 1
+          fi
+          echo "base_package_name=${base_package_name}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate npm tarballs
         shell: bash
@@ -248,7 +280,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="@thehumanworks/wit@${{ needs.publish_npm.outputs.version }}"
+          package="${{ needs.publish_npm.outputs.base_package_name }}@${{ needs.publish_npm.outputs.version }}"
           attempts=0
           until npm install -g "${package}"; do
             attempts=$((attempts + 1))
@@ -266,7 +298,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $package = "@thehumanworks/wit@${{ needs.publish_npm.outputs.version }}"
+          $package = "${{ needs.publish_npm.outputs.base_package_name }}@${{ needs.publish_npm.outputs.version }}"
           $attempt = 0
           while ($true) {
             try {

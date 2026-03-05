@@ -33,6 +33,11 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--npm-scope") {
+      args.npmScope = argv[i + 1];
+      i += 1;
+      continue;
+    }
     fail(`unknown argument: ${arg}`);
   }
 
@@ -48,6 +53,23 @@ function parseArgs(argv) {
   return args;
 }
 
+function normalizeScope(scope) {
+  if (!scope) {
+    return null;
+  }
+
+  const trimmed = scope.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  if (!/^@?[a-z0-9][a-z0-9-]*$/i.test(trimmed)) {
+    fail(`invalid npm scope: ${scope}`);
+  }
+
+  return trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
+}
+
 async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
 }
@@ -56,6 +78,29 @@ async function readTargetsConfig() {
   const configPath = path.join(repoRoot, "npm", "targets.json");
   const raw = await fs.readFile(configPath, "utf8");
   return JSON.parse(raw);
+}
+
+function replacePackageScope(packageName, npmScope) {
+  const match = packageName.match(/^@[^/]+\/(.+)$/);
+  if (!match) {
+    fail(`expected scoped package name in targets config: ${packageName}`);
+  }
+  return `${npmScope}/${match[1]}`;
+}
+
+function applyScopeOverride(config, npmScope) {
+  if (!npmScope) {
+    return config;
+  }
+
+  return {
+    ...config,
+    basePackageName: replacePackageScope(config.basePackageName, npmScope),
+    targets: config.targets.map((target) => ({
+      ...target,
+      packageName: replacePackageScope(target.packageName, npmScope),
+    })),
+  };
 }
 
 function runCommand(command, commandArgs, cwd) {
@@ -165,7 +210,7 @@ async function writePlatformPackage({
     "",
     `Prebuilt ${config.binaryName} binary package for ${target.os}-${target.cpu}.`,
     "",
-    "This package is published for platform resolution by `@thehumanworks/wit`.",
+    `This package is published for platform resolution by \`${config.basePackageName}\`.`,
     "",
   ].join("\n");
   await fs.writeFile(path.join(packageDir, "README.md"), readme, "utf8");
@@ -180,7 +225,7 @@ function buildLauncher(targets) {
     return acc;
   }, {});
 
-  return `#!/usr/bin/env node
+  return ({ repositoryUrl, basePackageName }) => `#!/usr/bin/env node
 "use strict";
 
 const { spawnSync } = require("node:child_process");
@@ -197,7 +242,7 @@ function resolveBinary() {
   const target = TARGETS[key];
   if (!target) {
     fail(
-      \`Unsupported platform/arch: \${process.platform}/\${process.arch}. Install from GitHub releases: https://github.com/thehumanworks/wit/releases\`,
+      \`Unsupported platform/arch: \${process.platform}/\${process.arch}. Install from GitHub releases: ${repositoryUrl}/releases\`,
     );
   }
 
@@ -205,7 +250,7 @@ function resolveBinary() {
     return require.resolve(\`\${target.packageName}/bin/\${target.binaryFile}\`);
   } catch (error) {
     fail(
-      \`Unable to resolve native binary package \${target.packageName}. Try reinstalling @thehumanworks/wit.\`,
+      \`Unable to resolve native binary package \${target.packageName}. Try reinstalling ${basePackageName}.\`,
     );
   }
 }
@@ -269,7 +314,10 @@ async function writeBasePackage({
     "utf8",
   );
 
-  const launcher = buildLauncher(targets);
+  const launcher = buildLauncher(targets)({
+    repositoryUrl: config.repositoryUrl,
+    basePackageName: config.basePackageName,
+  });
   const launcherPath = path.join(baseBinDir, "wit.js");
   await fs.writeFile(launcherPath, launcher, "utf8");
   await fs.chmod(launcherPath, 0o755);
@@ -300,7 +348,9 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const artifactsDir = path.resolve(args.artifactsDir);
   const outputDir = path.resolve(args.outputDir);
-  const config = await readTargetsConfig();
+  const npmScope = normalizeScope(args.npmScope);
+  const baseConfig = await readTargetsConfig();
+  const config = applyScopeOverride(baseConfig, npmScope);
   const publishTargets = config.targets.filter((target) => target.publishToNpm);
 
   await fs.rm(outputDir, { recursive: true, force: true });
