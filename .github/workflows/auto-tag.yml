@@ -35,46 +35,61 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Compute next patch version
-        id: next
-        shell: bash
-        run: |
-          set -euo pipefail
-          latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
-          if [ -z "${latest_tag}" ]; then
-            current_version="0.0.0"
-          else
-            current_version="${latest_tag#v}"
-          fi
-
-          IFS='.' read -r major minor patch <<< "${current_version}"
-          next_version="${major}.${minor}.$((patch + 1))"
-          next_tag="v${next_version}"
-
-          echo "version=${next_version}" >> "${GITHUB_OUTPUT}"
-          echo "tag=${next_tag}" >> "${GITHUB_OUTPUT}"
-
-      - name: Update Cargo.toml version
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/release/set-cargo-version.mjs \
-            --version "${{ steps.next.outputs.version }}" \
-            --cargo-toml Cargo.toml
-
       - name: Commit, tag, and push
         shell: bash
         run: |
           set -euo pipefail
-          git add Cargo.toml
-          if git diff --cached --quiet; then
-            echo "No Cargo.toml version change detected."
-            exit 0
-          fi
+          max_attempts=5
+          attempt=0
 
-          tag="${{ steps.next.outputs.tag }}"
-          git commit \
-            -m "chore: release ${tag}" \
-            -m "Automated version bump and release tag for a push to main."
-          git tag "${tag}"
-          git push origin HEAD:main "${tag}"
+          while [ "${attempt}" -lt "${max_attempts}" ]; do
+            attempt=$((attempt + 1))
+            echo "Auto-tag attempt ${attempt}/${max_attempts}"
+
+            git fetch origin main --tags
+            git checkout -B main origin/main
+
+            latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+            if [ -z "${latest_tag}" ]; then
+              current_version="0.0.0"
+            else
+              current_version="${latest_tag#v}"
+            fi
+
+            IFS='.' read -r major minor patch <<< "${current_version}"
+            next_version="${major}.${minor}.$((patch + 1))"
+            tag="v${next_version}"
+
+            if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+              echo "Tag ${tag} already exists on origin; retrying with a newer patch."
+              sleep 2
+              continue
+            fi
+
+            node scripts/release/set-cargo-version.mjs \
+              --version "${next_version}" \
+              --cargo-toml Cargo.toml
+
+            git add Cargo.toml
+            if git diff --cached --quiet; then
+              echo "Cargo.toml version already set to ${next_version}."
+              exit 0
+            fi
+
+            git commit \
+              -m "chore: release ${tag}" \
+              -m "Automated version bump and release tag for a push to main."
+            git tag "${tag}"
+
+            if git push origin main "${tag}"; then
+              echo "Published ${tag}"
+              exit 0
+            fi
+
+            echo "Push failed (likely non-fast-forward); retrying."
+            git tag -d "${tag}" || true
+            sleep 2
+          done
+
+          echo "Failed to push release commit/tag after ${max_attempts} attempts."
+          exit 1
