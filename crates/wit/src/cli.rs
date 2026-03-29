@@ -7,7 +7,7 @@ use wit::{
         grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
         read_file_with_ignore, tail_with_ignore,
     },
-    grep, sed,
+    sed,
 };
 
 #[derive(Parser)]
@@ -664,7 +664,7 @@ async fn search(
     compact: bool,
     ignore_patterns: &[String],
 ) -> anyhow::Result<()> {
-    let client = grep::client::GrepClient::new();
+    let client = wit_search::client::GrepClient::new();
     let mut repos = client
         .repo_search(pattern, lang, regex, query, with_snippets)
         .await?;
@@ -676,18 +676,6 @@ async fn search(
         }
     }
 
-    if repos.is_empty() {
-        println!("{}", "No repositories found.".yellow());
-        return Ok(());
-    }
-
-    println!(
-        "\n{} {} {}\n",
-        "Found".green().bold(),
-        repos.len().to_string().cyan().bold(),
-        "repositories:".green().bold()
-    );
-
     if !ignore_patterns.is_empty() && !with_snippets {
         println!(
             "{}",
@@ -697,76 +685,7 @@ async fn search(
         println!();
     }
 
-    // Find max name length for alignment
-    let max_name_len = repos.iter().map(|r| r.name.len()).max().unwrap_or(0);
-
-    for (i, repo) in repos.iter().enumerate() {
-        let rank = format!("{:>3}.", i + 1).dimmed();
-        let name = format!("{:<width$}", repo.name, width = max_name_len)
-            .white()
-            .bold();
-        let hits = format!("{:>6} hits", repo.hits).cyan();
-        println!("  {} {} {}", rank, name, hits);
-
-        if with_snippets && !repo.files.is_empty() {
-            for file in &repo.files {
-                // File path header
-                println!();
-                println!("      {} {}", "-->".dimmed(), file.path.blue());
-
-                // Calculate max line number width for this file
-                let max_line_num = file
-                    .lines
-                    .iter()
-                    .filter(|l| !l.is_jump)
-                    .map(|l| l.line_number)
-                    .max()
-                    .unwrap_or(0);
-                let line_num_width = max_line_num.to_string().len().max(3);
-
-                // Print code lines
-                for line in &file.lines {
-                    // In compact mode, skip non-matching lines and jump indicators
-                    if compact && (line.is_jump || !line.has_match) {
-                        continue;
-                    }
-
-                    if line.is_jump {
-                        // Non-contiguous section separator
-                        let dots = "...".dimmed();
-                        println!("      {:>width$} {}", "", dots, width = line_num_width);
-                    } else {
-                        let line_num =
-                            format!("{:>width$}", line.line_number, width = line_num_width);
-                        let separator = "|".dimmed();
-
-                        if line.has_match {
-                            // Highlight the entire line for matches
-                            println!(
-                                "      {} {} {}",
-                                line_num.yellow(),
-                                separator,
-                                line.content.yellow()
-                            );
-                        } else {
-                            println!("      {} {} {}", line_num.dimmed(), separator, line.content);
-                        }
-                    }
-                }
-
-                // Show total matches for this file if more than shown
-                if file.total_matches > file.lines.iter().filter(|l| l.has_match).count() as u32 {
-                    println!(
-                        "       {}",
-                        format!("({} total matches in file)", file.total_matches).dimmed()
-                    );
-                }
-            }
-            println!();
-        }
-    }
-
-    println!();
+    wit_search::print_search_results(&repos, with_snippets, compact);
     Ok(())
 }
 

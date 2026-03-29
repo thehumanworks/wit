@@ -1,0 +1,36 @@
+[package]
+name = "wit"
+version = "0.1.16"
+edition = "2024"
+
+[lib]
+name = "wit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wit"
+path = "src/cli.rs"
+
+[dependencies]
+wit-search = { path = "../wit-search" }
+anyhow.workspace = true
+clap.workspace = true
+colored.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+gix = { version = "0.78.0", features = ["blocking-http-transport-reqwest", "blocking-network-client", "max-performance"] }
+ptree = "0.5.2"
+gix-traverse = "0.52.0"
+gix-object = "0.55.0"
+gix-diff = "0.58.0"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.16"
+grep-matcher = "0.1.8"
+fs2 = "0.4.3"
+regex = "1"
+globset = "0.4.18"
+
+[dev-dependencies]
+tempfile = "3.13.0"

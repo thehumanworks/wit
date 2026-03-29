@@ -2,11 +2,23 @@
 
 ## Project Structure
 
+This is a Cargo workspace with two crates:
+
+### `crates/wit/` — main CLI
 - `src/cli.rs`: Primary CLI binary entrypoint (`wit`). Contains all subcommand definitions (clap derive) and display/output logic.
-- `src/lib.rs`: Library crate root; re-exports `gitops`, `grep`, and `sed` modules.
-- `src/grep/`: grep.app HTTP client + response types (`client.rs`, `types.rs`, `mod.rs`).
+- `src/lib.rs`: Library crate root; re-exports `gitops` and `sed` modules.
 - `src/gitops/`: Git operations module for bare-repo caching, file access, tree display, directory listing, head/tail, and ripgrep-style search (`ops.rs`, `mod.rs`).
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
+
+### `crates/wit-search/` — search crate (also standalone CLI)
+- `src/lib.rs`: Library root; re-exports `client`, `types`, and `print_search_results()`.
+- `src/client.rs`: grep.app HTTP client (`GrepClient`) with configurable base URL for testing.
+- `src/types.rs`: Serde response types and parsed result structs.
+- `src/bin/main.rs`: Standalone `wit-search` CLI binary.
+- `tests/integration.rs`: VCR integration tests using wiremock with cassette recording/replay.
+- `tests/cassettes/`: Recorded grep.app API responses (JSON fixtures).
+
+### Top-level
 - `tasks/`: Task/planning files (e.g., `sed.txt`).
 - `README.md`: User-facing installation and usage examples.
 - `target/`: Build artifacts (ignored via `.gitignore`).
@@ -27,13 +39,16 @@
 
 ## Build, Test, and Development Commands
 
-- `cargo build`: Compile the project.
-- `cargo run -- search -p "ratatui" -l "Rust"`: Run the CLI from source.
-- `cargo install --path .`: Install `wit` locally from the working tree.
+- `cargo build --workspace`: Compile all crates.
+- `cargo run -p wit -- search -p "ratatui" -l "Rust"`: Run the wit CLI from source.
+- `cargo run -p wit-search -- -p "ratatui" -l "Rust"`: Run the standalone search CLI.
+- `cargo install --path crates/wit`: Install `wit` locally from the working tree.
 - `sh install.sh`: Install from GitHub release artifacts using the repository installer script.
-- `cargo fmt`: Format code with rustfmt (standard Rust style).
-- `cargo clippy -- -D warnings`: Lint and treat warnings as errors.
-- `cargo test`: Run unit tests. `cargo test -- --ignored` for integration tests (require network).
+- `cargo fmt --all`: Format code with rustfmt (standard Rust style).
+- `cargo clippy --workspace -- -D warnings`: Lint and treat warnings as errors.
+- `cargo test --workspace`: Run unit tests. `cargo test -- --ignored` for integration tests (require network).
+- `cargo test -p wit-search --test integration`: Run VCR replay tests for search crate.
+- `cargo test -p wit-search --test integration -- --ignored`: Re-record VCR cassettes from real API.
 
 ## Coding Style & Naming Conventions
 

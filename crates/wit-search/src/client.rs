@@ -2,12 +2,13 @@ use reqwest::{Client, Url, header};
 use scraper::{Html, Selector};
 use std::collections::HashMap;
 
-use crate::grep::types::{CodeLine, GrepSearchResult, Hit, ParsedSnippet, RepoMatch};
+use crate::types::{CodeLine, GrepSearchResult, Hit, ParsedSnippet, RepoMatch};
 
 const BASE_API_ENDPOINT: &str = "https://grep.app/api/search";
 
 pub struct GrepClient {
     client: Client,
+    base_url: String,
 }
 
 impl Default for GrepClient {
@@ -18,6 +19,11 @@ impl Default for GrepClient {
 
 impl GrepClient {
     pub fn new() -> Self {
+        Self::with_base_url(BASE_API_ENDPOINT)
+    }
+
+    /// Create a client pointing at a custom base URL (useful for testing).
+    pub fn with_base_url(base_url: &str) -> Self {
         let client = Client::builder()
             .default_headers({
                 let mut headers = header::HeaderMap::new();
@@ -26,10 +32,13 @@ impl GrepClient {
             })
             .build()
             .expect("Failed to build HTTP client");
-        Self { client }
+        Self {
+            client,
+            base_url: base_url.to_string(),
+        }
     }
 
-    fn parse_snippet(&self, hit: &Hit) -> ParsedSnippet {
+    pub fn parse_snippet(&self, hit: &Hit) -> ParsedSnippet {
         let html = Html::parse_fragment(&hit.content.snippet);
         let row_selector = Selector::parse("tr[data-line]").unwrap();
         let code_selector = Selector::parse(".highlight pre").unwrap();
@@ -70,7 +79,6 @@ impl GrepClient {
             };
 
             if is_jump && prev_line_num.is_some() {
-                // Insert a jump indicator line
                 lines.push(CodeLine {
                     line_number: 0,
                     content: String::new(),
@@ -88,7 +96,6 @@ impl GrepClient {
 
             prev_line_num = Some(line_num);
 
-            // If this line has a jump div, next line will be non-contiguous
             if has_jump_div {
                 // The jump will be detected by the line number gap
             }
@@ -110,7 +117,7 @@ impl GrepClient {
         query: &str,
         with_snippets: bool,
     ) -> anyhow::Result<Vec<RepoMatch>> {
-        let mut url = Url::parse(BASE_API_ENDPOINT)?;
+        let mut url = Url::parse(&self.base_url)?;
 
         let mut pairs = vec![
             ("f.repo.pattern", repo_pattern),

@@ -1,0 +1,226 @@
+{
+  "facets": {
+    "lang": {
+      "buckets": [
+        {
+          "count": 1201,
+          "val": "Rust"
+        },
+        {
+          "count": 400,
+          "val": "Markdown"
+        },
+        {
+          "count": 288,
+          "val": "TOML"
+        },
+        {
+          "count": 131,
+          "val": "YAML"
+        },
+        {
+          "count": 64,
+          "val": "Python"
+        },
+        {
+          "count": 61,
+          "val": "Ignore List"
+        },
+        {
+          "count": 52,
+          "val": "Text"
+        },
+        {
+          "count": 32,
+          "val": "JSON"
+        }
+      ]
+    },
+    "path": {
+      "buckets": [
+        {
+          "count": 693,
+          "val": "src/"
+        },
+        {
+          "count": 425,
+          "val": "examples/"
+        },
+        {
+          "count": 205,
+          "val": "code/"
+        },
+        {
+          "count": 106,
+          "val": ".github/"
+        },
+        {
+          "count": 74,
+          "val": "ratatui-widgets/"
+        },
+        {
+          "count": 64,
+          "val": "ratatui-core/"
+        },
+        {
+          "count": 46,
+          "val": "tests/"
+        },
+        {
+          "count": 39,
+          "val": "docs/"
+        }
+      ]
+    },
+    "repo": {
+      "buckets": [
+        {
+          "count": 439,
+          "owner_id": "125200832",
+          "val": "ratatui/ratatui-website"
+        },
+        {
+          "count": 415,
+          "owner_id": "125200832",
+          "val": "ratatui/ratatui"
+        },
+        {
+          "count": 165,
+          "owner_id": "265468230",
+          "val": "pyratatui/pyratatui"
+        },
+        {
+          "count": 150,
+          "owner_id": "125200832",
+          "val": "ratatui/templates"
+        },
+        {
+          "count": 139,
+          "owner_id": "125200832",
+          "val": "ratatui/tachyonfx"
+        },
+        {
+          "count": 137,
+          "owner_id": "125200832",
+          "val": "ratatui/tui-widgets"
+        },
+        {
+          "count": 116,
+          "owner_id": "125200832",
+          "val": "ratatui/ratzilla"
+        },
+        {
+          "count": 73,
+          "owner_id": "125200832",
+          "val": "ratatui/mousefood"
+        }
+      ]
+    }
+  },
+  "hits": {
+    "hits": [
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">std</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">error</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">Error</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">std</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">io</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">std</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">time</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">Duration</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Instant</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">crossterm</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">event</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"bp\"><mark class=\"m-m\">self</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">DisableMouseCapture</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">EnableMouseCapture</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">KeyCode</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">crossterm</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">execute</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">crossterm</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">terminal</mark></span><span class=\"p\"><mark class=\"m-r\">::{</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">EnterAlternateScreen</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">LeaveAlternateScreen</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">disable_raw_mode</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">enable_raw_mode</mark></span><span class=\"p\"><mark class=\"m-r\">,</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"p\"><mark>};</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">ratatui</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">Terminal</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "examples/apps/demo/src/crossterm.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "67"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! # Function-Based Pattern with Immutable State</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//!</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! This example demonstrates using standalone functions for rendering widgets with immutable</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! state. This pattern keeps state management completely separate from widget rendering logic,</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! making it easy to test and reason about.</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//!</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! This example runs with the Ratatui library code in the branch that you are currently</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! reading. See the [`latest`] branch for the code which works with the most recent Ratatui</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! release.</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//!</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "examples/concepts/state/src/bin/immutable-function.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "77"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">core</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">num</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">NonZeroU16</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">compact_str</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">CompactString</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">crate</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">buffer</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">cell_width</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">CellWidth</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">crate</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">style</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">Color</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Modifier</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Style</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">crate</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">symbols</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">merge</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">MergeStrategy</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// Cell diffing options</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"cp\"><mark>#[derive(Debug, Default, Clone, Eq, PartialEq, Hash, Copy)]</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "ratatui-core/src/buffer/cell.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "100+"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"cp\"><mark>#![warn(missing_docs)]</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">core</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">array</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">TryFromSliceError</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">core</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">cmp</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">max</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">min</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">core</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">fmt</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">pub</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"bp\"><mark class=\"m-m\">self</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">iter</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">Columns</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Positions</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Rows</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">crate</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">layout</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">Margin</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Offset</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Position</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Size</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">mod</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nn\"><mark class=\"m-m\">iter</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">mod</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nn\"><mark class=\"m-m\">ops</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "ratatui-core/src/layout/rect.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "100+"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// State of the [`List`] widget</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>///</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// This state can be used to scroll through items and select one. When the list is rendered as a</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// stateful widget, the selected item will be highlighted and the list will be shifted to ensure</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// that the selected item is visible. This will modify the [`ListState`] object passed to the</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// `Frame::render_stateful_widget` method.</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>///</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// The state consists of two fields:</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// - [`offset`]: the index of the first item to be displayed</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// - [`selected`]: the index of the selected item, which can be `None` if no item is selected</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "ratatui-widgets/src/list/state.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "100+"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"cp\"><mark>#![allow(dead_code)]</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">std</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">error</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">Error</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">std</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">time</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">Duration</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">Instant</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">ratatui</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">Terminal</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">ratatui</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">backend</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">TermwizBackend</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">termwiz</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">input</mark></span><span class=\"p\"><mark class=\"m-m\">::{</mark></span><span class=\"n\"><mark class=\"m-m\">InputEvent</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">KeyCode</mark></span><span class=\"p\"><mark class=\"m-r\">};</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">termwiz</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">terminal</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">Terminal</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">as</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">TermwizTerminal</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">crate</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">app</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">App</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "examples/apps/demo/src/termwiz.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "65"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! A prelude for conveniently writing applications using this library.</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//!</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! The prelude module is no longer used universally in Ratatui, as it can make it harder to</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! distinguish between library and non-library types, especially when viewing source code</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! outside of an IDE (such as on GitHub or in a git diff). For more details and user feedback,</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! see [Issue #1150]. However, the prelude is still available for backward compatibility and for</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! those who prefer to use it.</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//!</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//! [Issue #1150]: https://github.com/ratatui/ratatui/issues/1150</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>//!</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "ratatui/src/prelude.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "45"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">rand</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">RngExt</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// Generates realistic implied volatility surface data with animation</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">pub</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"k\"><mark class=\"m-m\">struct</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nc\"><mark class=\"m-m\">VolatilityEngine</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"p\"><mark class=\"m-r\">{</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">strikes</mark></span><span class=\"p\"><mark class=\"m-m\">:</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nb\"><mark class=\"m-m\">Vec</mark></span><span class=\"o\"><mark class=\"m-m\">&lt;</mark></span><span class=\"kt\"><mark class=\"m-m\">f64</mark></span><span class=\"o\"><mark class=\"m-m\">&gt;</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\">      </mark></span><span class=\"c1\"><mark class=\"m-r\">// Moneyness (0.8 to 1.2)</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">expirations</mark></span><span class=\"p\"><mark class=\"m-m\">:</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nb\"><mark class=\"m-m\">Vec</mark></span><span class=\"o\"><mark class=\"m-m\">&lt;</mark></span><span class=\"kt\"><mark class=\"m-m\">f64</mark></span><span class=\"o\"><mark class=\"m-m\">&gt;</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\">  </mark></span><span class=\"c1\"><mark class=\"m-r\">// Time to expiration in years</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">surface</mark></span><span class=\"p\"><mark class=\"m-m\">:</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nb\"><mark class=\"m-m\">Vec</mark></span><span class=\"o\"><mark class=\"m-m\">&lt;</mark></span><span class=\"nb\"><mark class=\"m-m\">Vec</mark></span><span class=\"o\"><mark class=\"m-m\">&lt;</mark></span><span class=\"kt\"><mark class=\"m-m\">f64</mark></span><span class=\"o\"><mark class=\"m-m\">&gt;&gt;</mark></span><span class=\"p\"><mark class=\"m-m\">,</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"c1\"><mark class=\"m-r\">// IV surface [expiry][strike]</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">base_vol</mark></span><span class=\"p\"><mark class=\"m-m\">:</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"kt\"><mark class=\"m-m\">f64</mark></span><span class=\"p\"><mark class=\"m-r\">,</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">skew</mark></span><span class=\"p\"><mark class=\"m-m\">:</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"kt\"><mark class=\"m-m\">f64</mark></span><span class=\"p\"><mark class=\"m-r\">,</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"w\"><mark class=\"m-l\">    </mark></span><span class=\"n\"><mark class=\"m-m\">term_structure</mark></span><span class=\"p\"><mark class=\"m-m\">:</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"nb\"><mark class=\"m-m\">Vec</mark></span><span class=\"o\"><mark class=\"m-m\">&lt;</mark></span><span class=\"kt\"><mark class=\"m-m\">f64</mark></span><span class=\"o\"><mark class=\"m-m\">&gt;</mark></span><span class=\"p\"><mark class=\"m-r\">,</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "examples/apps/volatility-surface/src/volatility.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "94"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">core</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">fmt</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// Represents spacing around rectangular areas.</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>///</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// `Margin` defines the horizontal and vertical spacing that should be applied around a rectangular</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// area. It&#39;s commonly used with [`Layout`](crate::layout::Layout) to add space between the</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// layout&#39;s boundaries and its contents, or with [`Rect::inner`](crate::layout::Rect::inner) and</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// [`Rect::outer`](crate::layout::Rect::outer) to create padded areas.</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>///</mark></span></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// The margin values represent the number of character cells to add on each side. For horizontal</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "ratatui-core/src/layout/margin.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "88"
+      },
+      {
+        "branch": "main",
+        "content": {
+          "snippet": "<table class=\"highlight-table\"><tr data-line=\"1\"><td><div class=\"lineno\">1</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// A Ratatui example that demonstrates a basic hello world application.</mark></span></pre></div></td></tr><tr data-line=\"2\"><td><div class=\"lineno\">2</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>///</mark></span></pre></div></td></tr><tr data-line=\"3\"><td><div class=\"lineno\">3</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// This example runs with the Ratatui library code in the branch that you are currently</mark></span></pre></div></td></tr><tr data-line=\"4\"><td><div class=\"lineno\">4</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// reading. See the [`latest`] branch for the code which works with the most recent Ratatui</mark></span></pre></div></td></tr><tr data-line=\"5\"><td><div class=\"lineno\">5</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// release.</mark></span></pre></div></td></tr><tr data-line=\"6\"><td><div class=\"lineno\">6</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>///</mark></span></pre></div></td></tr><tr data-line=\"7\"><td><div class=\"lineno\">7</div></td><td><div class=\"highlight\"><pre><span class=\"sd\"><mark>/// [`latest`]: https://github.com/ratatui/ratatui/tree/latest</mark></span></pre></div></td></tr><tr data-line=\"8\"><td><div class=\"lineno\">8</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">std</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">time</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"n\"><mark class=\"m-m\">Duration</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr><tr data-line=\"9\"><td><div class=\"lineno\">9</div></td><td><div class=\"highlight\"><pre><br/></pre></div></td></tr><tr data-line=\"10\"><td><div class=\"lineno\">10</div></td><td><div class=\"highlight\"><pre><span class=\"k\"><mark class=\"m-l\">use</mark></span><span class=\"w\"><mark class=\"m-m\"> </mark></span><span class=\"n\"><mark class=\"m-m\">color_eyre</mark></span><span class=\"p\"><mark class=\"m-m\">::</mark></span><span class=\"nb\"><mark class=\"m-m\">Result</mark></span><span class=\"p\"><mark class=\"m-r\">;</mark></span></pre></div></td></tr></table>"
+        },
+        "owner_id": "125200832",
+        "path": "examples/apps/hello-world/src/main.rs",
+        "repo": "ratatui/ratatui",
+        "total_matches": "57"
+      }
+    ],
+    "total": 2557
+  },
+  "time": 124
+}
