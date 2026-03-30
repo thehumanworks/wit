@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::types::{CodeLine, GrepSearchResult, Hit, ParsedSnippet, RepoMatch};
 
-const BASE_API_ENDPOINT: &str = "https://grep.app/api/search";
+pub const BASE_API_ENDPOINT: &str = "https://grep.app/api/search2";
 
 pub struct GrepClient {
     client: Client,

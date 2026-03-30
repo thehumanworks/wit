@@ -664,7 +664,7 @@ async fn search(
     compact: bool,
     ignore_patterns: &[String],
 ) -> anyhow::Result<()> {
-    let client = wit_search::client::GrepClient::new();
+    let client = wits::client::GrepClient::new();
     let mut repos = client
         .repo_search(pattern, lang, regex, query, with_snippets)
         .await?;
@@ -685,7 +685,7 @@ async fn search(
         println!();
     }
 
-    wit_search::print_search_results(&repos, with_snippets, compact);
+    wits::print_search_results(&repos, with_snippets, compact);
     Ok(())
 }
 

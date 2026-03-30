@@ -12,7 +12,7 @@ name = "wit"
 path = "src/cli.rs"
 
 [dependencies]
-wit-search = { path = "../wit-search" }
+wits = { path = "../wits" }
 anyhow.workspace = true
 clap.workspace = true
 colored.workspace = true

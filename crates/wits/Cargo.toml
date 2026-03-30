@@ -1,14 +1,14 @@
 [package]
-name = "wit-search"
+name = "wits"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "wit_search"
+name = "wits"
 path = "src/lib.rs"
 
 [[bin]]
-name = "wit-search"
+name = "wits"
 path = "src/bin/main.rs"
 
 [dependencies]

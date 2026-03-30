@@ -1,10 +1,10 @@
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use wit_search::client::GrepClient;
-use wit_search::types::GrepSearchResult;
+use wits::client::{BASE_API_ENDPOINT, GrepClient};
+use wits::types::GrepSearchResult;
 
 fn cassette_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/cassettes")
@@ -14,11 +14,23 @@ fn load_cassette(name: &str) -> String {
     let path = cassette_dir().join(format!("{name}.json"));
     fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "Failed to read cassette {}: {}. Run `cargo test -p wit-search --test integration -- --ignored record` to generate cassettes.",
+            "Failed to read cassette {}: {}. Run `cargo test -p wits --test integration -- --ignored record` to generate cassettes.",
             path.display(),
             e
         )
     })
+}
+
+/// Helper: mount a mock that responds to any GET with the given body.
+/// The client constructs the full URL from `with_base_url`, so we match on
+/// query params rather than a hardcoded path — this way tests don't silently
+/// pass when the real API path changes.
+async fn mount_search_mock(server: &MockServer, body: &str) {
+    Mock::given(method("GET"))
+        .and(query_param("q", ".*"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(server)
+        .await;
 }
 
 // ── VCR replay tests (run against cassette fixtures) ───────────────────────
@@ -28,13 +40,9 @@ async fn test_repo_search_returns_results() {
     let body = load_cassette("repo_search_basic");
     let mock_server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/api/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(&body))
-        .mount(&mock_server)
-        .await;
+    mount_search_mock(&mock_server, &body).await;
 
-    let client = GrepClient::with_base_url(&format!("{}/api/search", mock_server.uri()));
+    let client = GrepClient::with_base_url(&format!("{}/api/search2", mock_server.uri()));
     let repos = client
         .repo_search("ratatui", None, true, ".*", false)
         .await
@@ -63,13 +71,9 @@ async fn test_repo_search_with_language_filter() {
     let body = load_cassette("repo_search_with_lang");
     let mock_server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/api/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(&body))
-        .mount(&mock_server)
-        .await;
+    mount_search_mock(&mock_server, &body).await;
 
-    let client = GrepClient::with_base_url(&format!("{}/api/search", mock_server.uri()));
+    let client = GrepClient::with_base_url(&format!("{}/api/search2", mock_server.uri()));
     let repos = client
         .repo_search("ratatui", Some("Rust"), true, ".*", false)
         .await
@@ -84,12 +88,12 @@ async fn test_repo_search_with_snippets() {
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/search"))
+        .and(query_param("q", "impl Widget"))
         .respond_with(ResponseTemplate::new(200).set_body_string(&body))
         .mount(&mock_server)
         .await;
 
-    let client = GrepClient::with_base_url(&format!("{}/api/search", mock_server.uri()));
+    let client = GrepClient::with_base_url(&format!("{}/api/search2", mock_server.uri()));
     let repos = client
         .repo_search("ratatui", Some("Rust"), true, "impl Widget", true)
         .await
@@ -112,7 +116,6 @@ async fn test_repo_search_with_snippets() {
 
 #[tokio::test]
 async fn test_empty_search_results() {
-    // Construct a minimal valid but empty response
     let empty_response = serde_json::json!({
         "time": 0,
         "facets": {
@@ -129,12 +132,11 @@ async fn test_empty_search_results() {
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/search"))
         .respond_with(ResponseTemplate::new(200).set_body_string(empty_response.to_string()))
         .mount(&mock_server)
         .await;
 
-    let client = GrepClient::with_base_url(&format!("{}/api/search", mock_server.uri()));
+    let client = GrepClient::with_base_url(&format!("{}/api/search2", mock_server.uri()));
     let repos = client
         .repo_search("zzz_nonexistent_repo_xyz", None, true, ".*", false)
         .await
@@ -145,7 +147,6 @@ async fn test_empty_search_results() {
 
 #[tokio::test]
 async fn test_parse_snippet_html_structure() {
-    // Test with a realistic snippet response containing HTML markup
     let response = serde_json::json!({
         "time": 42,
         "facets": {
@@ -171,12 +172,11 @@ async fn test_parse_snippet_html_structure() {
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/search"))
         .respond_with(ResponseTemplate::new(200).set_body_string(response.to_string()))
         .mount(&mock_server)
         .await;
 
-    let client = GrepClient::with_base_url(&format!("{}/api/search", mock_server.uri()));
+    let client = GrepClient::with_base_url(&format!("{}/api/search2", mock_server.uri()));
     let repos = client
         .repo_search("test-org/test-repo", None, true, "impl Widget", true)
         .await
@@ -208,7 +208,6 @@ async fn test_parse_snippet_html_structure() {
 #[tokio::test]
 async fn test_deserialization_of_cassette_matches_types() {
     let body = load_cassette("repo_search_basic");
-    // Verify the cassette JSON deserializes into our types correctly
     let result: GrepSearchResult =
         serde_json::from_str(&body).expect("cassette should deserialize into GrepSearchResult");
 
@@ -219,8 +218,30 @@ async fn test_deserialization_of_cassette_matches_types() {
     assert!(result.hits.total > 0, "should have total hits");
 }
 
+// ── Smoke test (hits real API) ───────────────────────────────────────────────
+// Run with: cargo test -p wits --test integration -- --ignored smoke
+
+#[tokio::test]
+#[ignore = "hits real grep.app API - smoke test"]
+async fn smoke_test_api_returns_json() {
+    let client = GrepClient::new();
+    let repos = client
+        .repo_search("tokio", Some("Rust"), true, "async", false)
+        .await
+        .expect("smoke test: API should return valid JSON and deserialize successfully");
+
+    assert!(
+        !repos.is_empty(),
+        "smoke test: searching for 'async' in tokio repos should return results"
+    );
+    assert!(
+        repos[0].hits > 0,
+        "smoke test: top result should have positive hit count"
+    );
+}
+
 // ── VCR cassette recorders (hit real API, save responses) ──────────────────
-// Run with: cargo test -p wit-search --test integration -- --ignored
+// Run with: cargo test -p wits --test integration -- --ignored record
 
 async fn record_cassette(name: &str, repo_pattern: &str, lang: Option<&str>, query: &str) {
     let client = reqwest::Client::builder()
@@ -232,7 +253,7 @@ async fn record_cassette(name: &str, repo_pattern: &str, lang: Option<&str>, que
         .build()
         .unwrap();
 
-    let mut url = reqwest::Url::parse("https://grep.app/api/search").unwrap();
+    let mut url = reqwest::Url::parse(BASE_API_ENDPOINT).unwrap();
     let mut pairs: Vec<(&str, &str)> = vec![
         ("f.repo.pattern", repo_pattern),
         ("regexp", "true"),

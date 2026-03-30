@@ -1,6 +1,6 @@
 use clap::Parser;
 use colored::Colorize;
-use wit_search::client::GrepClient;
+use wits::client::GrepClient;
 
 #[derive(Parser)]
 #[command(
@@ -54,6 +54,6 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    wit_search::print_search_results(&repos, cli.with_snippets, cli.compact);
+    wits::print_search_results(&repos, cli.with_snippets, cli.compact);
     Ok(())
 }
