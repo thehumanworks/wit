@@ -26,3 +26,6 @@ jobs:
 
       - name: wit search migration guard
         run: bash scripts/check_wit_search_migration.sh
+
+      - name: release workflow guard
+        run: bash scripts/check_release_workflows.sh

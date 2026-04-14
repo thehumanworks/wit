@@ -96,7 +96,7 @@ wit cat ratatui/ratatui src/main.rs --ignore 'src/main.rs'   # blocked (explicit
 
 Discover repositories using **GitHub’s repository search API** only. Results are ordered by **stars** and the table shows **stars**. Use `-p/--pattern` for a repository-name filter, `-l/--lang` for a GitHub `language:` qualifier, and `-q/--query` to pass raw GitHub repository-search terms and qualifiers through unchanged.
 
-Set **`GITHUB_TOKEN`** for higher GitHub rate limits. GitHub’s `language:` filter must match [GitHub language names](https://github.com/search?q=language%3ARust&type=repositories). `wit search` fetches only enough GitHub pages to satisfy `--limit` (default: `30`, max: `1000`). GitHub may return at most 1000 repositories per query; if GitHub sets `incomplete_results`, a warning is printed.
+Set **`GITHUB_TOKEN`** for higher GitHub rate limits. GitHub’s `language:` filter must match [GitHub language names](https://github.com/search?q=language%3ARust&type=repositories). `wit search` fetches only enough GitHub pages to satisfy `--limit` (default: `10`, max: `1000`). GitHub may return at most 1000 repositories per query; if GitHub sets `incomplete_results`, a warning is printed.
 
 ```bash
 wit search -p 'ratatui' -l 'Rust' --limit 20                 # Rust repos named ratatui (by stars)
@@ -109,7 +109,7 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 | `-p` | `--pattern` | Optional repository-name filter (`in:name`) |
 | `-l` | `--lang` | Optional GitHub `language:` qualifier |
 | `-q` | `--query` | Raw GitHub search terms and qualifiers, passed through as-is |
-| `-n` | `--limit` | Maximum repositories to print (default `30`, max `1000`) |
+| `-n` | `--limit` | Maximum repositories to print (default `10`, max `1000`) |
 
 ### cache (alias: c)
 
@@ -226,8 +226,8 @@ wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
 - Every push to `main` triggers `.github/workflows/auto-tag.yml`, which increments the patch version in `Cargo.toml`, creates a new `vX.Y.Z` tag, and pushes it.
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
 - `.github/workflows/release.yml` can also be triggered manually with `workflow_dispatch` (select a `vX.Y.Z` tag ref).
-- The workflow builds and uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt` to the GitHub release.
-- `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the GitHub release assets and can be re-run manually for an existing release tag without rebuilding Rust binaries.
+- `.github/workflows/release.yml` validates the tag ref, builds Linux/macOS/Windows artifacts on GitHub-hosted runners, uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
+- `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the attached GitHub release assets and can be re-run manually for an existing release tag without rebuilding Rust binaries.
 - `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 
 ## Architecture

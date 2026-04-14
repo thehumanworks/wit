@@ -38,7 +38,7 @@ enum Commands {
         visible_alias = "s",
         about = "Find GitHub repositories via the GitHub REST search API",
         override_usage = "wit <search|s> [OPTIONS]",
-        after_help = "Use -p/--pattern to restrict repository names and -q/--query to pass raw GitHub search terms and qualifiers through to the REST API. Common qualifiers include language:, user:, org:, stars:, forks:, size:, created:, pushed:, topic:, archived:, mirror:, template:, license:, help-wanted-issues:, and good-first-issues:.\n\nwit fetches only enough GitHub pages to satisfy --limit (default: 30, max: 1000). Results are ordered by stars. GitHub repository search does not support regex name matching; --pattern is treated as a literal name filter.\n\nSet GITHUB_TOKEN for higher GitHub rate limits.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust' --limit 20\n  wit search -q 'stars:>1000 topic:tui archived:false' --limit 25\n  wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'"
+        after_help = "Use -p/--pattern to restrict repository names and -q/--query to pass raw GitHub search terms and qualifiers through to the REST API. Common qualifiers include language:, user:, org:, stars:, forks:, size:, created:, pushed:, topic:, archived:, mirror:, template:, license:, help-wanted-issues:, and good-first-issues:.\n\nwit fetches only enough GitHub pages to satisfy --limit (default: 10, max: 1000). Results are ordered by stars. GitHub repository search does not support regex name matching; --pattern is treated as a literal name filter.\n\nSet GITHUB_TOKEN for higher GitHub rate limits.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust' --limit 20\n  wit search -q 'stars:>1000 topic:tui archived:false' --limit 25\n  wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'"
     )]
     Search {
         /// Optional repository name filter. GitHub treats this as a literal name search, not regex.
@@ -807,6 +807,17 @@ mod tests {
                 assert_eq!(query.as_deref(), Some("stars:>5000 topic:tui"));
                 assert_eq!(limit, 10);
             }
+            _ => panic!("expected search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_uses_default_limit_when_omitted() {
+        let cli = WitCli::try_parse_from(["wit", "search", "-q", "stars:>5000 topic:tui"])
+            .expect("query-only search args should parse");
+
+        match cli.command {
+            Commands::Search { limit, .. } => assert_eq!(limit, 10),
             _ => panic!("expected search command"),
         }
     }

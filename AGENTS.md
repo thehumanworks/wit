@@ -90,7 +90,7 @@ This is a Cargo workspace with two crates:
 
 ## Release Packaging
 
-- `.github/workflows/release.yml` publishes tagged releases (`v*`) with prebuilt artifacts for Linux/macOS/Windows targets.
+- `.github/workflows/release.yml` must run from a semver tag ref, build Linux/macOS/Windows artifacts on GitHub-hosted runners, publish the GitHub release, and then invoke `.github/workflows/publish-npm.yml` to publish npm from the release assets.
 - Release assets are named `wit-<platform>-<arch>.tar.gz` (Unix) and `wit-<platform>-<arch>.zip` (Windows), plus `wit-checksums.txt`.
 - Keep artifact naming in sync with `install.sh`; changes to one should update the other in the same patch.
 

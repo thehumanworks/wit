@@ -10,8 +10,23 @@ permissions:
   contents: read
 
 jobs:
+  validate_ref:
+    name: validate release ref
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate semver tag ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release workflow must run from a semver tag ref, got ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
   build:
     name: build ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: validate_ref
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
@@ -146,30 +161,10 @@ jobs:
           fail_on_unmatched_files: false
           generate_release_notes: true
 
-  dispatch_npm_publish:
-    name: dispatch npm publish
-    runs-on: ubuntu-latest
+  publish_npm:
+    name: publish npm
     needs: release
-    permissions:
-      actions: write
-
-    steps:
-      - name: Validate release tag ref
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "release workflow must run from a semver tag ref, got ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-
-      - name: Dispatch npm publish workflow
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run publish-npm.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref main \
-            -f release_tag="${GITHUB_REF_NAME}"
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+    secrets: inherit

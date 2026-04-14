@@ -9,7 +9,7 @@ const DEFAULT_PER_PAGE: u8 = 100;
 
 /// GitHub repository search returns at most 1000 items; cap what we keep after paging.
 pub const MAX_GITHUB_REPOS: usize = 1000;
-pub const DEFAULT_GITHUB_REPO_LIMIT: usize = 30;
+pub const DEFAULT_GITHUB_REPO_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RepositorySearchResults {
@@ -269,6 +269,12 @@ mod tests {
             build_repository_query(Some("  "), Some(" Rust "), Some("  archived:false  ")).unwrap(),
             "language:Rust archived:false"
         );
+    }
+
+    #[test]
+    fn search_limit_constants_match_cli_contract() {
+        assert_eq!(DEFAULT_GITHUB_REPO_LIMIT, 10);
+        assert_eq!(MAX_GITHUB_REPOS, 1000);
     }
 
     #[tokio::test]
