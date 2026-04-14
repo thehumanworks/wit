@@ -1,21 +1,7 @@
-//! Orchestrates `wit search`: GitHub repository search vs grep.app.
-//!
-//! Hybrid routing: GitHub `search/repositories` when the code query is the default `.*` and
-//! snippets are off; otherwise this module calls [`wits::client::GrepClient`] (grep.app).
-//! Keep `GrepClient` usage here so `scripts/check_wit_search_migration.sh` can allowlist this file.
-
-use anyhow::Context;
+//! Orchestrates `wit search` through GitHub repository search only.
 use wits::{RepoListMetric, types::RepoMatch};
 
 use crate::search::{GitHubSearchClient, RepositorySummary};
-
-/// `true` when repository discovery should use GitHub's REST API instead of grep.app facets.
-///
-/// Matrix: GitHub only for default code query `.*` and without `--with-snippets`.
-pub fn use_github_repo_search(code_query: &str, with_snippets: bool) -> bool {
-    let q = code_query.trim();
-    q == ".*" && !with_snippets
-}
 
 pub fn repo_matches_from_github_summaries(summaries: &[RepositorySummary]) -> Vec<RepoMatch> {
     summaries
@@ -29,29 +15,19 @@ pub fn repo_matches_from_github_summaries(summaries: &[RepositorySummary]) -> Ve
 }
 
 pub async fn run_repository_search(
-    pattern: &str,
+    pattern: Option<&str>,
     lang: Option<&str>,
-    regex: bool,
-    code_query: &str,
-    with_snippets: bool,
+    query: Option<&str>,
+    limit: usize,
 ) -> anyhow::Result<(Vec<RepoMatch>, RepoListMetric, bool)> {
-    if use_github_repo_search(code_query, with_snippets) {
-        let client = GitHubSearchClient::new();
-        let results = client
-            .search_repositories(pattern, lang, regex)
-            .await
-            .map_err(github_search_hint)?;
-        let incomplete = results.incomplete_results;
-        let repos = repo_matches_from_github_summaries(&results.repositories);
-        Ok((repos, RepoListMetric::Stars, incomplete))
-    } else {
-        let client = wits::client::GrepClient::new();
-        let repos = client
-            .repo_search(pattern, lang, regex, code_query, with_snippets)
-            .await
-            .context("grep.app search failed")?;
-        Ok((repos, RepoListMetric::CodeHits, false))
-    }
+    let client = GitHubSearchClient::new();
+    let results = client
+        .search_repositories(pattern, lang, query, limit)
+        .await
+        .map_err(github_search_hint)?;
+    let incomplete = results.incomplete_results;
+    let repos = repo_matches_from_github_summaries(&results.repositories);
+    Ok((repos, RepoListMetric::Stars, incomplete))
 }
 
 fn github_search_hint(err: anyhow::Error) -> anyhow::Error {
@@ -74,15 +50,6 @@ fn github_search_hint(err: anyhow::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn use_github_only_for_default_query_without_snippets() {
-        assert!(use_github_repo_search(".*", false));
-        assert!(use_github_repo_search("  .*  ", false));
-        assert!(!use_github_repo_search(".*", true));
-        assert!(!use_github_repo_search("foo", false));
-        assert!(!use_github_repo_search("foo", true));
-    }
 
     #[test]
     fn github_repo_match_uses_full_name_and_stars_as_metric_value() {

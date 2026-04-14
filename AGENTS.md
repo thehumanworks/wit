@@ -7,8 +7,8 @@ This is a Cargo workspace with two crates:
 ### `crates/wit/` — main CLI
 - `src/cli.rs`: Primary CLI binary entrypoint (`wit`). Contains all subcommand definitions (clap derive) and display/output logic.
 - `src/lib.rs`: Library crate root; exposes `gitops`, `sed`, `search`, and `search_run`.
-- `src/search.rs`: GitHub repository search (`GitHubSearchClient`, octocrab).
-- `src/search_run.rs`: `wit search` orchestration (GitHub REST vs grep.app); **only** this file under `wit` may call `GrepClient` for search (enforced by `scripts/check_wit_search_migration.sh`).
+- `src/search.rs`: GitHub repository search (`GitHubSearchClient`, octocrab), raw query assembly, and limit-aware pagination for `wit search`.
+- `src/search_run.rs`: `wit search` orchestration for GitHub-only repository discovery and result shaping.
 - `src/gitops/`: Git operations module for bare-repo caching, file access, tree display, directory listing, head/tail, and ripgrep-style search (`ops.rs`, `mod.rs`).
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
 
@@ -29,7 +29,7 @@ This is a Cargo workspace with two crates:
 
 | Subcommand | Alias | Description | Key Flags |
 |------------|-------|-------------|-----------|
-| `search`   | `s`   | Repo discovery: GitHub API (default `-q`, no `-w`) or grep.app otherwise | `-p`, `-q`, `-l`, `-w`, `-c` |
+| `search`   | `s`   | Repo discovery via the GitHub REST repository search API | `-p`, `-q`, `-l`, `-n` |
 | `cache`    | `c`   | Clone (or refresh) a GitHub repo into local cache | |
 | `tree`     | `t`   | Show file tree of a repo (or subtree) | `-l` (line counts + token estimates) |
 | `ls`       |       | List directory contents (non-recursive, one level) | `-l` (line counts + token estimates) |
@@ -42,14 +42,14 @@ This is a Cargo workspace with two crates:
 ## Build, Test, and Development Commands
 
 - `cargo build --workspace`: Compile all crates.
-- `cargo run -p wit -- search -p "ratatui" -l "Rust"`: Run the wit CLI from source.
+- `cargo run -p wit -- search -p "ratatui" -l "Rust" --limit 20`: Run the wit CLI from source.
 - `cargo run -p wits -- -p "ratatui" -l "Rust"`: Run the standalone `wits` search CLI (grep.app only).
 - `cargo install --path crates/wit`: Install `wit` locally from the working tree.
 - `sh install.sh`: Install from GitHub release artifacts using the repository installer script.
 - `cargo fmt --all`: Format code with rustfmt (standard Rust style).
 - `cargo clippy --workspace --all-targets -- -D warnings`: Lint and treat warnings as errors.
 - `cargo test --workspace`: Run unit tests. `cargo test -- --ignored` for integration tests (require network).
-- `bash scripts/check_wit_search_migration.sh`: Enforce `wit search` grep.app wiring stays in `search_run.rs` and out of `cli.rs`.
+- `bash scripts/check_wit_search_migration.sh`: Enforce `wit search` stays GitHub-only and does not reintroduce grep.app wiring under `crates/wit/src`.
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.
 - `cargo test -p wit --test search_github_live -- --ignored`: Optional live GitHub smoke test (`GITHUB_TOKEN` recommended).
@@ -66,6 +66,7 @@ This is a Cargo workspace with two crates:
 - Unit tests are inline with `#[cfg(test)] mod tests { ... }` (36 unit tests in sed.rs and ops.rs).
 - Integration tests are marked `#[ignore]` and require network access.
 - Live `wits` grep.app tests can be rate-limited behind a Vercel Security Checkpoint; keep cassette replay coverage strict, but let live-only ignored tests exit cleanly when the service returns checkpoint HTML instead of JSON.
+- `wit search` query tests should cover both raw qualifier passthrough and limit-aware pagination; prefer wiremock over live GitHub for this surface.
 - Prefer tests that validate parsing and output formatting deterministically (use small, embedded fixtures).
 - Cache concurrency has subprocess integration tests at `tests/cache_lock_integration.rs` (including 4x parallel `wit rg`); run them with `cargo test --test cache_lock_integration -- --ignored`.
 
@@ -75,12 +76,12 @@ This is a Cargo workspace with two crates:
   - Subject <= ~50 chars, present tense; add a body for rationale and edge cases.
 - PRs should include:
   - A clear description of behavior changes and any user-visible output changes.
-  - Repro commands (e.g., `wit search -p "..." -q "..." -w`).
+  - Repro commands (e.g., `wit search -p "..." -q "stars:>1000 archived:false" --limit 20`).
   - Updates to `README.md` when flags/output change.
 
 ## Security & Network Notes
 
-- `wit search` uses the **GitHub REST API** (set `GITHUB_TOKEN` for higher rate limits) and, when `-q` is non-default or `-w` is set, **grep.app** via the `wits` crate. Avoid adding tokens/secrets to logs or CLI output.
+- `wit search` uses the **GitHub REST API** only. `-q/--query` passes raw GitHub repository-search terms and qualifiers through to `q`, and `--limit` should bound paging work as well as output. Avoid adding tokens/secrets to logs or CLI output.
 - Be mindful of rate limits and handle HTTP failures gracefully in `wits` client code (`crates/wits/src/client.rs`).
 - Repos are cached as bare git repos in the system temp directory under `.wit/cache` (override with `WIT_CACHE_DIR`); the `cache_github_repo` function handles both initial caching and forced refresh.
 - A failed `gix` fetch can leave a poisoned cache directory (for example unborn `HEAD`); cache logic should delete partial state before retrying, and can fall back to `git clone --bare --depth 1` when transport timeouts persist.

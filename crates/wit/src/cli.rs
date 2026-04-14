@@ -4,10 +4,10 @@ use std::fs;
 use wit::{
     ensure_rustls_provider,
     gitops::ops::{
-        GrepOptions, GrepResult, IgnoreMatcher, build_tree_with_ignore, cache_github_repo,
-        grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
-        read_file_with_ignore, tail_with_ignore,
+        GrepOptions, GrepResult, build_tree_with_ignore, cache_github_repo, grep_repo_with_options,
+        head_with_ignore, list_dir_with_ignore, read_file, read_file_with_ignore, tail_with_ignore,
     },
+    search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
 };
 
@@ -36,34 +36,31 @@ enum Commands {
     #[command(
         name = "search",
         visible_alias = "s",
-        about = "Find GitHub repositories (GitHub API or grep.app, depending on flags)",
-        override_usage = "wit <search|s> [--lang <LANG>] --pattern <PATTERN>",
-        after_help = "Repository discovery uses the GitHub REST search API when -q is the default (match any) and -w is off; results are ordered by stars and the numeric column shows stars. For a non-default -q, -w (snippets), or code-driven ranking, search uses grep.app instead.\n\nGitHub's language: filter must match GitHub language labels (not grep.app's free-text language pattern). With --regex true, GitHub name search only supports simple tokens (letters, digits, ., _, -); use --regex false for literal phrases.\n\nSet GITHUB_TOKEN for higher GitHub rate limits.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust'                  # GitHub: Rust repos named ratatui (stars order)\n  wit search -p 'auth' -q 'JWT' -l 'Go' -w           # grep.app: code + snippets\n  wit search -p 'ratatui' -q 'impl Widget' -w -c      # grep.app: matching lines only"
+        about = "Find GitHub repositories via the GitHub REST search API",
+        override_usage = "wit <search|s> [OPTIONS]",
+        after_help = "Use -p/--pattern to restrict repository names and -q/--query to pass raw GitHub search terms and qualifiers through to the REST API. Common qualifiers include language:, user:, org:, stars:, forks:, size:, created:, pushed:, topic:, archived:, mirror:, template:, license:, help-wanted-issues:, and good-first-issues:.\n\nwit fetches only enough GitHub pages to satisfy --limit (default: 30, max: 1000). Results are ordered by stars. GitHub repository search does not support regex name matching; --pattern is treated as a literal name filter.\n\nSet GITHUB_TOKEN for higher GitHub rate limits.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust' --limit 20\n  wit search -q 'stars:>1000 topic:tui archived:false' --limit 25\n  wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'"
     )]
     Search {
-        /// Pattern for repository names (see --regex). With GitHub name-only search, complex regex is not supported.
+        /// Optional repository name filter. GitHub treats this as a literal name search, not regex.
         #[arg(short, long)]
-        pattern: String,
+        pattern: Option<String>,
 
-        /// Optional language filter (GitHub: language label; grep.app: language pattern when using -q/-w)
+        /// Optional GitHub language qualifier.
         #[arg(short, long)]
         lang: Option<String>,
 
-        /// Enable regex for -p on the grep.app path; on the GitHub path, true allows only simple name tokens
-        #[arg(short, long, default_value_t = true)]
-        regex: bool,
+        /// Additional raw GitHub search terms and qualifiers, passed through as-is.
+        #[arg(short, long)]
+        query: Option<String>,
 
-        /// Code pattern within repos (default: any). Non-default values use grep.app for discovery.
-        #[arg(short, long, default_value = ".*")]
-        query: String,
-
-        /// Show code snippets (forces grep.app; requires HTML parsing path)
-        #[arg(short, long, default_value_t = false)]
-        with_snippets: bool,
-
-        /// Matching lines only with snippets (no-op without -w)
-        #[arg(short, long, default_value_t = false)]
-        compact: bool,
+        /// Maximum number of repositories to print (GitHub search caps at 1000).
+        #[arg(
+            short = 'n',
+            long = "limit",
+            default_value_t = DEFAULT_GITHUB_REPO_LIMIT,
+            value_parser = parse_search_limit
+        )]
+        limit: usize,
     },
     #[command(
         name = "cache",
@@ -279,6 +276,18 @@ enum Commands {
     },
 }
 
+fn parse_search_limit(value: &str) -> Result<usize, String> {
+    let limit = value
+        .parse::<usize>()
+        .map_err(|_| format!("`{value}` is not a valid positive integer"))?;
+
+    if !(1..=MAX_GITHUB_REPOS).contains(&limit) {
+        return Err(format!("limit must be between 1 and {MAX_GITHUB_REPOS}"));
+    }
+
+    Ok(limit)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     ensure_rustls_provider();
@@ -289,18 +298,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Search {
             pattern,
             lang,
-            regex,
             query,
-            with_snippets,
-            compact,
+            limit,
         } => {
             search(
-                &pattern,
+                pattern.as_deref(),
                 lang.as_deref(),
-                regex,
-                &query,
-                with_snippets,
-                compact,
+                query.as_deref(),
+                limit,
                 &ignore_patterns,
             )
             .await?;
@@ -658,16 +663,14 @@ fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>,
 }
 
 async fn search(
-    pattern: &str,
+    pattern: Option<&str>,
     lang: Option<&str>,
-    regex: bool,
-    query: &str,
-    with_snippets: bool,
-    compact: bool,
+    query: Option<&str>,
+    limit: usize,
     ignore_patterns: &[String],
 ) -> anyhow::Result<()> {
-    let (mut repos, metric, incomplete_github) =
-        search_run::run_repository_search(pattern, lang, regex, query, with_snippets).await?;
+    let (repos, metric, incomplete_github) =
+        search_run::run_repository_search(pattern, lang, query, limit).await?;
 
     if incomplete_github {
         eprintln!(
@@ -677,23 +680,15 @@ async fn search(
         );
     }
 
-    if !ignore_patterns.is_empty() && with_snippets {
-        let matcher = IgnoreMatcher::new(ignore_patterns)?;
-        for repo in &mut repos {
-            repo.files.retain(|file| !matcher.is_ignored(&file.path));
-        }
-    }
-
-    if !ignore_patterns.is_empty() && !with_snippets {
+    if !ignore_patterns.is_empty() {
         println!(
             "{}",
-            "note: search --ignore is applied only when snippets are enabled with --with-snippets"
-                .dimmed()
+            "note: search --ignore does not affect repository discovery".dimmed()
         );
         println!();
     }
 
-    wits::print_search_results(&repos, with_snippets, compact, metric);
+    wits::print_search_results(&repos, false, false, metric);
     Ok(())
 }
 
@@ -751,6 +746,68 @@ mod tests {
                 assert_eq!(filtered_args, vec!["1,3p", "owner/repo", "src/lib.rs"]);
             }
             _ => panic!("expected sed command"),
+        }
+    }
+
+    #[test]
+    fn test_search_parses_github_query_and_limit() {
+        let cli = WitCli::try_parse_from([
+            "wit",
+            "search",
+            "-p",
+            "ratatui",
+            "-l",
+            "Rust",
+            "-q",
+            "stars:>1000 archived:false",
+            "--limit",
+            "25",
+        ])
+        .expect("search args should parse");
+
+        match cli.command {
+            Commands::Search {
+                pattern,
+                lang,
+                query,
+                limit,
+                ..
+            } => {
+                assert_eq!(pattern.as_deref(), Some("ratatui"));
+                assert_eq!(lang.as_deref(), Some("Rust"));
+                assert_eq!(query.as_deref(), Some("stars:>1000 archived:false"));
+                assert_eq!(limit, 25);
+            }
+            _ => panic!("expected search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_allows_raw_query_without_pattern() {
+        let cli = WitCli::try_parse_from([
+            "wit",
+            "search",
+            "-q",
+            "stars:>5000 topic:tui",
+            "--limit",
+            "10",
+        ])
+        .expect("query-only search args should parse");
+
+        match cli.command {
+            Commands::Search {
+                pattern,
+                lang,
+                query,
+                limit,
+                ..
+            } => {
+                assert_eq!(pattern, None);
+                assert_eq!(lang, None);
+                assert_eq!(query.as_deref(), Some("stars:>5000 topic:tui"));
+                assert_eq!(limit, 10);
+            }
+            _ => panic!("expected search command"),
         }
     }
 }

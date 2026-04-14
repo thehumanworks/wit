@@ -88,30 +88,28 @@ wit rg 'fn main' ratatui/ratatui --ignore '.git' --ignore '*.lock'
 wit cat ratatui/ratatui src/main.rs --ignore 'src/main.rs'   # blocked (explicitly ignored)
 ```
 
-`search` accepts `--ignore`, but applies it only when `--with-snippets` is enabled.
+`search` ignores `--ignore`, because repository discovery is done through GitHub's repository search API rather than cached file traversal.
 
 ## Commands
 
 ### search (alias: s)
 
-Discover repositories using **GitHub’s repository search API** when `-q` is the default (`.*`, match any code) and `--with-snippets` is off: results are ordered by **stars** and the table shows **stars**. For a non-default `-q`, snippets (`-w`), or code-driven ranking, `wit` uses **grep.app** (same backend as the `wits` crate).
+Discover repositories using **GitHub’s repository search API** only. Results are ordered by **stars** and the table shows **stars**. Use `-p/--pattern` for a repository-name filter, `-l/--lang` for a GitHub `language:` qualifier, and `-q/--query` to pass raw GitHub repository-search terms and qualifiers through unchanged.
 
-Set **`GITHUB_TOKEN`** for higher GitHub rate limits. GitHub’s `language:` filter must match [GitHub language names](https://github.com/search?q=language%3ARust&type=repositories); with `--regex` true, the GitHub name path only accepts simple tokens (letters, digits, `.`, `_`, `-`); use `--regex false` for literal phrases. GitHub may return at most 1000 repositories per query; if GitHub sets `incomplete_results`, a warning is printed.
+Set **`GITHUB_TOKEN`** for higher GitHub rate limits. GitHub’s `language:` filter must match [GitHub language names](https://github.com/search?q=language%3ARust&type=repositories). `wit search` fetches only enough GitHub pages to satisfy `--limit` (default: `30`, max: `1000`). GitHub may return at most 1000 repositories per query; if GitHub sets `incomplete_results`, a warning is printed.
 
 ```bash
-wit search -p 'ratatui' -l 'Rust'                  # GitHub: Rust repos named ratatui (by stars)
-wit search -p 'auth' -q 'JWT' -l 'Go' -w           # grep.app: code + snippets
-wit search -p 'ratatui' -q 'impl Widget' -w -c      # grep.app: matching lines only
+wit search -p 'ratatui' -l 'Rust' --limit 20                 # Rust repos named ratatui (by stars)
+wit search -q 'stars:>1000 topic:tui archived:false'         # Raw GitHub qualifiers
+wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 ```
 
 | Flag | Long | Description |
 |------|------|-------------|
-| `-p` | `--pattern` | Repository name pattern (see `--regex` and `wit search --help`) |
-| `-l` | `--lang` | Language filter (GitHub label on GitHub path; grep.app pattern on grep path) |
-| `-q` | `--query` | Code pattern (default: `.*`; non-default selects grep.app) |
-| `-r` | `--regex` | Regex for `-p` on grep path; on GitHub path, true = simple token only |
-| `-w` | `--with-snippets` | Code snippets (uses grep.app) |
-| `-c` | `--compact` | Matching lines only with `-w` |
+| `-p` | `--pattern` | Optional repository-name filter (`in:name`) |
+| `-l` | `--lang` | Optional GitHub `language:` qualifier |
+| `-q` | `--query` | Raw GitHub search terms and qualifiers, passed through as-is |
+| `-n` | `--limit` | Maximum repositories to print (default `30`, max `1000`) |
 
 ### cache (alias: c)
 
@@ -238,8 +236,8 @@ wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
 crates/wit/src/
 ├── cli.rs           # CLI entry point
 ├── lib.rs           # Library exports (gitops, sed, search, search_run)
-├── search.rs        # GitHub repository search (octocrab)
-├── search_run.rs    # `wit search`: GitHub vs grep.app routing
+├── search.rs        # GitHub repository search, query assembly, limit-aware pagination
+├── search_run.rs    # `wit search`: GitHub-only orchestration
 ├── sed.rs
 └── gitops/          # Bare-repo cache, tree, ls, cat, rg, head, tail
 
@@ -250,7 +248,7 @@ crates/wits/         # grep.app client + `wits` binary; shared result printing
 
 - `clap` - CLI argument parsing
 - `gix` (gitoxide) - Bare clone + tree traversal + blob reading
-- `octocrab` - GitHub REST API (`wit search` GitHub path)
+- `octocrab` - GitHub REST API (`wit search`)
 - `reqwest` - HTTP client (grep.app in `wits`; other HTTP in wit)
 - `scraper` - HTML parsing for grep.app snippets (`wits`)
 - `grep-regex` / `grep-searcher` / `grep-matcher` - Ripgrep-style search on blobs

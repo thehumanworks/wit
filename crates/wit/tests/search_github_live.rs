@@ -9,7 +9,7 @@ async fn github_search_client_name_query_smoke() {
     ensure_rustls_provider();
     let client = GitHubSearchClient::new();
     let results = client
-        .search_repositories("ratatui", Some("Rust"), true)
+        .search_repositories(Some("ratatui"), Some("Rust"), None, 10)
         .await
         .expect("GitHub repository search should succeed");
 

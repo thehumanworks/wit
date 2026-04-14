@@ -1,4 +1,4 @@
-use anyhow::{Context, bail, ensure};
+use anyhow::{Context, ensure};
 use octocrab::{Octocrab, models::Repository};
 
 use crate::ensure_rustls_provider;
@@ -9,6 +9,7 @@ const DEFAULT_PER_PAGE: u8 = 100;
 
 /// GitHub repository search returns at most 1000 items; cap what we keep after paging.
 pub const MAX_GITHUB_REPOS: usize = 1000;
+pub const DEFAULT_GITHUB_REPO_LIMIT: usize = 30;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RepositorySearchResults {
@@ -60,35 +61,54 @@ impl GitHubSearchClient {
         Self { octocrab }
     }
 
-    pub async fn search(&self, query: &str) -> anyhow::Result<RepositorySearchResults> {
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> anyhow::Result<RepositorySearchResults> {
         let query = query.trim();
         ensure!(!query.is_empty(), "github search query cannot be empty");
+        ensure!(limit > 0, "github search limit must be greater than zero");
 
-        let page = self
+        let limit = limit.min(MAX_GITHUB_REPOS);
+        let per_page = limit.min(usize::from(DEFAULT_PER_PAGE)) as u8;
+
+        let mut page = self
             .octocrab
             .search()
             .repositories(query)
             .sort(DEFAULT_SORT)
             .order(DEFAULT_ORDER)
-            .per_page(DEFAULT_PER_PAGE)
+            .per_page(per_page)
             .send()
             .await
             .with_context(|| format!("failed to search GitHub repositories for `{query}`"))?;
 
         let total_count = page.total_count.unwrap_or(page.items.len() as u64);
         let incomplete_results = page.incomplete_results.unwrap_or(false);
-        let repositories = self
-            .octocrab
-            .all_pages(page)
-            .await
-            .context("failed to fetch additional GitHub repository search pages")?;
-
-        let mut repositories: Vec<RepositorySummary> = repositories
+        let mut repositories: Vec<RepositorySummary> = page
+            .take_items()
             .into_iter()
             .map(RepositorySummary::from)
             .collect();
-        if repositories.len() > MAX_GITHUB_REPOS {
-            repositories.truncate(MAX_GITHUB_REPOS);
+        let mut next_page = page.next.clone();
+
+        while repositories.len() < limit {
+            let Some(mut page) = self
+                .octocrab
+                .get_page::<Repository>(&next_page)
+                .await
+                .context("failed to fetch additional GitHub repository search pages")?
+            else {
+                break;
+            };
+
+            next_page = page.next.clone();
+            repositories.extend(page.take_items().into_iter().map(RepositorySummary::from));
+        }
+
+        if repositories.len() > limit {
+            repositories.truncate(limit);
         }
 
         Ok(RepositorySearchResults {
@@ -100,70 +120,48 @@ impl GitHubSearchClient {
 
     pub async fn search_repositories(
         &self,
-        pattern: &str,
+        pattern: Option<&str>,
         language: Option<&str>,
-        regex: bool,
+        query: Option<&str>,
+        limit: usize,
     ) -> anyhow::Result<RepositorySearchResults> {
-        let pattern = pattern.trim();
-        ensure!(
-            !pattern.is_empty(),
-            "repository search pattern cannot be empty"
-        );
-
-        let query = build_github_repository_query(pattern, language, regex)?;
-        self.search(&query).await
+        let query = build_repository_query(pattern, language, query)?;
+        self.search(&query, limit).await
     }
 }
 
-pub async fn search(query: impl AsRef<str>) -> anyhow::Result<RepositorySearchResults> {
-    GitHubSearchClient::new().search(query.as_ref()).await
+pub async fn search(
+    query: impl AsRef<str>,
+    limit: usize,
+) -> anyhow::Result<RepositorySearchResults> {
+    GitHubSearchClient::new()
+        .search(query.as_ref(), limit)
+        .await
 }
 
-pub fn build_repository_query(pattern: &str, language: Option<&str>) -> String {
-    let mut query = vec![format!("{} in:name", normalize_search_term(pattern))];
-
-    if let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) {
-        query.push(format!("language:{}", normalize_search_term(language)));
-    }
-
-    query.join(" ")
-}
-
-/// Build a GitHub `q` string for repository search. With `regex: true`, only simple name tokens are allowed.
-pub fn build_github_repository_query(
-    pattern: &str,
+pub fn build_repository_query(
+    pattern: Option<&str>,
     language: Option<&str>,
-    regex: bool,
+    query: Option<&str>,
 ) -> anyhow::Result<String> {
-    let pattern = pattern.trim();
-    ensure!(
-        !pattern.is_empty(),
-        "repository search pattern cannot be empty"
-    );
+    let mut parts = Vec::new();
 
-    if !regex {
-        return Ok(build_repository_query(pattern, language));
+    if let Some(pattern) = pattern.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.push(format!("{} in:name", normalize_search_term(pattern)));
     }
 
-    if pattern.chars().any(char::is_whitespace) {
-        bail!(
-            "GitHub repository name search does not support whitespace in -p with --regex true; pass --regex false for a literal name, or use -q/-w so search uses grep.app."
-        );
-    }
-
-    if !pattern
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-    {
-        bail!(
-            "GitHub repository name search with --regex true only supports simple tokens (letters, digits, ., _, -). Use --regex false for a literal phrase, or use -q/-w for grep.app search."
-        );
-    }
-
-    let mut parts = vec![format!("{pattern} in:name")];
     if let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) {
         parts.push(format!("language:{}", normalize_search_term(language)));
     }
+
+    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.push(query.to_string());
+    }
+
+    ensure!(
+        !parts.is_empty(),
+        "repository search requires at least one search filter (--pattern, --lang, or --query)"
+    );
 
     Ok(parts.join(" "))
 }
@@ -236,41 +234,40 @@ mod tests {
     }
 
     #[test]
-    fn build_repository_query_scopes_name_and_language() {
+    fn build_repository_query_combines_name_language_and_raw_query() {
         assert_eq!(
-            build_repository_query("my repo", Some("Jupyter Notebook")),
-            "\"my repo\" in:name language:\"Jupyter Notebook\""
+            build_repository_query(
+                Some("my repo"),
+                Some("Jupyter Notebook"),
+                Some("stars:>1000 archived:false")
+            )
+            .unwrap(),
+            "\"my repo\" in:name language:\"Jupyter Notebook\" stars:>1000 archived:false"
         );
     }
 
     #[test]
-    fn build_github_repository_query_literal_matches_build_repository_query() {
+    fn build_repository_query_allows_raw_query_without_pattern() {
         assert_eq!(
-            build_github_repository_query("my repo", Some("Jupyter Notebook"), false).unwrap(),
-            build_repository_query("my repo", Some("Jupyter Notebook"))
+            build_repository_query(None, None, Some("stars:>1000 topic:tui")).unwrap(),
+            "stars:>1000 topic:tui"
         );
     }
 
     #[test]
-    fn build_github_repository_query_regex_rejects_operators() {
-        let err = build_github_repository_query("foo+bar", None, true).unwrap_err();
+    fn build_repository_query_requires_at_least_one_filter() {
+        let err = build_repository_query(None, None, None).unwrap_err();
         assert!(
-            err.to_string().contains("simple tokens"),
+            err.to_string().contains("at least one"),
             "unexpected message: {err}"
         );
     }
 
     #[test]
-    fn build_github_repository_query_regex_rejects_whitespace() {
-        let err = build_github_repository_query("my repo", None, true).unwrap_err();
-        assert!(err.to_string().contains("whitespace"));
-    }
-
-    #[test]
-    fn build_github_repository_query_regex_simple_token() {
+    fn build_repository_query_trims_empty_inputs() {
         assert_eq!(
-            build_github_repository_query("ratatui", Some("Rust"), true).unwrap(),
-            "ratatui in:name language:Rust"
+            build_repository_query(Some("  "), Some(" Rust "), Some("  archived:false  ")).unwrap(),
+            "language:Rust archived:false"
         );
     }
 
@@ -287,7 +284,7 @@ mod tests {
             .await;
 
         let err = search_client(&mock_server.uri())
-            .search_repositories("x", None, true)
+            .search_repositories(Some("x"), None, None, 30)
             .await
             .expect_err("401 should fail");
 
@@ -295,6 +292,73 @@ mod tests {
         assert!(
             msg.contains("failed to search") && msg.contains("github"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_repositories_uses_limit_as_page_size_and_stops_after_first_page() {
+        let mock_server = MockServer::start().await;
+        let query = "ratatui in:name language:Rust";
+        let next_page_url = format!(
+            "{}/search/repositories?q=ratatui+in:name+language:Rust&sort=stars&order=desc&per_page=2&page=2",
+            mock_server.uri()
+        );
+
+        let first_page = json!({
+            "total_count": 3,
+            "incomplete_results": false,
+            "items": [
+                repo_json(1, "ratatui", "ratatui/ratatui", "Terminal UI library", "Rust", 10_000),
+                repo_json(2, "ratatui-website", "ratatui/website", "Docs site", "Rust", 2_000)
+            ],
+        });
+        let first_response = ResponseTemplate::new(200)
+            .append_header(
+                "Link",
+                format!("<{next_page_url}>; rel=\"next\", <{next_page_url}>; rel=\"last\""),
+            )
+            .set_body_json(first_page);
+
+        Mock::given(method("GET"))
+            .and(path("/search/repositories"))
+            .and(query_param("q", query))
+            .and(query_param("sort", "stars"))
+            .and(query_param("order", "desc"))
+            .and(query_param("per_page", "2"))
+            .and(query_param_is_missing("page"))
+            .respond_with(first_response)
+            .mount(&mock_server)
+            .await;
+
+        let results = search_client(&mock_server.uri())
+            .search_repositories(Some("ratatui"), Some("Rust"), None, 2)
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(
+            results,
+            RepositorySearchResults {
+                total_count: 3,
+                incomplete_results: false,
+                repositories: vec![
+                    RepositorySummary {
+                        name: "ratatui".to_string(),
+                        full_name: "ratatui/ratatui".to_string(),
+                        description: Some("Terminal UI library".to_string()),
+                        language: Some("Rust".to_string()),
+                        stars: 10_000,
+                        html_url: Some("https://github.com/ratatui/ratatui".to_string()),
+                    },
+                    RepositorySummary {
+                        name: "ratatui-website".to_string(),
+                        full_name: "ratatui/website".to_string(),
+                        description: Some("Docs site".to_string()),
+                        language: Some("Rust".to_string()),
+                        stars: 2_000,
+                        html_url: Some("https://github.com/ratatui/website".to_string()),
+                    },
+                ],
+            }
         );
     }
 
@@ -347,7 +411,7 @@ mod tests {
             .await;
 
         let results = search_client(&mock_server.uri())
-            .search_repositories("ratatui", Some("Rust"), true)
+            .search_repositories(Some("ratatui"), Some("Rust"), None, 200)
             .await
             .expect("search should succeed");
 
