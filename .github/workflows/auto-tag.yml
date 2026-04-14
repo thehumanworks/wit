@@ -71,11 +71,12 @@ jobs:
 
             node scripts/release/set-cargo-version.mjs \
               --version "${next_version}" \
-              --cargo-toml Cargo.toml
+              --cargo-toml crates/wit/Cargo.toml \
+              --cargo-lock Cargo.lock
 
-            git add Cargo.toml Cargo.lock
+            git add crates/wit/Cargo.toml Cargo.lock
             if git diff --cached --quiet; then
-              echo "Cargo.toml version already set to ${next_version}."
+              echo "crates/wit/Cargo.toml version already set to ${next_version}."
               exit 0
             fi
 
