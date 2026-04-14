@@ -1505,13 +1505,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
 
         // Last line should have line number equal to total_lines
-        let last_line_num: usize = lines[2]
-            .trim()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let last_line_num: usize = lines[2].split_whitespace().next().unwrap().parse().unwrap();
         assert_eq!(last_line_num, total_lines);
     }
 

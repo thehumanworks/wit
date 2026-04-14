@@ -2,12 +2,13 @@ use clap::{ArgAction, Parser, Subcommand};
 use colored::Colorize;
 use std::fs;
 use wit::{
+    ensure_rustls_provider,
     gitops::ops::{
         GrepOptions, GrepResult, IgnoreMatcher, build_tree_with_ignore, cache_github_repo,
         grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
         read_file_with_ignore, tail_with_ignore,
     },
-    sed,
+    search_run, sed,
 };
 
 #[derive(Parser)]
@@ -35,32 +36,32 @@ enum Commands {
     #[command(
         name = "search",
         visible_alias = "s",
-        about = "Find GitHub repositories by name and search their code via grep.app",
+        about = "Find GitHub repositories (GitHub API or grep.app, depending on flags)",
         override_usage = "wit <search|s> [--lang <LANG>] --pattern <PATTERN>",
-        after_help = "Use this to discover repositories. Combine -p (repo name pattern) with -q (code pattern) to find repos containing specific implementations. Add -w for code snippets, -c to strip context.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust'                  # Find Rust repos named 'ratatui'\n  wit search -p 'auth' -q 'JWT' -l 'Go' -w           # Find Go auth repos using JWT, show code\n  wit search -p 'ratatui' -q 'impl Widget' -w -c      # Matching lines only, no context"
+        after_help = "Repository discovery uses the GitHub REST search API when -q is the default (match any) and -w is off; results are ordered by stars and the numeric column shows stars. For a non-default -q, -w (snippets), or code-driven ranking, search uses grep.app instead.\n\nGitHub's language: filter must match GitHub language labels (not grep.app's free-text language pattern). With --regex true, GitHub name search only supports simple tokens (letters, digits, ., _, -); use --regex false for literal phrases.\n\nSet GITHUB_TOKEN for higher GitHub rate limits.\n\nExamples:\n  wit search -p 'ratatui' -l 'Rust'                  # GitHub: Rust repos named ratatui (stars order)\n  wit search -p 'auth' -q 'JWT' -l 'Go' -w           # grep.app: code + snippets\n  wit search -p 'ratatui' -q 'impl Widget' -w -c      # grep.app: matching lines only"
     )]
     Search {
-        /// Regex pattern to match repository names
+        /// Pattern for repository names (see --regex). With GitHub name-only search, complex regex is not supported.
         #[arg(short, long)]
         pattern: String,
 
-        /// Optional language pattern to filter results
+        /// Optional language filter (GitHub: language label; grep.app: language pattern when using -q/-w)
         #[arg(short, long)]
         lang: Option<String>,
 
-        /// Flag to enable regex based-search - defaults to true
+        /// Enable regex for -p on the grep.app path; on the GitHub path, true allows only simple name tokens
         #[arg(short, long, default_value_t = true)]
         regex: bool,
 
-        /// Optional query to search for in repositories - defaults to ".*"
+        /// Code pattern within repos (default: any). Non-default values use grep.app for discovery.
         #[arg(short, long, default_value = ".*")]
         query: String,
 
-        /// Flag to enable snippets - defaults to false
+        /// Show code snippets (forces grep.app; requires HTML parsing path)
         #[arg(short, long, default_value_t = false)]
         with_snippets: bool,
 
-        /// Show only matching lines without context (requires --with-snippets)
+        /// Matching lines only with snippets (no-op without -w)
         #[arg(short, long, default_value_t = false)]
         compact: bool,
     },
@@ -280,6 +281,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    ensure_rustls_provider();
     let cli = WitCli::parse();
     let ignore_patterns = cli.ignore;
 
@@ -664,10 +666,16 @@ async fn search(
     compact: bool,
     ignore_patterns: &[String],
 ) -> anyhow::Result<()> {
-    let client = wits::client::GrepClient::new();
-    let mut repos = client
-        .repo_search(pattern, lang, regex, query, with_snippets)
-        .await?;
+    let (mut repos, metric, incomplete_github) =
+        search_run::run_repository_search(pattern, lang, regex, query, with_snippets).await?;
+
+    if incomplete_github {
+        eprintln!(
+            "{}",
+            "warning: GitHub reported incomplete_results (index timeout); the repository list may be truncated."
+                .yellow()
+        );
+    }
 
     if !ignore_patterns.is_empty() && with_snippets {
         let matcher = IgnoreMatcher::new(ignore_patterns)?;
@@ -685,7 +693,7 @@ async fn search(
         println!();
     }
 
-    wits::print_search_results(&repos, with_snippets, compact);
+    wits::print_search_results(&repos, with_snippets, compact, metric);
     Ok(())
 }
 

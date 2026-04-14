@@ -1,5 +1,6 @@
 use clap::Parser;
 use colored::Colorize;
+use wits::RepoListMetric;
 use wits::client::GrepClient;
 
 #[derive(Parser)]
@@ -54,6 +55,11 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    wits::print_search_results(&repos, cli.with_snippets, cli.compact);
+    wits::print_search_results(
+        &repos,
+        cli.with_snippets,
+        cli.compact,
+        RepoListMetric::CodeHits,
+    );
     Ok(())
 }

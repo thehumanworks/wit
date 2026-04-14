@@ -2,13 +2,19 @@ pub mod client;
 pub mod types;
 
 use colored::Colorize;
+pub use types::RepoListMetric;
 use types::{CodeLine, RepoMatch};
 
 /// Print search results to stdout with colored formatting.
 ///
 /// When `with_snippets` is true, code snippets are shown beneath each repo.
 /// When `compact` is true, only matching lines are printed (no context/jumps).
-pub fn print_search_results(repos: &[RepoMatch], with_snippets: bool, compact: bool) {
+pub fn print_search_results(
+    repos: &[RepoMatch],
+    with_snippets: bool,
+    compact: bool,
+    metric: RepoListMetric,
+) {
     if repos.is_empty() {
         println!("{}", "No repositories found.".yellow());
         return;
@@ -28,7 +34,10 @@ pub fn print_search_results(repos: &[RepoMatch], with_snippets: bool, compact: b
         let name = format!("{:<width$}", repo.name, width = max_name_len)
             .white()
             .bold();
-        let hits = format!("{:>6} hits", repo.hits).cyan();
+        let hits = match metric {
+            RepoListMetric::CodeHits => format!("{:>6} hits", repo.hits).cyan(),
+            RepoListMetric::Stars => format!("{:>6} stars", repo.hits).cyan(),
+        };
         println!("  {} {} {}", rank, name, hits);
 
         if with_snippets && !repo.files.is_empty() {

@@ -115,3 +115,13 @@ pub struct RepoMatch {
     pub hits: u64,
     pub files: Vec<ParsedSnippet>,
 }
+
+/// How to label the numeric column when printing `wit search` results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepoListMetric {
+    /// Match counts from grep.app code search.
+    #[default]
+    CodeHits,
+    /// GitHub star counts for repository-only discovery.
+    Stars,
+}

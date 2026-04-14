@@ -21,6 +21,54 @@ fn load_cassette(name: &str) -> String {
     })
 }
 
+fn is_security_checkpoint(status: reqwest::StatusCode, body: &str) -> bool {
+    !status.is_success() && body.contains("Vercel Security Checkpoint")
+}
+
+async fn fetch_live_search_body(
+    repo_pattern: &str,
+    lang: Option<&str>,
+    query: &str,
+) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .default_headers({
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert(reqwest::header::ACCEPT, "application/json".parse().unwrap());
+            h
+        })
+        .build()
+        .unwrap();
+
+    let mut url = reqwest::Url::parse(BASE_API_ENDPOINT).unwrap();
+    let mut pairs: Vec<(&str, &str)> = vec![
+        ("f.repo.pattern", repo_pattern),
+        ("regexp", "true"),
+        ("q", query),
+    ];
+    if let Some(lang) = lang {
+        pairs.push(("f.lang.pattern", lang));
+    }
+    url.query_pairs_mut().extend_pairs(pairs);
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .expect("HTTP request to grep.app should succeed");
+
+    let status = response.status();
+    let body = response.text().await.expect("should read response body");
+
+    if is_security_checkpoint(status, &body) {
+        eprintln!("Skipping live grep.app test: service returned anti-bot checkpoint ({status})");
+        return None;
+    }
+
+    assert!(status.is_success(), "grep.app returned {status}: {body}");
+
+    Some(body)
+}
+
 /// Helper: mount a mock that responds to any GET with the given body.
 /// The client constructs the full URL from `with_base_url`, so we match on
 /// query params rather than a hardcoded path — this way tests don't silently
@@ -224,7 +272,18 @@ async fn test_deserialization_of_cassette_matches_types() {
 #[tokio::test]
 #[ignore = "hits real grep.app API - smoke test"]
 async fn smoke_test_api_returns_json() {
-    let client = GrepClient::new();
+    let Some(body) = fetch_live_search_body("tokio", Some("Rust"), "async").await else {
+        return;
+    };
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(query_param("q", "async"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(&body))
+        .mount(&mock_server)
+        .await;
+
+    let client = GrepClient::with_base_url(&format!("{}/api/search2", mock_server.uri()));
     let repos = client
         .repo_search("tokio", Some("Rust"), true, "async", false)
         .await
@@ -244,36 +303,9 @@ async fn smoke_test_api_returns_json() {
 // Run with: cargo test -p wits --test integration -- --ignored record
 
 async fn record_cassette(name: &str, repo_pattern: &str, lang: Option<&str>, query: &str) {
-    let client = reqwest::Client::builder()
-        .default_headers({
-            let mut h = reqwest::header::HeaderMap::new();
-            h.insert(reqwest::header::ACCEPT, "application/json".parse().unwrap());
-            h
-        })
-        .build()
-        .unwrap();
-
-    let mut url = reqwest::Url::parse(BASE_API_ENDPOINT).unwrap();
-    let mut pairs: Vec<(&str, &str)> = vec![
-        ("f.repo.pattern", repo_pattern),
-        ("regexp", "true"),
-        ("q", query),
-    ];
-    if let Some(lang) = lang {
-        pairs.push(("f.lang.pattern", lang));
-    }
-    url.query_pairs_mut().extend_pairs(pairs);
-
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .expect("HTTP request to grep.app should succeed");
-
-    let status = response.status();
-    let body = response.text().await.expect("should read response body");
-
-    assert!(status.is_success(), "grep.app returned {status}: {body}");
+    let Some(body) = fetch_live_search_body(repo_pattern, lang, query).await else {
+        return;
+    };
 
     // Validate it's valid JSON
     let value: Value = serde_json::from_str(&body).expect("response should be valid JSON");
