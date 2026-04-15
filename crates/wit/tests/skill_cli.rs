@@ -24,7 +24,10 @@ fn skill_load_prints_embedded_skill_markdown() {
         "skill load failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected_skill_markdown());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        expected_skill_markdown()
+    );
     assert!(output.stderr.is_empty(), "expected no stderr output");
 }
 
@@ -85,7 +88,10 @@ fn skill_install_overwrites_existing_skill_file() {
 fn skill_install_requires_path_flag_at_runtime() {
     let output = run_wit(&["skill", "install"]);
 
-    assert!(!output.status.success(), "skill install should fail without --path");
+    assert!(
+        !output.status.success(),
+        "skill install should fail without --path"
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("the following required arguments were not provided"));
     assert!(stderr.contains("--path <DIR>"));

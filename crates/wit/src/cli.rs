@@ -784,9 +784,24 @@ mod tests {
                 "search", "cache", "tree", "ls", "cat", "rg", "sed", "head", "tail", "skill"
             ]
         );
-        assert_eq!(find_subcommand(&command, "search").get_short_flag(), Some('s'));
-        assert_eq!(find_subcommand(&command, "cache").get_short_flag(), Some('c'));
-        assert_eq!(find_subcommand(&command, "tree").get_short_flag(), Some('t'));
+        assert_eq!(
+            find_subcommand(&command, "search")
+                .get_visible_aliases()
+                .collect::<Vec<_>>(),
+            vec!["s"]
+        );
+        assert_eq!(
+            find_subcommand(&command, "cache")
+                .get_visible_aliases()
+                .collect::<Vec<_>>(),
+            vec!["c"]
+        );
+        assert_eq!(
+            find_subcommand(&command, "tree")
+                .get_visible_aliases()
+                .collect::<Vec<_>>(),
+            vec!["t"]
+        );
 
         let skill = find_subcommand(&command, "skill");
         let skill_subcommands: Vec<_> = skill
@@ -824,7 +839,10 @@ mod tests {
         let path = find_arg(install, "path");
         assert_eq!(path.get_short(), None);
         assert_eq!(path.get_long(), Some("path"));
-        assert!(path.is_required_set(), "skill install should require --path");
+        assert!(
+            path.is_required_set(),
+            "skill install should require --path"
+        );
         assert_eq!(path.get_index(), None);
 
         let load = find_subcommand(find_subcommand(&command, "skill"), "load");
@@ -968,8 +986,8 @@ mod tests {
 
     #[test]
     fn test_skill_load_parses() {
-        let cli = WitCli::try_parse_from(["wit", "skill", "load"])
-            .expect("skill load args should parse");
+        let cli =
+            WitCli::try_parse_from(["wit", "skill", "load"]).expect("skill load args should parse");
 
         match cli.command {
             Commands::Skill {
@@ -994,19 +1012,27 @@ mod tests {
 
     #[test]
     fn test_skill_requires_subcommand() {
-        let err = WitCli::try_parse_from(["wit", "skill"]).expect_err("skill should require a subcommand");
+        let err = match WitCli::try_parse_from(["wit", "skill"]) {
+            Ok(_) => panic!("skill should require a subcommand"),
+            Err(err) => err,
+        };
 
-        assert_eq!(err.kind(), ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand);
+        assert_eq!(
+            err.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
         let rendered = err.to_string();
-        assert!(rendered.contains("Usage: wit skill <COMMAND>"));
+        assert!(rendered.contains("Usage: wit skill [OPTIONS] <COMMAND>"));
         assert!(rendered.contains("load"));
         assert!(rendered.contains("install"));
     }
 
     #[test]
     fn test_skill_install_requires_path_flag() {
-        let err = WitCli::try_parse_from(["wit", "skill", "install"])
-            .expect_err("skill install should require --path");
+        let err = match WitCli::try_parse_from(["wit", "skill", "install"]) {
+            Ok(_) => panic!("skill install should require --path"),
+            Err(err) => err,
+        };
 
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
         assert!(err.to_string().contains("--path <DIR>"));
