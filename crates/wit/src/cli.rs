@@ -618,7 +618,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Skill { command } => match command {
             SkillCommands::Load => {
-                print!("{}", SKILL_MD);
+                print!("{SKILL_MD}");
+                if !SKILL_MD.ends_with('\n') {
+                    println!();
+                }
             }
             SkillCommands::Install { path } => {
                 let skill_dir = path.join("wit-skill");
@@ -633,7 +636,7 @@ async fn main() -> anyhow::Result<()> {
                 fs::write(&skill_path, SKILL_MD).map_err(|e| {
                     anyhow::anyhow!("failed to write '{}': {}", skill_path.display(), e)
                 })?;
-                println!("Installed wit skill to {}", skill_dir.display());
+                println!("Installed wit skill to {}", skill_path.display());
             }
         },
     }
