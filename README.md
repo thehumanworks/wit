@@ -64,13 +64,13 @@ cargo install --path .
 
 ```bash
 wit search -p 'ratatui' -l 'Rust'                        # Find repos
-wit tree ratatui/ratatui                                   # See structure
-wit ls -l ratatui/ratatui src                              # Browse with sizes
-wit rg -l 'impl Widget' ratatui/ratatui                    # Find files
-wit cat -n ratatui/ratatui src/lib.rs                      # Read a file
-wit head -n 30 ratatui/ratatui Cargo.toml                  # Preview a file
-wit sed -n '100,150p' ratatui/ratatui src/lib.rs           # Extract range
-wit rg 'TODO' ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
+wit tree -r ratatui/ratatui                                   # See structure
+wit ls -l -r ratatui/ratatui src                              # Browse with sizes
+wit rg -l 'impl Widget' -r ratatui/ratatui                    # Find files
+wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file
+wit head -n 30 -r ratatui/ratatui Cargo.toml                  # Preview a file
+wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
+wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 ```
 
 ## Global Options
@@ -82,10 +82,10 @@ wit rg 'TODO' ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 Ignore examples:
 
 ```bash
-wit tree ratatui/ratatui --ignore '.github' --ignore 'assets/**'
-wit ls ratatui/ratatui src --ignore 'generated'
-wit rg 'fn main' ratatui/ratatui --ignore '.git' --ignore '*.lock'
-wit cat ratatui/ratatui src/main.rs --ignore 'src/main.rs'   # blocked (explicitly ignored)
+wit tree -r ratatui/ratatui --ignore '.github' --ignore 'assets/**'
+wit ls -r ratatui/ratatui src --ignore 'generated'
+wit rg 'fn main' -r ratatui/ratatui --ignore '.git' --ignore '*.lock'
+wit cat -r ratatui/ratatui src/main.rs --ignore 'src/main.rs'   # blocked (explicitly ignored)
 ```
 
 `search` ignores `--ignore`, because repository discovery is done through GitHub's repository search API rather than cached file traversal.
@@ -113,44 +113,45 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 
 ### cache (alias: c)
 
-Clone a repository into the local cache (or refresh an existing one). Repos are auto-cached on first use by other commands.
+Clone a repository into the local cache (or refresh an existing one). Pass the repository with `-r` / `--repo` (`owner/repo`). Repos are auto-cached on first use by other commands.
 
 ```bash
-wit cache ratatui/ratatui          # Force re-clone of ratatui
+wit cache -r ratatui/ratatui          # Force re-clone of ratatui
 ```
 
 ### tree (alias: t)
 
-Show the file tree of a repository (or subtree). Use `-l` for line counts and token estimates.
+Show the file tree of a repository (or subtree). Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-l` for line counts and token estimates.
 
 ```bash
-wit tree ratatui/ratatui                # Full repo tree
-wit tree ratatui/ratatui src/widgets    # Only the widgets subtree
-wit tree -l ratatui/ratatui src         # With line counts and token estimates
+wit tree -r ratatui/ratatui                # Full repo tree
+wit tree -r ratatui/ratatui src/widgets    # Only the widgets subtree
+wit tree -l -r ratatui/ratatui src         # With line counts and token estimates
 ```
 
 ### ls
 
-List directory contents (non-recursive). Unlike `tree`, shows only immediate children. Use `-l` for file sizes.
+List directory contents (non-recursive). Unlike `tree`, shows only immediate children. Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-l` for file sizes.
 
 ```bash
-wit ls ratatui/ratatui                    # List repo root
-wit ls ratatui/ratatui src/widgets        # List a subdirectory
-wit ls -l ratatui/ratatui src             # With line counts and token estimates
+wit ls -r ratatui/ratatui                    # List repo root
+wit ls -r ratatui/ratatui src/widgets        # List a subdirectory
+wit ls -l -r ratatui/ratatui src             # With line counts and token estimates
 ```
 
 ### cat
 
-Print a file's contents. For large files, prefer `head`/`tail`/`sed` to read specific ranges, or `rg` to search.
+Print a file's contents. Pass the repository with `-r` / `--repo` (`owner/repo`). For large files, prefer `head`/`tail`/`sed` to read specific ranges, or `rg` to search.
 
 ```bash
-wit cat ratatui/ratatui Cargo.toml             # Print file
-wit cat -n ratatui/ratatui src/lib.rs           # With line numbers
-wit cat -b ratatui/ratatui README.md            # Number non-blank lines only
+wit cat -r ratatui/ratatui Cargo.toml             # Print file
+wit cat -n -r ratatui/ratatui src/lib.rs           # With line numbers
+wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only
 ```
 
 | Flag | Long | Description |
 |------|------|-------------|
+| `-r` | `--repo` | GitHub repository (`owner/repo`) |
 | `-n` | `--number` | Number all output lines |
 | `-b` | `--number-nonblank` | Number non-blank lines only (overrides -n) |
 | `-s` | `--squeeze-blank` | Suppress repeated empty lines |
@@ -160,18 +161,19 @@ wit cat -b ratatui/ratatui README.md            # Number non-blank lines only
 
 ### rg
 
-Search file contents (ripgrep-style). Use `-l` to find files, `-g` to filter by type.
+Search file contents (ripgrep-style). Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-l` to find files, `-g` to filter by type.
 
 ```bash
-wit rg 'impl Widget' ratatui/ratatui              # Find implementations
-wit rg -l 'struct.*Frame' ratatui/ratatui          # List files containing pattern
-wit rg -g '*.rs' -i 'todo' ratatui/ratatui         # Case-insensitive in .rs files
-wit rg -C 3 'fn render' ratatui/ratatui             # 3 lines of context
-wit rg -l --long 'Widget' ratatui/ratatui           # File list with line counts
+wit rg 'impl Widget' -r ratatui/ratatui              # Find implementations
+wit rg -l 'struct.*Frame' -r ratatui/ratatui          # List files containing pattern
+wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui         # Case-insensitive in .rs files
+wit rg -C 3 'fn render' -r ratatui/ratatui             # 3 lines of context
+wit rg -l --long 'Widget' -r ratatui/ratatui           # File list with line counts
 ```
 
 | Flag | Long | Description |
 |------|------|-------------|
+| `-r` | `--repo` | GitHub repository (`owner/repo`) |
 | `-i` | `--ignore-case` | Case insensitive search |
 | `-S` | `--smart-case` | Case-insensitive if pattern is all lowercase |
 | `-w` | `--word-regexp` | Match whole words only |
@@ -187,38 +189,39 @@ wit rg -l --long 'Widget' ratatui/ratatui           # File list with line counts
 
 ### sed
 
-Extract or transform file content using sed scripts (POSIX-style, Rust regex).
+Extract or transform file content using sed scripts (POSIX-style, Rust regex). Pass the repository with `-r` / `--repo` (`owner/repo`).
 
 ```bash
-wit sed -n '320,460p' modal-labs/modal-client modal/image.py    # Print line range
-wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs                 # Lines matching pattern
-wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs       # Substitute text
-wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs              # Extract function signatures
+wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range
+wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern
+wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text
+wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures
 ```
 
 **Notes:**
+- Pass the repository with `-r` / `--repo` (`owner/repo`). Positional arguments are the sed script and the file path, or only the path when the script comes from `-e` / `-f`.
 - Regex uses Rust syntax (not POSIX BRE).
 - `sed` operates on a single repo file (no stdin or in-place edits).
 - Supports addresses, substitution, hold space, branching, and most POSIX commands.
 
 ### head
 
-Print the first N lines of a file (default: 10). Use to preview a file before deciding whether to read it fully.
+Print the first N lines of a file (default: 10). Pass the repository with `-r` / `--repo` (`owner/repo`). Use to preview a file before deciding whether to read it fully.
 
 ```bash
-wit head ratatui/ratatui src/lib.rs            # First 10 lines
-wit head -n 50 ratatui/ratatui Cargo.toml      # First 50 lines
-wit head -N ratatui/ratatui README.md           # With line numbers
+wit head -r ratatui/ratatui src/lib.rs            # First 10 lines
+wit head -n 50 -r ratatui/ratatui Cargo.toml      # First 50 lines
+wit head -N -r ratatui/ratatui README.md           # With line numbers
 ```
 
 ### tail
 
-Print the last N lines of a file, or from line N onward. Use `-p` to read from a specific line to end-of-file.
+Print the last N lines of a file, or from line N onward. Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-p` to read from a specific line to end-of-file.
 
 ```bash
-wit tail ratatui/ratatui src/lib.rs              # Last 10 lines
-wit tail -n 20 ratatui/ratatui Cargo.toml        # Last 20 lines
-wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end
+wit tail -r ratatui/ratatui src/lib.rs              # Last 10 lines
+wit tail -n 20 -r ratatui/ratatui Cargo.toml        # Last 20 lines
+wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end
 ```
 
 ## Packaging & Release

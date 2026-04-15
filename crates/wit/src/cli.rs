@@ -66,21 +66,23 @@ enum Commands {
         name = "cache",
         visible_alias = "c",
         about = "Clone a repository into the local cache (or refresh an existing one)",
-        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh a stale cache.\n\nExamples:\n  wit cache ratatui/ratatui          # Force re-clone of ratatui"
+        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh a stale cache.\n\nExamples:\n  wit cache -r ratatui/ratatui          # Force re-clone of ratatui"
     )]
     Cache {
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
     },
     #[command(
         name = "tree",
         visible_alias = "t",
         about = "Show the file tree of a repository (or subtree). Use -l for line counts",
-        override_usage = "wit <tree|t> [OPTIONS] <REPO> [PATH]",
-        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nExamples:\n  wit tree ratatui/ratatui                # Full repo tree\n  wit tree ratatui/ratatui src/widgets    # Only the widgets subtree\n  wit tree -l ratatui/ratatui src         # With line counts and token estimates"
+        override_usage = "wit <tree|t> [OPTIONS] -r <REPO> [PATH]",
+        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nExamples:\n  wit tree -r ratatui/ratatui                # Full repo tree\n  wit tree -r ratatui/ratatui src/widgets    # Only the widgets subtree\n  wit tree -l -r ratatui/ratatui src         # With line counts and token estimates"
     )]
     Tree {
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
 
         /// Optional subdirectory path to display tree from
@@ -93,11 +95,12 @@ enum Commands {
     #[command(
         name = "ls",
         about = "List directory contents (non-recursive). Use -l for file sizes",
-        override_usage = "wit ls [OPTIONS] <REPO> [PATH]",
-        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nExamples:\n  wit ls ratatui/ratatui                    # List repo root\n  wit ls ratatui/ratatui src/widgets        # List a subdirectory\n  wit ls -l ratatui/ratatui src             # With file sizes"
+        override_usage = "wit ls [OPTIONS] -r <REPO> [PATH]",
+        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nExamples:\n  wit ls -r ratatui/ratatui                    # List repo root\n  wit ls -r ratatui/ratatui src/widgets        # List a subdirectory\n  wit ls -l -r ratatui/ratatui src             # With file sizes"
     )]
     Ls {
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
 
         /// Directory path within the repository (default: root)
@@ -110,11 +113,12 @@ enum Commands {
     #[command(
         name = "cat",
         about = "Print a file's contents. Use -n for line numbers",
-        override_usage = "wit cat [OPTIONS] <REPO> <PATH>",
-        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml             # Print file\n  wit cat -n ratatui/ratatui src/lib.rs           # With line numbers\n  wit cat -b ratatui/ratatui README.md            # Number non-blank lines only"
+        override_usage = "wit cat [OPTIONS] -r <REPO> <PATH>",
+        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nExamples:\n  wit cat -r ratatui/ratatui Cargo.toml             # Print file\n  wit cat -n -r ratatui/ratatui src/lib.rs           # With line numbers\n  wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only"
     )]
     Cat {
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
 
         /// Path to the file within the repository
@@ -147,14 +151,15 @@ enum Commands {
     #[command(
         name = "rg",
         about = "Search file contents (ripgrep-style). Use -l to find files, -g to filter by type",
-        override_usage = "wit rg [OPTIONS] <PATTERN> <REPO>",
-        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nExamples:\n  wit rg 'impl Widget' ratatui/ratatui              # Find implementations\n  wit rg -l 'struct.*Frame' ratatui/ratatui          # List files containing pattern\n  wit rg -g '*.rs' -i 'todo' ratatui/ratatui         # Case-insensitive in .rs files\n  wit rg -C 3 'fn render' ratatui/ratatui             # 3 lines of context"
+        override_usage = "wit rg [OPTIONS] <PATTERN> -r <REPO>",
+        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nExamples:\n  wit rg 'impl Widget' -r ratatui/ratatui              # Find implementations\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui          # List files containing pattern\n  wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui         # Case-insensitive in .rs files\n  wit rg -C 3 'fn render' -r ratatui/ratatui             # 3 lines of context"
     )]
     Rg {
         /// Regex pattern to search for
         pattern: String,
 
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
 
         /// Case insensitive search
@@ -208,8 +213,8 @@ enum Commands {
     #[command(
         name = "sed",
         about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
-        override_usage = "wit sed [OPTIONS] <SCRIPT> <REPO> <PATH>",
-        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py    # Print line range\n  wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs                 # Lines matching pattern\n  wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs       # Substitute text\n  wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs              # Extract function signatures"
+        override_usage = "wit sed [OPTIONS] -r <REPO> [<SCRIPT>] <PATH>",
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range\n  wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text\n  wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures"
     )]
     Sed {
         /// Suppress automatic printing of pattern space
@@ -224,18 +229,23 @@ enum Commands {
         #[arg(short = 'f', long = "file", value_name = "FILE")]
         files: Vec<String>,
 
-        /// Script, repo, path (positional). With -e/-f, SCRIPT is optional.
+        /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
+        repo: String,
+
+        /// Sed script and file path (positional): <SCRIPT> <PATH>, or <PATH> when using -e/-f for the script
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
     },
     #[command(
         name = "head",
         about = "Print the first N lines of a file (default: 10)",
-        override_usage = "wit head [OPTIONS] <REPO> <PATH>",
-        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nExamples:\n  wit head ratatui/ratatui src/lib.rs            # First 10 lines\n  wit head -n 50 ratatui/ratatui Cargo.toml      # First 50 lines\n  wit head -N ratatui/ratatui README.md           # With line numbers"
+        override_usage = "wit head [OPTIONS] -r <REPO> <PATH>",
+        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nExamples:\n  wit head -r ratatui/ratatui src/lib.rs            # First 10 lines\n  wit head -n 50 -r ratatui/ratatui Cargo.toml      # First 50 lines\n  wit head -N -r ratatui/ratatui README.md           # With line numbers"
     )]
     Head {
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
 
         /// Path to the file within the repository
@@ -252,11 +262,12 @@ enum Commands {
     #[command(
         name = "tail",
         about = "Print the last N lines of a file, or from line N onward",
-        override_usage = "wit tail [OPTIONS] <REPO> <PATH>",
-        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nExamples:\n  wit tail ratatui/ratatui src/lib.rs              # Last 10 lines\n  wit tail -n 20 ratatui/ratatui Cargo.toml        # Last 20 lines\n  wit tail -p 100 ratatui/ratatui src/lib.rs       # From line 100 to end"
+        override_usage = "wit tail [OPTIONS] -r <REPO> <PATH>",
+        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nExamples:\n  wit tail -r ratatui/ratatui src/lib.rs              # Last 10 lines\n  wit tail -n 20 -r ratatui/ratatui Cargo.toml        # Last 20 lines\n  wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end"
     )]
     Tail {
         /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
         repo: String,
 
         /// Path to the file within the repository
@@ -558,13 +569,14 @@ async fn main() -> anyhow::Result<()> {
             quiet,
             expressions,
             files,
+            repo,
             args,
         } => {
             let (args, inline_ignores) = extract_sed_inline_ignores(args)?;
             let mut effective_ignore_patterns = ignore_patterns.clone();
             effective_ignore_patterns.extend(inline_ignores);
 
-            let (scripts, repo, path) = parse_sed_invocation(expressions, files, args)?;
+            let (scripts, path) = parse_sed_invocation(expressions, files, args)?;
             let repository = cache_github_repo(&repo, false).await?;
             let content = read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?;
             let program = sed::parse_script(&scripts)?;
@@ -601,7 +613,7 @@ fn parse_sed_invocation(
     expressions: Vec<String>,
     files: Vec<String>,
     args: Vec<String>,
-) -> anyhow::Result<(Vec<String>, String, String)> {
+) -> anyhow::Result<(Vec<String>, String)> {
     let mut scripts = Vec::new();
     scripts.extend(expressions);
 
@@ -611,12 +623,12 @@ fn parse_sed_invocation(
         scripts.push(content);
     }
 
-    let (script_arg, repo, path) = match args.len() {
-        3 => (Some(args[0].clone()), args[1].clone(), args[2].clone()),
-        2 => (None, args[0].clone(), args[1].clone()),
+    let (script_arg, path) = match args.len() {
+        2 => (Some(args[0].clone()), args[1].clone()),
+        1 => (None, args[0].clone()),
         _ => {
             return Err(anyhow::anyhow!(
-                "sed expects <SCRIPT> <REPO> <PATH> or <REPO> <PATH> with -e/-f"
+                "sed expects <SCRIPT> <PATH> or <PATH> with -e/-f (repository via -r/--repo)"
             ));
         }
     };
@@ -631,7 +643,7 @@ fn parse_sed_invocation(
         ));
     }
 
-    Ok((scripts, repo, path))
+    Ok((scripts, path))
 }
 
 fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>, Vec<String>)> {
@@ -702,6 +714,7 @@ mod tests {
             "wit",
             "rg",
             "needle",
+            "-r",
             "owner/repo",
             "--ignore",
             ".git",
@@ -719,8 +732,9 @@ mod tests {
             "wit",
             "sed",
             "-n",
-            "1,3p",
+            "-r",
             "owner/repo",
+            "1,3p",
             "src/lib.rs",
             "--ignore",
             "vendor",
@@ -734,6 +748,7 @@ mod tests {
                 quiet,
                 expressions,
                 files,
+                repo,
                 args,
             } => {
                 let (filtered_args, inline_ignores) =
@@ -742,8 +757,9 @@ mod tests {
                 assert!(quiet);
                 assert!(expressions.is_empty());
                 assert!(files.is_empty());
+                assert_eq!(repo, "owner/repo");
                 assert_eq!(inline_ignores, vec!["vendor".to_string()]);
-                assert_eq!(filtered_args, vec!["1,3p", "owner/repo", "src/lib.rs"]);
+                assert_eq!(filtered_args, vec!["1,3p", "src/lib.rs"]);
             }
             _ => panic!("expected sed command"),
         }
