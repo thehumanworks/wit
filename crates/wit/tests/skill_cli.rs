@@ -48,13 +48,16 @@ fn skill_install_creates_missing_parent_directories_and_writes_skill() {
     let skill_path = install_root.join("wit-skill").join("SKILL.md");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        format!("Installed wit skill to {}\n", skill_path.display())
+        format!("{}\n", skill_path.display())
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        format!("Installed wit skill to {}", skill_path.display())
     );
     assert_eq!(
         fs::read_to_string(&skill_path).expect("expected installed skill"),
         include_str!("../src/skill/SKILL.md")
     );
-    assert!(output.stderr.is_empty(), "expected no stderr output");
 }
 
 #[test]
