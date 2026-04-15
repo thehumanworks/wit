@@ -311,6 +311,42 @@ enum SkillCommands {
     },
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_skill_load_subcommand() {
+        let cli = WitCli::try_parse_from(["wit", "skill", "load"]).expect("should parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Skill {
+                command: SkillCommands::Load
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_skill_install_with_path_flag() {
+        let cli = WitCli::try_parse_from([
+            "wit",
+            "skill",
+            "install",
+            "--path",
+            "/tmp/wit-skill",
+        ])
+        .expect("should parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Skill {
+                command: SkillCommands::Install { ref path }
+            } if path == &PathBuf::from("/tmp/wit-skill")
+        ));
+    }
+}
+
 fn parse_search_limit(value: &str) -> Result<usize, String> {
     let limit = value
         .parse::<usize>()
