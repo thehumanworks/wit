@@ -1,6 +1,9 @@
 use clap::{ArgAction, Parser, Subcommand};
 use colored::Colorize;
 use std::fs;
+use std::path::PathBuf;
+
+const SKILL_MD: &str = include_str!("skill/SKILL.md");
 use wit::{
     ensure_rustls_provider,
     gitops::ops::{
@@ -273,6 +276,27 @@ enum Commands {
         /// Number all output lines
         #[arg(short = 'N', long = "number")]
         number: bool,
+    },
+    #[command(
+        name = "skill",
+        about = "Manage the wit agent skill",
+        after_help = "Examples:\n  wit skill load                        # Print the skill to stdout\n  wit skill install --path ~/skills     # Install skill directory to ~/skills/wit-skill"
+    )]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommands {
+    #[command(about = "Print the wit skill (SKILL.md) to stdout")]
+    Load,
+    #[command(about = "Install the wit skill as a directory at the given path")]
+    Install {
+        /// Directory in which to create the wit-skill folder
+        #[arg(long, value_name = "DIR")]
+        path: PathBuf,
     },
 }
 
@@ -592,6 +616,26 @@ async fn main() -> anyhow::Result<()> {
             )?;
             println!("{}", output);
         }
+        Commands::Skill { command } => match command {
+            SkillCommands::Load => {
+                print!("{}", SKILL_MD);
+            }
+            SkillCommands::Install { path } => {
+                let skill_dir = path.join("wit-skill");
+                fs::create_dir_all(&skill_dir).map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to create skill directory '{}': {}",
+                        skill_dir.display(),
+                        e
+                    )
+                })?;
+                let skill_path = skill_dir.join("SKILL.md");
+                fs::write(&skill_path, SKILL_MD).map_err(|e| {
+                    anyhow::anyhow!("failed to write '{}': {}", skill_path.display(), e)
+                })?;
+                println!("Installed wit skill to {}", skill_dir.display());
+            }
+        },
     }
 
     Ok(())
