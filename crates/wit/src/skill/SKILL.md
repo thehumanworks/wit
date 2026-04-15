@@ -14,6 +14,8 @@ description: Explore GitHub repositories without cloning using the `wit` CLI. Us
 3. Find code: `wit rg`
 4. Read files: `wit cat`, `wit head`, `wit tail`, `wit sed`
 
+All repo-scoped commands take `-r/--repo <owner/repo>` as a required flag.
+
 ## Commands
 
 ### search (alias: s)
@@ -38,7 +40,7 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 Force-refresh a cached repo. Repos are auto-cached on first use by every other command.
 
 ```bash
-wit cache ratatui/ratatui
+wit cache -r ratatui/ratatui
 ```
 
 ### tree (alias: t)
@@ -46,9 +48,9 @@ wit cache ratatui/ratatui
 Show recursive file tree. Use `-l` for line counts and token estimates to decide what to read.
 
 ```bash
-wit tree ratatui/ratatui
-wit tree ratatui/ratatui src/widgets
-wit tree -l ratatui/ratatui src
+wit tree -r ratatui/ratatui
+wit tree -r ratatui/ratatui src/widgets
+wit tree -l -r ratatui/ratatui src
 ```
 
 ### ls
@@ -56,9 +58,9 @@ wit tree -l ratatui/ratatui src
 List one directory level (non-recursive). Use `-l` for sizes.
 
 ```bash
-wit ls ratatui/ratatui
-wit ls ratatui/ratatui src/widgets
-wit ls -l ratatui/ratatui src
+wit ls -r ratatui/ratatui
+wit ls -r ratatui/ratatui src/widgets
+wit ls -l -r ratatui/ratatui src
 ```
 
 ### cat
@@ -66,13 +68,14 @@ wit ls -l ratatui/ratatui src
 Print file contents. For large files prefer `head`/`tail`/`sed`.
 
 ```bash
-wit cat ratatui/ratatui Cargo.toml
-wit cat -n ratatui/ratatui src/lib.rs        # numbered lines
-wit cat -b ratatui/ratatui README.md         # number non-blank only
+wit cat -r ratatui/ratatui Cargo.toml
+wit cat -n -r ratatui/ratatui src/lib.rs        # numbered lines
+wit cat -b -r ratatui/ratatui README.md         # number non-blank only
 ```
 
 | Flag | Description |
 |------|-------------|
+| `-r/--repo` | Repository in `owner/repo` format (required) |
 | `-n/--number` | Number all output lines |
 | `-b/--number-nonblank` | Number non-blank lines only (overrides `-n`) |
 | `-s/--squeeze-blank` | Suppress repeated empty lines |
@@ -85,15 +88,16 @@ wit cat -b ratatui/ratatui README.md         # number non-blank only
 Ripgrep-style regex search. Use `-l` to list files containing a pattern (cheaper than full match output).
 
 ```bash
-wit rg 'impl Widget' ratatui/ratatui
-wit rg -l 'struct.*Frame' ratatui/ratatui        # files only
-wit rg -g '*.rs' -i 'todo' ratatui/ratatui       # case-insensitive in .rs files
-wit rg -C 3 'fn render' ratatui/ratatui           # 3 lines of context
-wit rg -l --long 'Widget' ratatui/ratatui         # files with line counts
+wit rg 'impl Widget' -r ratatui/ratatui
+wit rg -l 'struct.*Frame' -r ratatui/ratatui        # files only
+wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui       # case-insensitive in .rs files
+wit rg -C 3 'fn render' -r ratatui/ratatui           # 3 lines of context
+wit rg -l --long 'Widget' -r ratatui/ratatui         # files with line counts
 ```
 
 | Flag | Description |
 |------|-------------|
+| `-r/--repo` | Repository in `owner/repo` format (required) |
 | `-i/--ignore-case` | Case insensitive |
 | `-S/--smart-case` | Case-insensitive when pattern is all lowercase |
 | `-w/--word-regexp` | Match whole words only |
@@ -110,14 +114,15 @@ wit rg -l --long 'Widget' ratatui/ratatui         # files with line counts
 POSIX-style sed on a single repo file. Regex uses Rust syntax (not POSIX BRE).
 
 ```bash
-wit sed -n '320,460p' modal-labs/modal-client modal/image.py   # line range
-wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs                # matching lines
-wit sed 's/Widget/Component/g' ratatui/ratatui src/lib.rs      # substitution
-wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs             # function sigs
+wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py   # line range
+wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                # matching lines
+wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs      # substitution
+wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs             # function sigs
 ```
 
 | Flag | Description |
 |------|-------------|
+| `-r/--repo` | Repository in `owner/repo` format (required) |
 | `-n/--quiet` | Suppress automatic printing of pattern space |
 | `-e/--expression` | Add script expression (repeatable) |
 | `-f/--file` | Add script from file (repeatable) |
@@ -127,9 +132,9 @@ wit sed -n '/^pub fn/p' ratatui/ratatui src/lib.rs             # function sigs
 Print first N lines (default 10). Use to preview before deciding whether to read fully.
 
 ```bash
-wit head ratatui/ratatui src/lib.rs
-wit head -n 50 ratatui/ratatui Cargo.toml
-wit head -N ratatui/ratatui README.md           # with line numbers
+wit head -r ratatui/ratatui src/lib.rs
+wit head -n 50 -r ratatui/ratatui Cargo.toml
+wit head -N -r ratatui/ratatui README.md           # with line numbers
 ```
 
 ### tail
@@ -137,9 +142,9 @@ wit head -N ratatui/ratatui README.md           # with line numbers
 Print last N lines or from line N onward.
 
 ```bash
-wit tail ratatui/ratatui src/lib.rs
-wit tail -n 20 ratatui/ratatui Cargo.toml
-wit tail -p 100 ratatui/ratatui src/lib.rs      # from line 100 to EOF
+wit tail -r ratatui/ratatui src/lib.rs
+wit tail -n 20 -r ratatui/ratatui Cargo.toml
+wit tail -p 100 -r ratatui/ratatui src/lib.rs      # from line 100 to EOF
 ```
 
 ## Global Options
@@ -147,6 +152,7 @@ wit tail -p 100 ratatui/ratatui src/lib.rs      # from line 100 to EOF
 `--ignore <PATH|GLOB>` excludes files/dirs from file operations (repeatable; not applied to `search`).
 
 ```bash
-wit tree ratatui/ratatui --ignore '.github' --ignore 'assets/**'
-wit rg 'TODO' ratatui/ratatui --ignore '*.lock'
+wit tree -r ratatui/ratatui --ignore '.github' --ignore 'assets/**'
+wit rg 'TODO' -r ratatui/ratatui --ignore '*.lock'
 ```
+

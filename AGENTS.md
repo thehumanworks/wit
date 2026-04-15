@@ -30,14 +30,14 @@ This is a Cargo workspace with two crates:
 | Subcommand | Alias | Description | Key Flags |
 |------------|-------|-------------|-----------|
 | `search`   | `s`   | Repo discovery via the GitHub REST repository search API | `-p`, `-q`, `-l`, `-n` |
-| `cache`    | `c`   | Clone (or refresh) a GitHub repo into local cache | |
-| `tree`     | `t`   | Show file tree of a repo (or subtree) | `-l` (line counts + token estimates) |
-| `ls`       |       | List directory contents (non-recursive, one level) | `-l` (line counts + token estimates) |
-| `cat`      |       | Print file contents (POSIX cat flags: -n, -b, -s, -E, -T, -A) | |
-| `rg`       |       | Ripgrep-style search within a cached repo | `-l`, `-g`, `-C`, `--long` (sizes with `-l`) |
-| `sed`      |       | POSIX-style sed on a file from a cached repo | `-n`, `-e`, `-f` |
-| `head`     |       | First N lines of a file (default: 10) | `-n`, `-N` |
-| `tail`     |       | Last N lines / from line N onward | `-n`, `-p`, `-N` |
+| `cache`    | `c`   | Clone (or refresh) a GitHub repo into local cache | `-r` / `--repo` |
+| `tree`     | `t`   | Show file tree of a repo (or subtree) | `-r` / `--repo`, `-l` (line counts + token estimates) |
+| `ls`       |       | List directory contents (non-recursive, one level) | `-r` / `--repo`, `-l` (line counts + token estimates) |
+| `cat`      |       | Print file contents (POSIX cat flags: -n, -b, -s, -E, -T, -A) | `-r` / `--repo` |
+| `rg`       |       | Ripgrep-style search within a cached repo | `-r` / `--repo`, `-l`, `-g`, `-C`, `--long` (sizes with `-l`) |
+| `sed`      |       | POSIX-style sed on a file from a cached repo | `-r` / `--repo`, `-n`, `-e`, `-f` |
+| `head`     |       | First N lines of a file (default: 10) | `-r` / `--repo`, `-n`, `-N` |
+| `tail`     |       | Last N lines / from line N onward | `-r` / `--repo`, `-n`, `-p`, `-N` |
 
 ## Build, Test, and Development Commands
 

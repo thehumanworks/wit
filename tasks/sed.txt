@@ -4,7 +4,7 @@ PLAN
 
 EXAMPLE COMMAND
 """
-wit sed -n '320,460p' modal-labs/modal-client modal/image.py
+wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py
 """
 
 REQUIREMENTS
