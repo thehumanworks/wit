@@ -1,6 +1,12 @@
 ---
 name: wit
-description: Explore GitHub repositories without cloning using the `wit` CLI. Use when you need to discover repositories, browse file trees, read files, search code, or extract content from GitHub repos. Supports: finding repos with `wit search`, viewing repo structure with `wit tree`/`wit ls`, reading files with `wit cat`/`wit head`/`wit tail`/`wit sed`, and searching code with `wit rg`. Install with `npm install -g @nothumanwork/wit`.
+description: >
+  Explore GitHub repositories without cloning using the `wit` CLI. Use when you
+  need to discover repositories, browse file trees, read files, search code, or
+  extract content from GitHub repos. Supports: finding repos with `wit search`,
+  viewing repo structure with `wit tree`/`wit ls`, reading files with `wit cat`/
+  `wit head`/`wit tail`/`wit sed`, and searching code with `wit rg`. Install
+  with `npm install -g @nothumanwork/wit`.
 ---
 
 # wit — GitHub Repository Explorer
@@ -155,4 +161,3 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs      # from line 100 to EOF
 wit tree -r ratatui/ratatui --ignore '.github' --ignore 'assets/**'
 wit rg 'TODO' -r ratatui/ratatui --ignore '*.lock'
 ```
-
