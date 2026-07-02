@@ -79,7 +79,7 @@ USAGE:
     wit-mcp
     wit-mcp --version
 
-MCP clients should launch wit-mcp with no arguments. Protocol frames are written to stdout; diagnostics are written to stderr.",
+MCP clients should launch wit-mcp with no arguments, or use `wit mcp --transport stdio`. Protocol frames are written to stdout; diagnostics are written to stderr.",
         env!("CARGO_PKG_VERSION")
     );
 }

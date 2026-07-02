@@ -24,7 +24,7 @@ All repo-scoped commands take `-r/--repo <owner/repo>` as a required flag.
 
 ## MCP Server
 
-When an MCP client is available, use `wit-mcp` as the stdio server instead of shelling out. The server exposes the CLI command surface as MCP tools:
+When an MCP client is available, use `wit mcp --transport stdio` as the stdio server instead of shelling out. The standalone `wit-mcp` binary remains available for clients that prefer a dedicated command. The server exposes the CLI command surface as MCP tools:
 
 - `wit_search`
 - `wit_cache_refresh`

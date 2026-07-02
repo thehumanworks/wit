@@ -76,7 +76,7 @@ wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude pat
 
 ## MCP Server
 
-`wit-mcp` is a stdio MCP server for agents that need to explore GitHub repositories without cloning them directly. It exposes the public `wit` command surface as MCP tools (`wit_search`, `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, `wit_tail`, `wit_skill_load`, and `wit_skill_install`), plus prompts for coherent repo exploration and resources for usage guidance.
+`wit mcp --transport stdio` starts a stdio MCP server for agents that need to explore GitHub repositories without cloning them directly. The standalone `wit-mcp` binary remains available for clients that prefer a dedicated command. The server exposes the public `wit` command surface as MCP tools (`wit_search`, `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, `wit_tail`, `wit_skill_load`, and `wit_skill_install`), plus prompts for coherent repo exploration and resources for usage guidance.
 
 Example MCP client config:
 
@@ -84,7 +84,8 @@ Example MCP client config:
 {
   "mcpServers": {
     "wit": {
-      "command": "wit-mcp",
+      "command": "wit",
+      "args": ["mcp", "--transport", "stdio"],
       "env": {
         "WIT_CACHE_DIR": "/tmp/wit-mcp-cache"
       }
@@ -93,7 +94,7 @@ Example MCP client config:
 }
 ```
 
-`wit-mcp` writes protocol frames only to stdout; diagnostics go to stderr. Repo-reading tools use the same branch-keyed stale-while-revalidate cache as the CLI and accept `refresh_cache` when a fresh default-branch read is required. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
+`wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. Repo-reading tools use the same branch-keyed stale-while-revalidate cache as the CLI and accept `refresh_cache` when a fresh default-branch read is required. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
 
 ## Global Options
 

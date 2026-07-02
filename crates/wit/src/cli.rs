@@ -1,4 +1,4 @@
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
@@ -327,6 +327,16 @@ enum Commands {
         #[command(subcommand)]
         command: SkillCommands,
     },
+    #[command(
+        name = "mcp",
+        about = "Start the wit MCP server",
+        after_help = "Examples:\n  wit mcp --transport stdio             # Start the MCP server over stdio"
+    )]
+    Mcp {
+        /// MCP transport to use
+        #[arg(long, value_enum, default_value = "stdio")]
+        transport: McpTransport,
+    },
     #[command(name = "__cache-revalidate", hide = true)]
     CacheRevalidate {
         /// Repository in "owner/repo" format
@@ -345,6 +355,11 @@ enum SkillCommands {
         #[arg(long, value_name = "DIR")]
         path: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum McpTransport {
+    Stdio,
 }
 
 fn parse_search_limit(value: &str) -> Result<usize, String> {
@@ -721,6 +736,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", skill_path.display());
             }
         },
+        Commands::Mcp { transport } => match transport {
+            McpTransport::Stdio => wit::mcp::serve_stdio().await?,
+        },
     }
 
     Ok(())
@@ -852,7 +870,7 @@ mod tests {
         assert_eq!(
             subcommands,
             vec![
-                "search", "cache", "tree", "ls", "cat", "rg", "sed", "head", "tail", "skill"
+                "search", "cache", "tree", "ls", "cat", "rg", "sed", "head", "tail", "skill", "mcp"
             ]
         );
         assert_eq!(
@@ -880,6 +898,11 @@ mod tests {
             .map(|subcommand| subcommand.get_name())
             .collect();
         assert_eq!(skill_subcommands, vec!["load", "install"]);
+
+        let mcp = find_subcommand(&command, "mcp");
+        let transport = find_arg(mcp, "transport");
+        assert_eq!(transport.get_long(), Some("transport"));
+        assert_eq!(transport.get_default_values(), ["stdio"]);
     }
 
     #[test]
@@ -1193,5 +1216,22 @@ mod tests {
 
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
         assert!(err.to_string().contains("--path <DIR>"));
+    }
+
+    #[test]
+    fn test_mcp_stdio_parses() {
+        let cli = WitCli::try_parse_from(["wit", "mcp", "--transport", "stdio"])
+            .expect("mcp stdio args should parse");
+
+        match cli.command {
+            Commands::Mcp { transport } => assert_eq!(transport, McpTransport::Stdio),
+            _ => panic!("expected mcp command"),
+        }
+
+        let defaulted = WitCli::try_parse_from(["wit", "mcp"]).expect("mcp should default stdio");
+        match defaulted.command {
+            Commands::Mcp { transport } => assert_eq!(transport, McpTransport::Stdio),
+            _ => panic!("expected mcp command"),
+        }
     }
 }
