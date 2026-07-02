@@ -7,6 +7,7 @@ use std::io::{BufWriter, Write};
 #[derive(Debug, Clone, Default)]
 pub struct SedOptions {
     pub quiet: bool,
+    pub allow_file_io: bool,
 }
 
 #[derive(Debug)]
@@ -157,7 +158,7 @@ pub fn run(program: &SedProgram, input: &str, options: &SedOptions) -> Result<Se
         input.lines().map(|line| line.to_string()).collect()
     };
 
-    let mut runtime = SedRuntime::new(program, options.quiet);
+    let mut runtime = SedRuntime::new(program, options);
     let exit_code = runtime.execute(&lines)?;
 
     Ok(SedOutput {
@@ -169,6 +170,7 @@ pub fn run(program: &SedProgram, input: &str, options: &SedOptions) -> Result<Se
 struct SedRuntime<'a> {
     program: &'a SedProgram,
     quiet: bool,
+    allow_file_io: bool,
     range_active: Vec<bool>,
     substituted: bool,
     output: String,
@@ -177,10 +179,11 @@ struct SedRuntime<'a> {
 }
 
 impl<'a> SedRuntime<'a> {
-    fn new(program: &'a SedProgram, quiet: bool) -> Self {
+    fn new(program: &'a SedProgram, options: &SedOptions) -> Self {
         Self {
             program,
-            quiet,
+            quiet: options.quiet,
+            allow_file_io: options.allow_file_io,
             range_active: vec![false; program.commands.len()],
             substituted: false,
             output: String::new(),
@@ -292,6 +295,7 @@ impl<'a> SedRuntime<'a> {
                                     self.print_pattern(&pattern);
                                 }
                                 if let Some(path) = &subst.write {
+                                    self.ensure_file_io_allowed()?;
                                     self.write_to_file(path, &pattern)?;
                                 }
                             }
@@ -313,6 +317,7 @@ impl<'a> SedRuntime<'a> {
                             break;
                         }
                         CommandKind::Read(path) => {
+                            self.ensure_file_io_allowed()?;
                             let contents = std::fs::read_to_string(path).map_err(|e| {
                                 anyhow::anyhow!("failed to read file for r command: {e}")
                             })?;
@@ -321,6 +326,7 @@ impl<'a> SedRuntime<'a> {
                             }
                         }
                         CommandKind::Write(path) => {
+                            self.ensure_file_io_allowed()?;
                             self.write_to_file(path, &pattern)?;
                         }
                         CommandKind::Translate(map) => {
@@ -558,15 +564,27 @@ impl<'a> SedRuntime<'a> {
         }
     }
 
+    fn ensure_file_io_allowed(&self) -> Result<()> {
+        if self.allow_file_io {
+            Ok(())
+        } else {
+            bail!("sed local file I/O commands are disabled in this context")
+        }
+    }
+
     fn write_to_file(&mut self, path: &str, pattern: &str) -> Result<()> {
-        let writer = self.writers.entry(path.to_string()).or_insert_with(|| {
+        if !self.writers.contains_key(path) {
             let file = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
-                .expect("failed to open file for w command");
-            BufWriter::new(file)
-        });
+                .map_err(|e| anyhow::anyhow!("failed to open file for w command: {e}"))?;
+            self.writers.insert(path.to_string(), BufWriter::new(file));
+        }
+        let writer = self
+            .writers
+            .get_mut(path)
+            .ok_or_else(|| anyhow::anyhow!("failed to open file for w command"))?;
         writeln!(writer, "{}", pattern)?;
         Ok(())
     }
@@ -1143,7 +1161,15 @@ mod tests {
 
     fn run_script(script: &str, input: &str, quiet: bool) -> String {
         let program = parse_script(&[script.to_string()]).unwrap();
-        let output = run(&program, input, &SedOptions { quiet }).unwrap();
+        let output = run(
+            &program,
+            input,
+            &SedOptions {
+                quiet,
+                allow_file_io: true,
+            },
+        )
+        .unwrap();
         output.output
     }
 

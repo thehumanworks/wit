@@ -1,6 +1,7 @@
 {
   "packageName": "@nothumanwork/wit",
   "binaryName": "wit",
+  "mcpBinaryName": "wit-mcp",
   "repositoryUrl": "https://github.com/thehumanworks/wit",
   "description": "GitHub exploration CLI for AI agents",
   "targets": [
@@ -9,42 +10,48 @@
       "os": "darwin",
       "cpu": "x64",
       "artifact": "wit-macos-x86_64.tar.gz",
-      "binaryFile": "wit"
+      "binaryFile": "wit",
+      "mcpBinaryFile": "wit-mcp"
     },
     {
       "id": "darwin-arm64",
       "os": "darwin",
       "cpu": "arm64",
       "artifact": "wit-macos-aarch64.tar.gz",
-      "binaryFile": "wit"
+      "binaryFile": "wit",
+      "mcpBinaryFile": "wit-mcp"
     },
     {
       "id": "linux-x64",
       "os": "linux",
       "cpu": "x64",
       "artifact": "wit-linux-x86_64.tar.gz",
-      "binaryFile": "wit"
+      "binaryFile": "wit",
+      "mcpBinaryFile": "wit-mcp"
     },
     {
       "id": "linux-arm64",
       "os": "linux",
       "cpu": "arm64",
       "artifact": "wit-linux-aarch64.tar.gz",
-      "binaryFile": "wit"
+      "binaryFile": "wit",
+      "mcpBinaryFile": "wit-mcp"
     },
     {
       "id": "win32-x64",
       "os": "win32",
       "cpu": "x64",
       "artifact": "wit-windows-x86_64.zip",
-      "binaryFile": "wit.exe"
+      "binaryFile": "wit.exe",
+      "mcpBinaryFile": "wit-mcp.exe"
     },
     {
       "id": "win32-arm64",
       "os": "win32",
       "cpu": "arm64",
       "artifact": "wit-windows-aarch64.zip",
-      "binaryFile": "wit.exe"
+      "binaryFile": "wit.exe",
+      "mcpBinaryFile": "wit-mcp.exe"
     }
   ]
 }

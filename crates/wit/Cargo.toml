@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "wit"
 path = "src/cli.rs"
 
+[[bin]]
+name = "wit-mcp"
+path = "src/bin/wit-mcp.rs"
+
 [dependencies]
 wits = { path = "../wits" }
 anyhow.workspace = true
@@ -33,9 +37,12 @@ regex = "1"
 globset = "0.4.18"
 octocrab = "0.49.7"
 rustls = "0.23.36"
+rmcp = { version = "2", features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] }
 
 [dev-dependencies]
 tempfile = "3.13.0"
 wiremock = "0.6"
-
-
+rmcp = { version = "2", features = ["client", "transport-child-process"] }

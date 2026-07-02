@@ -161,6 +161,7 @@ jobs:
           npm install -g "${package}"
           wit --help
           wit rg --help
+          wit-mcp --version
           npx "${package}" --help
 
       - name: Install and smoke test package (Windows)
@@ -186,4 +187,5 @@ jobs:
           npm install -g $package
           wit --help
           wit rg --help
+          wit-mcp --version
           npx $package --help

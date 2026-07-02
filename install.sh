@@ -121,16 +121,19 @@ case "$uname_s" in
         platform="linux"
         archive_ext="tar.gz"
         binary_name="${PROGRAM}"
+        mcp_binary_name="${PROGRAM}-mcp"
         ;;
     darwin*)
         platform="macos"
         archive_ext="tar.gz"
         binary_name="${PROGRAM}"
+        mcp_binary_name="${PROGRAM}-mcp"
         ;;
     msys*|mingw*|cygwin*)
         platform="windows"
         archive_ext="zip"
         binary_name="${PROGRAM}.exe"
+        mcp_binary_name="${PROGRAM}-mcp.exe"
         ;;
     *)
         fail "unsupported operating system: ${uname_s}"
@@ -217,12 +220,6 @@ else
     unzip -oq "$archive_path" -d "$extract_dir"
 fi
 
-binary_path="${extract_dir}/${binary_name}"
-if [ ! -f "$binary_path" ]; then
-    binary_path="$(find "$extract_dir" -type f -name "$binary_name" | head -n 1 || true)"
-fi
-[ -n "$binary_path" ] && [ -f "$binary_path" ] || fail "binary ${binary_name} not found in ${asset}"
-
 if [ -z "$BIN_DIR" ]; then
     if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
         BIN_DIR="/usr/local/bin"
@@ -232,21 +229,42 @@ if [ -z "$BIN_DIR" ]; then
 fi
 
 mkdir -p "$BIN_DIR"
-destination="${BIN_DIR}/${binary_name}"
 
-if [ -w "$BIN_DIR" ]; then
-    cp "$binary_path" "$destination"
-    chmod +x "$destination" 2>/dev/null || true
-else
-    if has_cmd sudo; then
-        sudo cp "$binary_path" "$destination"
-        sudo chmod +x "$destination" 2>/dev/null || true
-    else
-        fail "cannot write to ${BIN_DIR}; rerun with --bin-dir in a writable directory"
+find_binary() {
+    name="$1"
+    candidate="${extract_dir}/${name}"
+    if [ ! -f "$candidate" ]; then
+        candidate="$(find "$extract_dir" -type f -name "$name" | head -n 1 || true)"
     fi
-fi
+    [ -n "$candidate" ] && [ -f "$candidate" ] || fail "binary ${name} not found in ${asset}"
+    printf "%s" "$candidate"
+}
 
-log "Installed ${PROGRAM} ${VERSION} to ${destination}"
+install_binary() {
+    source_path="$1"
+    name="$2"
+    destination="${BIN_DIR}/${name}"
+
+    if [ -w "$BIN_DIR" ]; then
+        cp "$source_path" "$destination"
+        chmod +x "$destination" 2>/dev/null || true
+    else
+        if has_cmd sudo; then
+            sudo cp "$source_path" "$destination"
+            sudo chmod +x "$destination" 2>/dev/null || true
+        else
+            fail "cannot write to ${BIN_DIR}; rerun with --bin-dir in a writable directory"
+        fi
+    fi
+}
+
+binary_path="$(find_binary "$binary_name")"
+mcp_binary_path="$(find_binary "$mcp_binary_name")"
+install_binary "$binary_path" "$binary_name"
+install_binary "$mcp_binary_path" "$mcp_binary_name"
+
+log "Installed ${PROGRAM} ${VERSION} to ${BIN_DIR}/${binary_name}"
+log "Installed ${PROGRAM}-mcp ${VERSION} to ${BIN_DIR}/${mcp_binary_name}"
 case ":$PATH:" in
     *":${BIN_DIR}:"*) ;;
     *)

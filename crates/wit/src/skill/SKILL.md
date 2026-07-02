@@ -22,6 +22,24 @@ description: >
 
 All repo-scoped commands take `-r/--repo <owner/repo>` as a required flag.
 
+## MCP Server
+
+When an MCP client is available, use `wit-mcp` as the stdio server instead of shelling out. The server exposes the CLI command surface as MCP tools:
+
+- `wit_search`
+- `wit_cache_refresh`
+- `wit_tree`
+- `wit_ls`
+- `wit_cat`
+- `wit_rg`
+- `wit_sed`
+- `wit_head`
+- `wit_tail`
+- `wit_skill_load`
+- `wit_skill_install`
+
+It also exposes prompts (`wit_explore_repo`, `wit_discover_repos`, `wit_read_precise`) and resources (`wit://skill/SKILL.md`, `wit://guide/workflow`, `wit://guide/tools`) so agents can retrieve the recommended workflow without the user repeating a long preamble. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
+
 ## Cache Behavior
 
 Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a default-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed.
@@ -121,7 +139,7 @@ wit rg -l --long 'Widget' -r ratatui/ratatui         # files with line counts
 | `-S/--smart-case` | Case-insensitive when pattern is all lowercase |
 | `-w/--word-regexp` | Match whole words only |
 | `-v/--invert-match` | Show non-matching lines |
-| `-m/--max-count` | Max matches to show |
+| `-m/--max-count` | Max matches to show; omit for unlimited, use `0` for no matches |
 | `-C/-B/-A` | Context lines around matches |
 | `-g/--glob` | Filter files by glob (e.g. `*.rs`) |
 | `-l/--files-with-matches` | Show only file names |

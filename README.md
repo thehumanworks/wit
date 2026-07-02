@@ -20,7 +20,7 @@ Run without global install:
 npx @nothumanwork/wit --help
 ```
 
-`@nothumanwork/wit` is a single npm package. During `npm install`, its `postinstall` script detects the host platform, selects the matching bundled release archive, and extracts it into npm's bin-managed install location, so one package covers:
+`@nothumanwork/wit` is a single npm package. During `npm install`, its `postinstall` script detects the host platform, selects the matching bundled release archive, and extracts both `wit` and `wit-mcp` into npm's bin-managed install location, so one package covers:
 - `darwin-x64`
 - `darwin-arm64`
 - `linux-x64`
@@ -57,7 +57,7 @@ The installer auto-detects platform and fetches these release artifacts:
 ### Install from source
 
 ```bash
-cargo install --path .
+cargo install --path crates/wit --bins
 ```
 
 ## Quick Start
@@ -73,6 +73,27 @@ wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
 wit tree --refresh-cache -r ratatui/ratatui src               # Force fresh cache before reading
 wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 ```
+
+## MCP Server
+
+`wit-mcp` is a stdio MCP server for agents that need to explore GitHub repositories without cloning them directly. It exposes the public `wit` command surface as MCP tools (`wit_search`, `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, `wit_tail`, `wit_skill_load`, and `wit_skill_install`), plus prompts for coherent repo exploration and resources for usage guidance.
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "wit": {
+      "command": "wit-mcp",
+      "env": {
+        "WIT_CACHE_DIR": "/tmp/wit-mcp-cache"
+      }
+    }
+  }
+}
+```
+
+`wit-mcp` writes protocol frames only to stdout; diagnostics go to stderr. Repo-reading tools use the same branch-keyed stale-while-revalidate cache as the CLI and accept `refresh_cache` when a fresh default-branch read is required. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
 
 ## Global Options
 
@@ -192,7 +213,7 @@ wit rg -l --long 'Widget' -r ratatui/ratatui           # File list with line cou
 | `-S` | `--smart-case` | Case-insensitive if pattern is all lowercase |
 | `-w` | `--word-regexp` | Match whole words only |
 | `-v` | `--invert-match` | Show non-matching lines |
-| `-m` | `--max-count` | Maximum matches to show (0 = unlimited) |
+| `-m` | `--max-count` | Maximum matches to show; omit for unlimited, use `0` for no matches |
 | `-C` | `--context` | Lines of context before and after matches |
 | `-B` | `--before-context` | Lines of context before matches |
 | `-A` | `--after-context` | Lines of context after matches |
@@ -252,7 +273,9 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end
 ```
 crates/wit/src/
 ├── cli.rs           # CLI entry point
+├── bin/wit-mcp.rs   # stdio MCP server entry point
 ├── lib.rs           # Library exports (gitops, sed, search, search_run)
+├── mcp.rs           # MCP tools, prompts, resources, and response shaping
 ├── search.rs        # GitHub repository search, query assembly, limit-aware pagination
 ├── search_run.rs    # `wit search`: GitHub-only orchestration
 ├── sed.rs

@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,15 +100,53 @@ async function assertArtifactsExist(artifactsDir, targets) {
     if (!checksums.has(target.artifact)) {
       fail(`checksum entry missing for ${target.artifact} in ${checksumsPath}`);
     }
+
+    const archivedFiles = archiveFileBasenames(artifactPath);
+    for (const binaryFile of [target.binaryFile, target.mcpBinaryFile].filter(Boolean)) {
+      if (!archivedFiles.has(path.basename(binaryFile))) {
+        fail(`artifact ${target.artifact} is missing ${binaryFile}`);
+      }
+    }
   }
 }
 
-function buildLauncher({ binaryName, packageName }, targets) {
+function runCapture(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  if (result.error) {
+    fail(`failed to run ${command}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    fail(
+      `command failed (${result.status}): ${command} ${args.join(" ")}\n${result.stderr || ""}`,
+    );
+  }
+  return result.stdout;
+}
+
+function archiveFileBasenames(artifactPath) {
+  let listing;
+  if (artifactPath.endsWith(".tar.gz")) {
+    listing = runCapture("tar", ["-tzf", artifactPath]);
+  } else if (artifactPath.endsWith(".zip")) {
+    listing = runCapture("unzip", ["-Z1", artifactPath]);
+  } else {
+    fail(`unsupported artifact format: ${artifactPath}`);
+  }
+
+  return new Set(
+    listing
+      .split(/\r?\n/)
+      .map((entry) => path.basename(entry.trim()))
+      .filter(Boolean),
+  );
+}
+
+function buildLauncher({ binaryName, packageName }, targets, binaryFileKey = "binaryFile") {
   const mapping = Object.fromEntries(
     targets.map((target) => [
       `${target.os}-${target.cpu}`,
       {
-        binaryFile: target.binaryFile,
+        binaryFile: target[binaryFileKey],
       },
     ]),
   );
@@ -160,13 +199,14 @@ process.exit(result.status ?? 1);
 `;
 }
 
-function buildInstaller({ binaryName, packageName, repositoryUrl }, targets) {
+function buildInstaller({ packageName, repositoryUrl }, targets) {
   const mapping = Object.fromEntries(
     targets.map((target) => [
       `${target.os}-${target.cpu}`,
       {
         artifact: target.artifact,
         binaryFile: target.binaryFile,
+        binaryFiles: [target.binaryFile, target.mcpBinaryFile].filter(Boolean),
       },
     ]),
   );
@@ -183,7 +223,6 @@ const { spawnSync } = require("node:child_process");
 const packageJson = require("../package.json");
 
 const TARGETS = ${JSON.stringify(mapping, null, 2)};
-const BINARY_NAME = ${JSON.stringify(binaryName)};
 const PACKAGE_NAME = ${JSON.stringify(packageName)};
 const REPOSITORY_URL = ${JSON.stringify(repositoryUrl)};
 const CHECKSUM_FILE = ${JSON.stringify(CHECKSUM_FILE)};
@@ -295,7 +334,6 @@ async function installBinary({ target }) {
   const packageRoot = path.resolve(__dirname, "..");
   const binDir = path.join(packageRoot, "bin");
   const distsDir = path.join(packageRoot, "dists");
-  const binaryPath = path.join(binDir, target.binaryFile);
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "wit-npm-"));
   const archivePath = path.join(distsDir, target.artifact);
   const checksumsPath = path.join(distsDir, CHECKSUM_FILE);
@@ -319,18 +357,20 @@ async function installBinary({ target }) {
     await fsp.mkdir(extractDir, { recursive: true });
     extractArchive(archivePath, extractDir);
 
-    const sourceBinary =
-      (await findFile(extractDir, target.binaryFile)) || path.join(extractDir, target.binaryFile);
-    await fsp.access(sourceBinary);
-
     await fsp.mkdir(binDir, { recursive: true });
-    await fsp.rm(binaryPath, { force: true });
-    await fsp.copyFile(sourceBinary, binaryPath);
-    if (!binaryPath.endsWith(".exe")) {
-      await fsp.chmod(binaryPath, 0o755);
+    for (const binaryFile of target.binaryFiles || [target.binaryFile]) {
+      const binaryPath = path.join(binDir, binaryFile);
+      const sourceBinary =
+        (await findFile(extractDir, binaryFile)) || path.join(extractDir, binaryFile);
+      await fsp.access(sourceBinary);
+      await fsp.rm(binaryPath, { force: true });
+      await fsp.copyFile(sourceBinary, binaryPath);
+      if (!binaryPath.endsWith(".exe")) {
+        await fsp.chmod(binaryPath, 0o755);
+      }
     }
 
-    log(\`installed \${BINARY_NAME} \${packageJson.version}\`);
+    log(\`installed \${(target.binaryFiles || [target.binaryFile]).join(", ")} \${packageJson.version}\`);
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true });
   }
@@ -356,7 +396,20 @@ async function writePackage({ artifactsDir, outputDir, version, config, targets 
   await ensureDir(distsDir);
   await ensureDir(scriptsDir);
 
-  const launcherRelativePath = path.posix.join("bin", `${config.binaryName}.js`);
+  const launcherConfigs = [
+    {
+      binaryName: config.binaryName,
+      binaryFileKey: "binaryFile",
+      relativePath: path.posix.join("bin", `${config.binaryName}.js`),
+    },
+  ];
+  if (config.mcpBinaryName) {
+    launcherConfigs.push({
+      binaryName: config.mcpBinaryName,
+      binaryFileKey: "mcpBinaryFile",
+      relativePath: path.posix.join("bin", `${config.mcpBinaryName}.js`),
+    });
+  }
   const installerRelativePath = path.posix.join("scripts", "postinstall.js");
 
   const packageJson = {
@@ -372,16 +425,21 @@ async function writePackage({ artifactsDir, outputDir, version, config, targets 
     bugs: {
       url: `${config.repositoryUrl}/issues`,
     },
-    bin: {
-      [config.binaryName]: launcherRelativePath,
-    },
+    bin: Object.fromEntries(
+      launcherConfigs.map((launcher) => [launcher.binaryName, launcher.relativePath]),
+    ),
     scripts: {
       postinstall: "node scripts/postinstall.js",
     },
     engines: {
       node: ">=18",
     },
-    files: [launcherRelativePath, installerRelativePath, "README.md", "dists/*"],
+    files: [
+      ...launcherConfigs.map((launcher) => launcher.relativePath),
+      installerRelativePath,
+      "README.md",
+      "dists/*",
+    ],
   };
 
   await fs.writeFile(
@@ -390,10 +448,16 @@ async function writePackage({ artifactsDir, outputDir, version, config, targets 
     "utf8",
   );
 
-  const launcher = buildLauncher(config, targets);
-  const launcherPath = path.join(binDir, `${config.binaryName}.js`);
-  await fs.writeFile(launcherPath, launcher, "utf8");
-  await fs.chmod(launcherPath, 0o755);
+  for (const launcherConfig of launcherConfigs) {
+    const launcher = buildLauncher(
+      { ...config, binaryName: launcherConfig.binaryName },
+      targets,
+      launcherConfig.binaryFileKey,
+    );
+    const launcherPath = path.join(binDir, `${launcherConfig.binaryName}.js`);
+    await fs.writeFile(launcherPath, launcher, "utf8");
+    await fs.chmod(launcherPath, 0o755);
+  }
 
   const installer = buildInstaller(config, targets);
   const installerPath = path.join(scriptsDir, "postinstall.js");

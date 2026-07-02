@@ -7,7 +7,7 @@ use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ptree::{TreeBuilder, print_tree};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -176,10 +176,22 @@ fn encode_branch_for_path(branch: &str) -> String {
 }
 
 fn split_owner_repo(owner_repo: &str) -> anyhow::Result<(&str, &str)> {
-    owner_repo
+    let (owner, repo) = owner_repo
         .split_once('/')
         .filter(|(owner, repo)| !owner.is_empty() && !repo.is_empty() && !repo.contains('/'))
-        .with_context(|| format!("expected GitHub repository as owner/repo, got '{owner_repo}'"))
+        .with_context(|| format!("expected GitHub repository as owner/repo, got '{owner_repo}'"))?;
+    if !is_safe_repo_component(owner) || !is_safe_repo_component(repo) {
+        anyhow::bail!("invalid GitHub repository identity: '{owner_repo}'");
+    }
+    Ok((owner, repo))
+}
+
+fn is_safe_repo_component(component: &str) -> bool {
+    component != "."
+        && component != ".."
+        && component.bytes().all(
+            |byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' | b'-'),
+        )
 }
 
 fn repo_cache_root(cache_dir: &Path, owner_repo: &str) -> anyhow::Result<PathBuf> {
@@ -272,6 +284,7 @@ fn cached_default_cache_target(
 }
 
 fn default_cache_target(owner_repo: &str, remote_url: &str) -> anyhow::Result<ResolvedCacheTarget> {
+    split_owner_repo(owner_repo)?;
     let branch = resolve_default_branch(remote_url)?;
     let target = CacheTarget::new(owner_repo, &branch.name)?;
     Ok(ResolvedCacheTarget {
@@ -468,6 +481,7 @@ fn current_unix_timestamp() -> anyhow::Result<u64> {
 }
 
 pub fn revalidate_github_repo(owner_repo: &str) -> anyhow::Result<()> {
+    split_owner_repo(owner_repo)?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
     remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
@@ -701,6 +715,7 @@ pub async fn cache_github_repo(
     owner_repo: &str,
     mode: CacheAcquisitionMode,
 ) -> anyhow::Result<Repository> {
+    split_owner_repo(owner_repo)?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
     remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
@@ -1575,6 +1590,141 @@ pub fn build_tree_with_ignore(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeText {
+    pub text: String,
+    pub entries: usize,
+    pub truncated: bool,
+}
+
+#[derive(Default)]
+struct TreeTextNode {
+    children: BTreeMap<String, TreeTextNode>,
+}
+
+impl TreeTextNode {
+    fn insert(&mut self, parts: &[String]) {
+        let Some((head, tail)) = parts.split_first() else {
+            return;
+        };
+        self.children.entry(head.clone()).or_default().insert(tail);
+    }
+}
+
+pub fn tree_text_with_ignore(
+    repo: &gix::Repository,
+    subdir: Option<&str>,
+    long: bool,
+    ignore_patterns: &[String],
+    max_entries: Option<usize>,
+) -> anyhow::Result<TreeText> {
+    let ignore_matcher = IgnoreMatcher::new(ignore_patterns)?;
+    let tree = repo.head_commit()?.tree()?;
+
+    let mut recorder = gix::traverse::tree::Recorder::default();
+    tree.traverse().breadthfirst(&mut recorder)?;
+
+    let subdir = subdir.map(|s| s.trim_end_matches('/'));
+    let (root_label, prefix_to_strip) = match subdir {
+        Some(dir) => (
+            dir.split('/').next_back().unwrap_or(dir).to_string(),
+            Some(dir),
+        ),
+        None => (".".to_string(), None),
+    };
+
+    let mut paths: Vec<_> = recorder
+        .records
+        .iter()
+        .filter(|entry| entry.mode.is_blob())
+        .filter(|entry| {
+            entry
+                .filepath
+                .to_str()
+                .map(|path| !ignore_matcher.is_ignored(path))
+                .unwrap_or(false)
+        })
+        .filter(|entry| match prefix_to_strip {
+            Some(prefix) => {
+                let path = entry.filepath.to_str().unwrap();
+                path.starts_with(prefix)
+                    && (path.len() == prefix.len()
+                        || path.as_bytes().get(prefix.len()) == Some(&b'/'))
+            }
+            None => true,
+        })
+        .collect();
+    paths.sort_by_key(|entry| &entry.filepath);
+
+    let total_entries = paths.len();
+    let max_entries = max_entries.unwrap_or(usize::MAX);
+    let mut root = TreeTextNode::default();
+    let mut inserted = 0usize;
+
+    for entry in paths.into_iter().take(max_entries) {
+        let path_str = entry.filepath.to_str().unwrap();
+        let relative_path = match prefix_to_strip {
+            Some(prefix) => path_str
+                .strip_prefix(prefix)
+                .unwrap_or(path_str)
+                .trim_start_matches('/'),
+            None => path_str,
+        };
+
+        if relative_path.is_empty() {
+            continue;
+        }
+
+        let mut parts = relative_path
+            .split('/')
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        if long && let Some(filename) = parts.last_mut() {
+            let object = repo.find_object(entry.oid)?;
+            let blob = object.into_blob();
+            if blob.data.find_byte(0).is_some() {
+                *filename = format!("{filename} [bin]");
+            } else {
+                let lines = count_lines(&blob.data);
+                *filename = format!("{filename} ({lines} ln, ~{} tok)", lines * 5);
+            }
+        }
+
+        root.insert(&parts);
+        inserted += 1;
+    }
+
+    let mut lines = vec![root_label];
+    render_tree_text(&root.children, "", &mut lines);
+
+    Ok(TreeText {
+        text: lines.join("\n"),
+        entries: inserted,
+        truncated: inserted < total_entries,
+    })
+}
+
+fn render_tree_text(
+    children: &BTreeMap<String, TreeTextNode>,
+    prefix: &str,
+    lines: &mut Vec<String>,
+) {
+    let len = children.len();
+    for (index, (name, child)) in children.iter().enumerate() {
+        let is_last = index + 1 == len;
+        let connector = if is_last { "└── " } else { "├── " };
+        lines.push(format!("{prefix}{connector}{name}"));
+
+        let child_prefix = if is_last {
+            format!("{prefix}    ")
+        } else {
+            format!("{prefix}│   ")
+        };
+        render_tree_text(&child.children, &child_prefix, lines);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1639,6 +1789,13 @@ mod tests {
     fn cache_branch_paths_reject_invalid_identity() {
         assert!(CacheTarget::new("owner", "main").is_err());
         assert!(CacheTarget::new("owner/repo/extra", "main").is_err());
+        assert!(CacheTarget::new("../victim", "main").is_err());
+        assert!(CacheTarget::new("owner/..", "main").is_err());
+        assert!(CacheTarget::new("./repo", "main").is_err());
+        assert!(CacheTarget::new("owner/.git", "main").is_ok());
+        assert!(CacheTarget::new("own er/repo", "main").is_err());
+        assert!(CacheTarget::new("owner/repo\nnext", "main").is_err());
+        assert!(CacheTarget::new(r"owner\repo/name", "main").is_err());
         assert!(CacheTarget::new("owner/repo", "").is_err());
     }
 

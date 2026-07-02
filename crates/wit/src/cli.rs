@@ -662,7 +662,14 @@ async fn main() -> anyhow::Result<()> {
             let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             let content = read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?;
             let program = sed::parse_script(&scripts)?;
-            let output = sed::run(&program, &content, &sed::SedOptions { quiet })?;
+            let output = sed::run(
+                &program,
+                &content,
+                &sed::SedOptions {
+                    quiet,
+                    allow_file_io: true,
+                },
+            )?;
             print!("{}", output.output);
             if output.exit_code != 0 {
                 std::process::exit(output.exit_code);
