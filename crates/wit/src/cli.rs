@@ -7,8 +7,9 @@ const SKILL_MD: &str = include_str!("skill/SKILL.md");
 use wit::{
     ensure_rustls_provider,
     gitops::ops::{
-        GrepOptions, GrepResult, build_tree_with_ignore, cache_github_repo, grep_repo_with_options,
-        head_with_ignore, list_dir_with_ignore, read_file, read_file_with_ignore, tail_with_ignore,
+        CacheAcquisitionMode, GrepOptions, GrepResult, build_tree_with_ignore, cache_github_repo,
+        grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
+        read_file_with_ignore, revalidate_github_repo, tail_with_ignore,
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
@@ -18,7 +19,8 @@ use wit::{
 #[command(name = "wit")]
 #[command(
     about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
-    long_about = None
+    long_about = None,
+    after_help = "Cache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age or branch-selection option is exposed."
 )]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
@@ -69,7 +71,7 @@ enum Commands {
         name = "cache",
         visible_alias = "c",
         about = "Clone a repository into the local cache (or refresh an existing one)",
-        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh a stale cache.\n\nExamples:\n  wit cache -r ratatui/ratatui          # Force re-clone of ratatui"
+        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh the default branch cache before returning.\n\nRepo-reading commands normally serve cached content immediately and revalidate the branch in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when the read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui          # Force re-clone of ratatui"
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -87,6 +89,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
 
         /// Optional subdirectory path to display tree from
         path: Option<String>,
@@ -106,6 +112,10 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: String,
 
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
+
         /// Directory path within the repository (default: root)
         path: Option<String>,
 
@@ -123,6 +133,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
 
         /// Path to the file within the repository
         path: String,
@@ -164,6 +178,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
 
         /// Case insensitive search
         #[arg(short = 'i', long)]
@@ -224,6 +242,10 @@ enum Commands {
         #[arg(short = 'n', long = "quiet", alias = "silent")]
         quiet: bool,
 
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
+
         /// Add script to the commands to be executed
         #[arg(short = 'e', long = "expression")]
         expressions: Vec<String>,
@@ -251,6 +273,10 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: String,
 
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
+
         /// Path to the file within the repository
         path: String,
 
@@ -272,6 +298,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
 
         /// Path to the file within the repository
         path: String,
@@ -296,6 +326,12 @@ enum Commands {
     Skill {
         #[command(subcommand)]
         command: SkillCommands,
+    },
+    #[command(name = "__cache-revalidate", hide = true)]
+    CacheRevalidate {
+        /// Repository in "owner/repo" format
+        #[arg(long = "repo")]
+        repo: String,
     },
 }
 
@@ -323,6 +359,14 @@ fn parse_search_limit(value: &str) -> Result<usize, String> {
     Ok(limit)
 }
 
+fn repo_cache_mode(refresh_cache: bool) -> CacheAcquisitionMode {
+    if refresh_cache {
+        CacheAcquisitionMode::ForceInvalidate
+    } else {
+        CacheAcquisitionMode::ServeStaleAndRevalidate
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     ensure_rustls_provider();
@@ -346,15 +390,25 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Commands::Cache { repo } => {
-            let repo = cache_github_repo(&repo, true).await?;
+            let repo = cache_github_repo(&repo, CacheAcquisitionMode::ForceInvalidate).await?;
             println!("Cached repository: {}", repo.path().display());
         }
-        Commands::Tree { repo, path, long } => {
-            let repository = cache_github_repo(&repo, false).await?;
+        Commands::Tree {
+            repo,
+            refresh_cache,
+            path,
+            long,
+        } => {
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
         }
-        Commands::Ls { repo, path, long } => {
-            let repository = cache_github_repo(&repo, false).await?;
+        Commands::Ls {
+            repo,
+            refresh_cache,
+            path,
+            long,
+        } => {
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             let entries =
                 list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
 
@@ -406,6 +460,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Cat {
             repo,
+            refresh_cache,
             path,
             number,
             number_nonblank,
@@ -414,7 +469,7 @@ async fn main() -> anyhow::Result<()> {
             show_tabs,
             show_all,
         } => {
-            let repository = cache_github_repo(&repo, false).await?;
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             let content = read_file_with_ignore(&repository, &path, &ignore_patterns)?;
 
             // -A is equivalent to -ET
@@ -463,6 +518,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Rg {
             repo,
+            refresh_cache,
             pattern,
             ignore_case,
             smart_case,
@@ -477,7 +533,7 @@ async fn main() -> anyhow::Result<()> {
             count,
             long_format,
         } => {
-            let repository = cache_github_repo(&repo, false).await?;
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
 
             // Build options from CLI flags
             let mut opts = GrepOptions::new()
@@ -581,16 +637,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Head {
             repo,
+            refresh_cache,
             path,
             lines,
             number,
         } => {
-            let repository = cache_github_repo(&repo, false).await?;
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             let output = head_with_ignore(&repository, &path, lines, number, &ignore_patterns)?;
             println!("{}", output);
         }
         Commands::Sed {
             quiet,
+            refresh_cache,
             expressions,
             files,
             repo,
@@ -601,7 +659,7 @@ async fn main() -> anyhow::Result<()> {
             effective_ignore_patterns.extend(inline_ignores);
 
             let (scripts, path) = parse_sed_invocation(expressions, files, args)?;
-            let repository = cache_github_repo(&repo, false).await?;
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             let content = read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?;
             let program = sed::parse_script(&scripts)?;
             let output = sed::run(&program, &content, &sed::SedOptions { quiet })?;
@@ -612,12 +670,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Tail {
             repo,
+            refresh_cache,
             path,
             lines,
             from_line,
             number,
         } => {
-            let repository = cache_github_repo(&repo, false).await?;
+            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
             let output = tail_with_ignore(
                 &repository,
                 &path,
@@ -627,6 +686,9 @@ async fn main() -> anyhow::Result<()> {
                 &ignore_patterns,
             )?;
             println!("{}", output);
+        }
+        Commands::CacheRevalidate { repo } => {
+            revalidate_github_repo(&repo)?;
         }
         Commands::Skill { command } => match command {
             SkillCommands::Load => {
@@ -777,6 +839,7 @@ mod tests {
         let command = WitCli::command();
         let subcommands: Vec<_> = command
             .get_subcommands()
+            .filter(|subcommand| !subcommand.is_hide_set())
             .map(|subcommand| subcommand.get_name())
             .collect();
         assert_eq!(
@@ -879,6 +942,7 @@ mod tests {
             "wit",
             "sed",
             "-n",
+            "--refresh-cache",
             "-r",
             "owner/repo",
             "1,3p",
@@ -893,6 +957,7 @@ mod tests {
         match cli.command {
             Commands::Sed {
                 quiet,
+                refresh_cache,
                 expressions,
                 files,
                 repo,
@@ -902,6 +967,7 @@ mod tests {
                     extract_sed_inline_ignores(args).expect("inline sed ignores should parse");
 
                 assert!(quiet);
+                assert!(refresh_cache);
                 assert!(expressions.is_empty());
                 assert!(files.is_empty());
                 assert_eq!(repo, "owner/repo");
@@ -910,6 +976,89 @@ mod tests {
             }
             _ => panic!("expected sed command"),
         }
+    }
+
+    #[test]
+    fn cli_force_cache_invalidation_parses_for_repo_reads() {
+        let tree =
+            WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "--refresh-cache", "src"])
+                .expect("tree --refresh-cache should parse");
+        match tree.command {
+            Commands::Tree {
+                refresh_cache,
+                path,
+                ..
+            } => {
+                assert!(refresh_cache);
+                assert_eq!(path, Some("src".to_string()));
+            }
+            _ => panic!("expected tree command"),
+        }
+
+        let cat = WitCli::try_parse_from([
+            "wit",
+            "cat",
+            "-r",
+            "owner/repo",
+            "--refresh-cache",
+            "README.md",
+        ])
+        .expect("cat --refresh-cache should parse");
+        match cat.command {
+            Commands::Cat {
+                refresh_cache,
+                path,
+                ..
+            } => {
+                assert!(refresh_cache);
+                assert_eq!(path, "README.md");
+            }
+            _ => panic!("expected cat command"),
+        }
+
+        let rg =
+            WitCli::try_parse_from(["wit", "rg", "needle", "-r", "owner/repo", "--refresh-cache"])
+                .expect("rg --refresh-cache should parse");
+        match rg.command {
+            Commands::Rg {
+                refresh_cache,
+                pattern,
+                ..
+            } => {
+                assert!(refresh_cache);
+                assert_eq!(pattern, "needle");
+            }
+            _ => panic!("expected rg command"),
+        }
+    }
+
+    #[test]
+    fn cli_force_cache_invalidation_does_not_add_public_branch_flag() {
+        let command = WitCli::command();
+        for command in command.get_subcommands() {
+            assert!(
+                !command
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some("branch")),
+                "{} should not expose --branch in this goal",
+                command.get_name()
+            );
+        }
+    }
+
+    #[test]
+    fn cli_cache_help_text_mentions_cache_contract() {
+        let mut command = WitCli::command();
+        let help = command.render_long_help().to_string();
+
+        assert!(help.contains("branch-keyed stale-while-revalidate cache"));
+        assert!(help.contains("--refresh-cache"));
+        assert!(help.contains("No public TTL/max-age or branch-selection option is exposed."));
+
+        let mut cache = find_subcommand(&command, "cache").clone();
+        let cache_help = cache.render_long_help().to_string();
+        assert!(cache_help.contains("serve cached content immediately"));
+        assert!(cache_help.contains("--refresh-cache"));
     }
 
     #[test]

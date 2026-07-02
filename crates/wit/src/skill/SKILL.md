@@ -22,6 +22,19 @@ description: >
 
 All repo-scoped commands take `-r/--repo <owner/repo>` as a required flag.
 
+## Cache Behavior
+
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a default-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed.
+
+Use `--refresh-cache` on a repo-reading command when the read must wait for a fresh default-branch cache:
+
+```bash
+wit tree --refresh-cache -r ratatui/ratatui src
+wit rg --refresh-cache 'impl Widget' -r ratatui/ratatui
+```
+
+`wit cache -r owner/repo` is also a force-refresh command. Internally, cache entries are stored per repository and branch, with metadata recording the branch name and current SHA. Public branch selection is not exposed in this release; reads target the repository's default branch. No public `--max-age` or TTL option exists.
+
 ## Commands
 
 ### search (alias: s)

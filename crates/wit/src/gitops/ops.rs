@@ -5,21 +5,480 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ptree::{TreeBuilder, print_tree};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs::File,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const WIT_CACHE_DIR_ENV: &str = "WIT_CACHE_DIR";
 pub const WIT_CACHE_SUBDIR: &str = ".wit/cache";
-static CACHE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_METADATA_FILE: &str = "metadata.json";
+const CACHE_METADATA_TEMP_FILE: &str = "metadata.json.tmp";
+const CACHE_LOCK_FILE: &str = ".cache.lock";
+static CACHE_PROCESS_LOCKS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 struct CacheLock {
+    path: PathBuf,
     _file_lock: File,
-    _process_lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for CacheLock {
+    fn drop(&mut self) {
+        if let Ok(mut locks) = CACHE_PROCESS_LOCKS.lock()
+            && let Some(paths) = locks.as_mut()
+        {
+            paths.remove(&self.path);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheAcquisitionMode {
+    ServeStaleAndRevalidate,
+    ForceInvalidate,
+}
+
+impl CacheAcquisitionMode {
+    fn is_force_invalidate(self) -> bool {
+        matches!(self, Self::ForceInvalidate)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheTarget {
+    owner_repo: String,
+    owner: String,
+    repo: String,
+    branch: String,
+    encoded_branch: String,
+}
+
+impl CacheTarget {
+    fn new(owner_repo: &str, branch: &str) -> anyhow::Result<Self> {
+        let (owner, repo) = split_owner_repo(owner_repo)?;
+        if branch.is_empty() {
+            anyhow::bail!("cache branch must not be empty");
+        }
+
+        Ok(Self {
+            owner_repo: owner_repo.to_string(),
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+            encoded_branch: encode_branch_for_path(branch),
+        })
+    }
+
+    fn branch_dir(&self, cache_dir: &Path) -> PathBuf {
+        cache_dir
+            .join(&self.owner)
+            .join(&self.repo)
+            .join("branches")
+            .join(&self.encoded_branch)
+    }
+
+    fn repo_path(&self, cache_dir: &Path) -> PathBuf {
+        self.branch_dir(cache_dir).join("repo.git")
+    }
+
+    fn metadata_path(&self, cache_dir: &Path) -> PathBuf {
+        self.branch_dir(cache_dir).join(CACHE_METADATA_FILE)
+    }
+
+    fn lock_path(&self, cache_dir: &Path) -> PathBuf {
+        self.branch_dir(cache_dir).join(CACHE_LOCK_FILE)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedBranch {
+    name: String,
+    current_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedCacheTarget {
+    target: CacheTarget,
+    remote_url: String,
+    branch: ResolvedBranch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CacheMetadata {
+    cache_schema_version: u32,
+    owner_repo: String,
+    branch: String,
+    remote_url: String,
+    current_sha: String,
+    last_checked_at: u64,
+    last_updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+}
+
+impl CacheMetadata {
+    fn new(resolved: &ResolvedCacheTarget, last_checked_at: u64, last_updated_at: u64) -> Self {
+        Self {
+            cache_schema_version: CACHE_SCHEMA_VERSION,
+            owner_repo: resolved.target.owner_repo.clone(),
+            branch: resolved.branch.name.clone(),
+            remote_url: resolved.remote_url.clone(),
+            current_sha: resolved.branch.current_sha.clone(),
+            last_checked_at,
+            last_updated_at,
+            last_error: None,
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.cache_schema_version != CACHE_SCHEMA_VERSION {
+            anyhow::bail!(
+                "unsupported cache metadata schema version {}",
+                self.cache_schema_version
+            );
+        }
+        if self.owner_repo.is_empty()
+            || self.branch.is_empty()
+            || self.remote_url.is_empty()
+            || self.current_sha.is_empty()
+        {
+            anyhow::bail!("cache metadata is missing required identity fields");
+        }
+        Ok(())
+    }
+
+    fn matches_identity(&self, resolved: &ResolvedCacheTarget) -> bool {
+        self.validate().is_ok()
+            && self.owner_repo == resolved.target.owner_repo
+            && self.branch == resolved.branch.name
+            && self.remote_url == resolved.remote_url
+    }
+}
+
+fn encode_branch_for_path(branch: &str) -> String {
+    let mut encoded = String::with_capacity(branch.len() + 2);
+    encoded.push_str("b-");
+    for byte in branch.bytes() {
+        match byte {
+            b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' => encoded.push(byte as char),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn split_owner_repo(owner_repo: &str) -> anyhow::Result<(&str, &str)> {
+    owner_repo
+        .split_once('/')
+        .filter(|(owner, repo)| !owner.is_empty() && !repo.is_empty() && !repo.contains('/'))
+        .with_context(|| format!("expected GitHub repository as owner/repo, got '{owner_repo}'"))
+}
+
+fn repo_cache_root(cache_dir: &Path, owner_repo: &str) -> anyhow::Result<PathBuf> {
+    let (owner, repo) = split_owner_repo(owner_repo)?;
+    Ok(cache_dir.join(owner).join(repo))
+}
+
+fn github_remote_url(owner_repo: &str) -> String {
+    format!("https://github.com/{owner_repo}", owner_repo = owner_repo)
+}
+
+fn default_cache_target_for_cache(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<ResolvedCacheTarget> {
+    if !mode.is_force_invalidate()
+        && let Some(cached) = cached_default_cache_target(owner_repo, remote_url, cache_dir)?
+    {
+        return Ok(cached);
+    }
+
+    default_cache_target(owner_repo, remote_url)
+}
+
+fn cached_default_cache_target(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+) -> anyhow::Result<Option<ResolvedCacheTarget>> {
+    let branches_dir = repo_cache_root(cache_dir, owner_repo)?.join("branches");
+    let entries = match std::fs::read_dir(&branches_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to read cache branches directory '{}'",
+                    branches_dir.display()
+                )
+            });
+        }
+    };
+    let mut matches = Vec::new();
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to read cache branch entry under '{}'",
+                branches_dir.display()
+            )
+        })?;
+        if !entry
+            .file_type()
+            .with_context(|| format!("failed to inspect '{}'", entry.path().display()))?
+            .is_dir()
+        {
+            continue;
+        }
+
+        let metadata_path = entry.path().join(CACHE_METADATA_FILE);
+        let Ok(metadata) = read_cache_metadata(&metadata_path) else {
+            continue;
+        };
+        if metadata.owner_repo != owner_repo || metadata.remote_url != remote_url {
+            continue;
+        }
+
+        let target = CacheTarget::new(owner_repo, &metadata.branch)?;
+        if target.metadata_path(cache_dir) != metadata_path {
+            continue;
+        }
+
+        matches.push(ResolvedCacheTarget {
+            target,
+            remote_url: metadata.remote_url.clone(),
+            branch: ResolvedBranch {
+                name: metadata.branch,
+                current_sha: metadata.current_sha,
+            },
+        });
+    }
+
+    Ok(if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    })
+}
+
+fn default_cache_target(owner_repo: &str, remote_url: &str) -> anyhow::Result<ResolvedCacheTarget> {
+    let branch = resolve_default_branch(remote_url)?;
+    let target = CacheTarget::new(owner_repo, &branch.name)?;
+    Ok(ResolvedCacheTarget {
+        target,
+        remote_url: remote_url.to_string(),
+        branch,
+    })
+}
+
+fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
+    let output = Command::new("git")
+        .arg("ls-remote")
+        .arg("--symref")
+        .arg(remote_url)
+        .arg("HEAD")
+        .output()
+        .context("failed to invoke git for default branch resolution")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        anyhow::bail!(
+            "git ls-remote failed (status: {}) stderr: '{}' stdout: '{}'",
+            output.status,
+            stderr,
+            stdout
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_default_branch_ls_remote(&stdout)
+}
+
+fn resolve_branch_sha(remote_url: &str, branch: &str) -> anyhow::Result<String> {
+    let branch_ref = format!("refs/heads/{branch}");
+    let output = Command::new("git")
+        .arg("ls-remote")
+        .arg(remote_url)
+        .arg(&branch_ref)
+        .output()
+        .with_context(|| format!("failed to invoke git for branch '{branch}' resolution"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        anyhow::bail!(
+            "git ls-remote failed for branch '{}' (status: {}) stderr: '{}' stdout: '{}'",
+            branch,
+            output.status,
+            stderr,
+            stdout
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_branch_sha_ls_remote(&stdout, branch)
+}
+
+fn parse_branch_sha_ls_remote(output: &str, branch: &str) -> anyhow::Result<String> {
+    let branch_ref = format!("refs/heads/{branch}");
+    for line in output.lines() {
+        if let Some((value, target)) = line.split_once('\t')
+            && target == branch_ref
+            && value.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            return Ok(value.to_string());
+        }
+    }
+
+    anyhow::bail!("remote branch '{branch}' did not include a commit SHA")
+}
+
+fn parse_default_branch_ls_remote(output: &str) -> anyhow::Result<ResolvedBranch> {
+    let mut branch = None;
+    let mut sha = None;
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("ref: refs/heads/") {
+            if let Some((name, target)) = rest.split_once('\t')
+                && target == "HEAD"
+            {
+                branch = Some(name.to_string());
+            }
+            continue;
+        }
+
+        if let Some((value, target)) = line.split_once('\t')
+            && target == "HEAD"
+            && value.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            sha = Some(value.to_string());
+        }
+    }
+
+    let name = branch.context("remote HEAD did not resolve to refs/heads/<branch>")?;
+    let current_sha = sha.context("remote HEAD did not include a commit SHA")?;
+    Ok(ResolvedBranch { name, current_sha })
+}
+
+fn cache_metadata_is_usable(metadata_path: &Path, resolved: &ResolvedCacheTarget) -> bool {
+    read_cache_metadata(metadata_path).is_ok_and(|metadata| metadata.matches_identity(resolved))
+}
+
+fn read_cache_metadata(metadata_path: &Path) -> anyhow::Result<CacheMetadata> {
+    let file = File::open(metadata_path).with_context(|| {
+        format!(
+            "failed to open cache metadata '{}'",
+            metadata_path.display()
+        )
+    })?;
+    let metadata: CacheMetadata = serde_json::from_reader(file).with_context(|| {
+        format!(
+            "failed to parse cache metadata '{}'",
+            metadata_path.display()
+        )
+    })?;
+    metadata.validate()?;
+    Ok(metadata)
+}
+
+fn write_cache_metadata(metadata_path: &Path, metadata: &CacheMetadata) -> anyhow::Result<()> {
+    let temp_path = write_cache_metadata_temp(metadata_path, metadata)?;
+    replace_cache_metadata(&temp_path, metadata_path)
+}
+
+fn write_cache_metadata_temp(
+    metadata_path: &Path,
+    metadata: &CacheMetadata,
+) -> anyhow::Result<PathBuf> {
+    metadata.validate()?;
+    let parent = metadata_path.parent().with_context(|| {
+        format!(
+            "cache metadata path '{}' has no parent",
+            metadata_path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create cache metadata parent '{}'",
+            parent.display()
+        )
+    })?;
+
+    let temp_path = parent.join(CACHE_METADATA_TEMP_FILE);
+    let mut temp_file = File::create(&temp_path).with_context(|| {
+        format!(
+            "failed to create temporary cache metadata '{}'",
+            temp_path.display()
+        )
+    })?;
+    serde_json::to_writer_pretty(&mut temp_file, metadata).with_context(|| {
+        format!(
+            "failed to write temporary cache metadata '{}'",
+            temp_path.display()
+        )
+    })?;
+    temp_file
+        .write_all(b"\n")
+        .with_context(|| format!("failed to finish cache metadata '{}'", temp_path.display()))?;
+    temp_file
+        .sync_all()
+        .with_context(|| format!("failed to sync cache metadata '{}'", temp_path.display()))?;
+    Ok(temp_path)
+}
+
+fn replace_cache_metadata(temp_path: &Path, metadata_path: &Path) -> anyhow::Result<()> {
+    std::fs::rename(temp_path, metadata_path).with_context(|| {
+        format!(
+            "failed to replace cache metadata '{}' with '{}'",
+            metadata_path.display(),
+            temp_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn remove_legacy_repo_cache_if_present(cache_dir: &Path, owner_repo: &str) -> anyhow::Result<()> {
+    let repo_root = repo_cache_root(cache_dir, owner_repo)?;
+    if is_legacy_bare_cache_dir(&repo_root) {
+        remove_cache_dir(&repo_root)?;
+    }
+    Ok(())
+}
+
+fn is_legacy_bare_cache_dir(path: &Path) -> bool {
+    path.join("HEAD").is_file() && path.join("objects").is_dir() && path.join("refs").is_dir()
+}
+
+fn current_unix_timestamp() -> anyhow::Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system time is before UNIX epoch")?
+        .as_secs())
+}
+
+pub fn revalidate_github_repo(owner_repo: &str) -> anyhow::Result<()> {
+    let remote_url = github_remote_url(owner_repo);
+    let cache_dir = wit_cache_dir();
+    remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
+    let resolved = default_cache_target_for_cache(
+        owner_repo,
+        &remote_url,
+        &cache_dir,
+        CacheAcquisitionMode::ServeStaleAndRevalidate,
+    )?;
+    let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(&cache_dir))?;
+    revalidate_cache_target(&resolved, &cache_dir)
 }
 
 pub fn wit_cache_dir() -> PathBuf {
@@ -238,55 +697,199 @@ pub enum GrepResult {
     Counts(Vec<(String, usize)>),
 }
 
-pub async fn cache_github_repo(owner_repo: &str, refresh: bool) -> anyhow::Result<Repository> {
-    let repo_url = format!("https://github.com/{owner_repo}", owner_repo = owner_repo);
-    let cache_path = wit_cache_dir().join(owner_repo);
-    let _cache_lock = acquire_cache_lock()?;
+pub async fn cache_github_repo(
+    owner_repo: &str,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<Repository> {
+    let remote_url = github_remote_url(owner_repo);
+    let cache_dir = wit_cache_dir();
+    remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
+    let resolved = default_cache_target_for_cache(owner_repo, &remote_url, &cache_dir, mode)?;
+    let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(&cache_dir))?;
+    cache_github_repo_target(&resolved, &cache_dir, mode)
+}
 
-    if cache_path.exists() && !refresh {
+fn cache_github_repo_target(
+    resolved: &ResolvedCacheTarget,
+    cache_dir: &Path,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<Repository> {
+    let target = &resolved.target;
+    let cache_path = target.repo_path(cache_dir);
+    let metadata_path = target.metadata_path(cache_dir);
+
+    if cache_path.exists() && !mode.is_force_invalidate() {
         match gix::open(&cache_path) {
-            Ok(repo) if cache_has_head_commit(&repo) => return Ok(repo),
+            Ok(repo)
+                if cache_has_head_commit(&repo)
+                    && cache_metadata_is_usable(&metadata_path, resolved) =>
+            {
+                if mode == CacheAcquisitionMode::ServeStaleAndRevalidate {
+                    let _ = spawn_cache_revalidation(resolved, cache_dir);
+                }
+                return Ok(repo);
+            }
             Ok(_) | Err(_) => {
                 // A prior failed fetch can leave a cache directory with an unborn HEAD.
-                // Treat it as stale and re-clone.
+                // Missing or corrupt metadata likewise makes the cache unsafe to trust.
             }
         }
     }
 
-    recache_repo(&repo_url, &cache_path)
+    remove_cache_metadata(&metadata_path)?;
+    let repo = recache_repo(&resolved.remote_url, &cache_path)?;
+    let now = current_unix_timestamp()?;
+    let metadata = CacheMetadata::new(resolved, now, now);
+    write_cache_metadata(&metadata_path, &metadata)?;
+    Ok(repo)
 }
 
-fn acquire_cache_lock() -> anyhow::Result<CacheLock> {
-    let process_lock = CACHE_PROCESS_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let lock_path = cache_lock_path();
+#[cfg(not(test))]
+fn spawn_cache_revalidation(
+    resolved: &ResolvedCacheTarget,
+    cache_dir: &Path,
+) -> anyhow::Result<()> {
+    let exe = std::env::current_exe().context("failed to determine current executable")?;
+    Command::new(exe)
+        .arg("__cache-revalidate")
+        .arg("--repo")
+        .arg(&resolved.target.owner_repo)
+        .env(WIT_CACHE_DIR_ENV, cache_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("failed to spawn cache revalidation worker")?;
+    Ok(())
+}
 
+#[cfg(test)]
+fn spawn_cache_revalidation(
+    _resolved: &ResolvedCacheTarget,
+    _cache_dir: &Path,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn revalidate_cache_target(resolved: &ResolvedCacheTarget, cache_dir: &Path) -> anyhow::Result<()> {
+    let metadata_path = resolved.target.metadata_path(cache_dir);
+    let mut metadata = read_cache_metadata(&metadata_path)?;
+    let now = current_unix_timestamp()?;
+
+    match resolve_branch_sha(&resolved.remote_url, &metadata.branch) {
+        Ok(remote_sha) if remote_sha == metadata.current_sha => {
+            metadata.last_checked_at = now;
+            metadata.last_error = None;
+            write_cache_metadata(&metadata_path, &metadata)?;
+            Ok(())
+        }
+        Ok(remote_sha) => {
+            let refreshed = ResolvedCacheTarget {
+                target: resolved.target.clone(),
+                remote_url: resolved.remote_url.clone(),
+                branch: ResolvedBranch {
+                    name: metadata.branch.clone(),
+                    current_sha: remote_sha,
+                },
+            };
+            match refresh_repo_preserving_existing(
+                &refreshed.remote_url,
+                &refreshed.target.repo_path(cache_dir),
+            ) {
+                Ok(_) => {
+                    let updated = CacheMetadata::new(&refreshed, now, now);
+                    write_cache_metadata(&metadata_path, &updated)?;
+                    Ok(())
+                }
+                Err(err) => {
+                    metadata.last_checked_at = now;
+                    metadata.last_error = Some(err.to_string());
+                    write_cache_metadata(&metadata_path, &metadata)?;
+                    Err(err)
+                }
+            }
+        }
+        Err(err) => {
+            metadata.last_checked_at = now;
+            metadata.last_error = Some(err.to_string());
+            write_cache_metadata(&metadata_path, &metadata)?;
+            Err(err)
+        }
+    }
+}
+
+fn remove_cache_metadata(metadata_path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(metadata_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to remove stale cache metadata '{}'",
+                metadata_path.display()
+            )
+        }),
+    }
+}
+
+fn acquire_cache_lock(lock_path: &Path) -> anyhow::Result<CacheLock> {
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!("failed to create cache lock parent '{}'", parent.display())
         })?;
     }
 
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("failed to open cache lock '{}'", lock_path.display()))?;
-    lock_file
-        .lock_exclusive()
-        .with_context(|| format!("failed to lock cache '{}'", lock_path.display()))?;
+    acquire_process_cache_lock(lock_path);
+
+    let lock_result = (|| -> anyhow::Result<File> {
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path)
+            .with_context(|| format!("failed to open cache lock '{}'", lock_path.display()))?;
+        lock_file
+            .lock_exclusive()
+            .with_context(|| format!("failed to lock cache '{}'", lock_path.display()))?;
+        Ok(lock_file)
+    })();
+
+    let lock_file = match lock_result {
+        Ok(lock_file) => lock_file,
+        Err(err) => {
+            release_process_cache_lock(lock_path);
+            return Err(err);
+        }
+    };
 
     Ok(CacheLock {
+        path: lock_path.to_path_buf(),
         _file_lock: lock_file,
-        _process_lock: process_lock,
     })
 }
 
-fn cache_lock_path() -> PathBuf {
-    wit_cache_dir().join(".cache.lock")
+fn acquire_process_cache_lock(lock_path: &Path) {
+    let lock_path = lock_path.to_path_buf();
+    loop {
+        {
+            let mut locks = CACHE_PROCESS_LOCKS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let paths = locks.get_or_insert_with(HashSet::new);
+            if paths.insert(lock_path.clone()) {
+                return;
+            }
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn release_process_cache_lock(lock_path: &Path) {
+    if let Ok(mut locks) = CACHE_PROCESS_LOCKS.lock()
+        && let Some(paths) = locks.as_mut()
+    {
+        paths.remove(lock_path);
+    }
 }
 
 fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
@@ -313,6 +916,37 @@ fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository>
             } else {
                 Err(err).with_context(|| format!("failed to cache repository from '{repo_url}'"))
             }
+        }
+    }
+}
+
+fn refresh_repo_preserving_existing(
+    repo_url: &str,
+    cache_path: &Path,
+) -> anyhow::Result<Repository> {
+    let parent = cache_path
+        .parent()
+        .with_context(|| format!("cache path '{}' has no parent", cache_path.display()))?;
+    let staging_path = parent.join("repo.git.tmp");
+    remove_cache_dir(&staging_path)?;
+
+    match recache_repo(repo_url, &staging_path) {
+        Ok(_) => {
+            remove_cache_dir(cache_path)?;
+            std::fs::rename(&staging_path, cache_path).with_context(|| {
+                format!(
+                    "failed to promote refreshed cache '{}' to '{}'",
+                    staging_path.display(),
+                    cache_path.display()
+                )
+            })?;
+            gix::open(cache_path).with_context(|| {
+                format!("failed to open refreshed cache '{}'", cache_path.display())
+            })
+        }
+        Err(err) => {
+            remove_cache_dir(&staging_path)?;
+            Err(err)
         }
     }
 }
@@ -945,6 +1579,69 @@ pub fn build_tree_with_ignore(
 mod tests {
     use super::*;
 
+    #[test]
+    fn cache_branch_paths_include_owner_repo_and_branch() {
+        let cache_dir = Path::new("/tmp/wit-cache");
+        let main = CacheTarget::new("owner/repo", "main").unwrap();
+        let feature = CacheTarget::new("owner/repo", "feature/x").unwrap();
+
+        assert_eq!(
+            main.repo_path(cache_dir),
+            cache_dir
+                .join("owner")
+                .join("repo")
+                .join("branches")
+                .join("b-main")
+                .join("repo.git")
+        );
+        assert_eq!(
+            feature.repo_path(cache_dir),
+            cache_dir
+                .join("owner")
+                .join("repo")
+                .join("branches")
+                .join("b-feature%2Fx")
+                .join("repo.git")
+        );
+        assert_ne!(main.repo_path(cache_dir), feature.repo_path(cache_dir));
+    }
+
+    #[test]
+    fn cache_branch_paths_percent_encode_without_collisions() {
+        let slash = CacheTarget::new("owner/repo", "feature/x").unwrap();
+        let literal_percent = CacheTarget::new("owner/repo", "feature%2Fx").unwrap();
+        let lowercase_percent = CacheTarget::new("owner/repo", "feature%2fx").unwrap();
+        let uppercase = CacheTarget::new("owner/repo", "Feature/x").unwrap();
+        let dot = CacheTarget::new("owner/repo", ".").unwrap();
+        let reserved = CacheTarget::new("owner/repo", "con").unwrap();
+
+        let encoded = [
+            slash.encoded_branch,
+            literal_percent.encoded_branch,
+            lowercase_percent.encoded_branch,
+            uppercase.encoded_branch,
+            dot.encoded_branch,
+            reserved.encoded_branch,
+        ];
+
+        assert_eq!(encoded[0], "b-feature%2Fx");
+        assert_eq!(encoded[1], "b-feature%252%46x");
+        assert_eq!(encoded[2], "b-feature%252fx");
+        assert_eq!(encoded[3], "b-%46eature%2Fx");
+        assert_eq!(encoded[4], "b-%2E");
+        assert_eq!(encoded[5], "b-con");
+
+        let unique: HashSet<&String> = encoded.iter().collect();
+        assert_eq!(unique.len(), encoded.len());
+    }
+
+    #[test]
+    fn cache_branch_paths_reject_invalid_identity() {
+        assert!(CacheTarget::new("owner", "main").is_err());
+        assert!(CacheTarget::new("owner/repo/extra", "main").is_err());
+        assert!(CacheTarget::new("owner/repo", "").is_err());
+    }
+
     fn run_git(args: &[&str], workdir: Option<&Path>) {
         let mut command = Command::new("git");
         command.args(args);
@@ -958,6 +1655,515 @@ mod tests {
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_stdout(args: &[&str], workdir: Option<&Path>) -> String {
+        let mut command = Command::new("git");
+        command.args(args);
+        if let Some(dir) = workdir {
+            command.current_dir(dir);
+        }
+        let output = command.output().expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be utf-8")
+            .trim()
+            .to_string()
+    }
+
+    fn create_remote_with_default_branch(
+        temp: &tempfile::TempDir,
+        default_branch: &str,
+    ) -> (PathBuf, String) {
+        let worktree = temp.path().join("worktree");
+        let bare_repo = temp.path().join("remote.git");
+
+        run_git(&["init", worktree.to_str().unwrap()], None);
+        run_git(&["checkout", "-b", default_branch], Some(&worktree));
+        std::fs::write(worktree.join("README.md"), "hello\n").unwrap();
+        run_git(&["add", "README.md"], Some(&worktree));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&worktree),
+        );
+
+        run_git(&["init", "--bare", bare_repo.to_str().unwrap()], None);
+        run_git(
+            &["remote", "add", "origin", bare_repo.to_str().unwrap()],
+            Some(&worktree),
+        );
+        run_git(&["push", "origin", default_branch], Some(&worktree));
+        let branch_ref = format!("refs/heads/{default_branch}");
+        run_git(&["symbolic-ref", "HEAD", &branch_ref], Some(&bare_repo));
+        let sha = git_stdout(&["rev-parse", "HEAD"], Some(&worktree));
+
+        (bare_repo, sha)
+    }
+
+    fn commit_and_push_file(temp: &tempfile::TempDir, branch: &str, content: &str) -> String {
+        let worktree = temp.path().join("worktree");
+        std::fs::write(worktree.join("README.md"), content).unwrap();
+        run_git(&["add", "README.md"], Some(&worktree));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "update",
+            ],
+            Some(&worktree),
+        );
+        run_git(&["push", "origin", branch], Some(&worktree));
+        git_stdout(&["rev-parse", "HEAD"], Some(&worktree))
+    }
+
+    fn create_bare_repo_with_commit(temp: &tempfile::TempDir, bare_repo: &Path) {
+        let worktree = temp.path().join("atomic-worktree");
+        run_git(&["init", worktree.to_str().unwrap()], None);
+        run_git(&["checkout", "-b", "main"], Some(&worktree));
+        std::fs::write(worktree.join("README.md"), "hello\n").unwrap();
+        run_git(&["add", "README.md"], Some(&worktree));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+            Some(&worktree),
+        );
+        if let Some(parent) = bare_repo.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        run_git(
+            &[
+                "clone",
+                "--bare",
+                worktree.to_str().unwrap(),
+                bare_repo.to_str().unwrap(),
+            ],
+            None,
+        );
+    }
+
+    fn resolved_cache_target_for_test(branch: &str, sha: &str) -> ResolvedCacheTarget {
+        ResolvedCacheTarget {
+            target: CacheTarget::new("owner/repo", branch).unwrap(),
+            remote_url: "/tmp/remote.git".to_string(),
+            branch: ResolvedBranch {
+                name: branch.to_string(),
+                current_sha: sha.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn cache_default_branch_resolution_uses_remote_head_branch_and_sha() {
+        let temp = tempfile::tempdir().unwrap();
+        let (remote, sha) = create_remote_with_default_branch(&temp, "trunk");
+        let cache_dir = temp.path().join("cache");
+
+        let resolved = default_cache_target("owner/repo", remote.to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved.branch.name, "trunk");
+        assert_eq!(resolved.branch.current_sha, sha);
+        assert_eq!(resolved.target.owner_repo, "owner/repo");
+        assert_eq!(resolved.target.branch, "trunk");
+        assert_eq!(
+            resolved.target.repo_path(&cache_dir),
+            cache_dir
+                .join("owner")
+                .join("repo")
+                .join("branches")
+                .join("b-trunk")
+                .join("repo.git")
+        );
+    }
+
+    #[test]
+    fn cache_default_branch_resolution_preserves_slash_branch_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let (remote, sha) = create_remote_with_default_branch(&temp, "release/v1");
+        let cache_dir = temp.path().join("cache");
+
+        let resolved = default_cache_target("owner/repo", remote.to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved.branch.name, "release/v1");
+        assert_eq!(resolved.branch.current_sha, sha);
+        assert_eq!(
+            resolved.target.repo_path(&cache_dir),
+            cache_dir
+                .join("owner")
+                .join("repo")
+                .join("branches")
+                .join("b-release%2Fv1")
+                .join("repo.git")
+        );
+    }
+
+    #[test]
+    fn cache_default_branch_resolution_rejects_unresolved_head() {
+        let err = parse_default_branch_ls_remote("abc123\tHEAD\n").unwrap_err();
+        assert!(err.to_string().contains("remote HEAD did not resolve"));
+    }
+
+    #[test]
+    fn cache_default_branch_resolution_uses_cached_metadata_without_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let resolved =
+            resolved_cache_target_for_test("trunk", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let metadata = CacheMetadata::new(&resolved, 100, 200);
+        write_cache_metadata(&resolved.target.metadata_path(&cache_dir), &metadata).unwrap();
+
+        let cached = default_cache_target_for_cache(
+            "owner/repo",
+            "/tmp/remote.git",
+            &cache_dir,
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+
+        assert_eq!(cached.branch.name, "trunk");
+        assert_eq!(
+            cached.branch.current_sha,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            cached.target.repo_path(&cache_dir),
+            resolved.target.repo_path(&cache_dir)
+        );
+    }
+
+    #[test]
+    fn cache_default_branch_resolution_cache_metadata_writes_real_cache_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let legacy_path = repo_cache_root(&cache_dir, "owner/repo").unwrap();
+        create_bare_repo_with_commit(&temp, &legacy_path);
+        assert!(is_legacy_bare_cache_dir(&legacy_path));
+
+        let (remote, sha) = create_remote_with_default_branch(&temp, "trunk");
+        remove_legacy_repo_cache_if_present(&cache_dir, "owner/repo").unwrap();
+        let resolved = default_cache_target("owner/repo", remote.to_str().unwrap()).unwrap();
+        let repo = cache_github_repo_target(
+            &resolved,
+            &cache_dir,
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+        let repo_path = cache_dir
+            .join("owner")
+            .join("repo")
+            .join("branches")
+            .join("b-trunk")
+            .join("repo.git");
+        let metadata_path = repo_path.parent().unwrap().join(CACHE_METADATA_FILE);
+
+        assert_eq!(repo.path(), repo_path);
+        assert!(cache_has_head_commit(&repo));
+        assert!(!legacy_path.join("HEAD").exists());
+        assert!(!legacy_path.join("objects").exists());
+        assert!(repo_path.exists());
+
+        let metadata = read_cache_metadata(&metadata_path).unwrap();
+        assert_eq!(metadata.owner_repo, "owner/repo");
+        assert_eq!(metadata.branch, "trunk");
+        assert_eq!(metadata.remote_url, remote.to_str().unwrap());
+        assert_eq!(metadata.current_sha, sha);
+        assert_eq!(metadata.cache_schema_version, CACHE_SCHEMA_VERSION);
+        assert!(metadata.last_checked_at > 0);
+        assert!(metadata.last_updated_at > 0);
+    }
+
+    #[test]
+    fn cache_swr_serves_cached_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, old_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let resolved = default_cache_target("owner/repo", remote_url).unwrap();
+
+        let repo =
+            cache_github_repo_target(&resolved, &cache_dir, CacheAcquisitionMode::ForceInvalidate)
+                .unwrap();
+        assert_eq!(read_file(&repo, "README.md").unwrap(), "hello\n");
+
+        let new_sha = commit_and_push_file(&temp, "trunk", "new content\n");
+        let cached = default_cache_target_for_cache(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+        assert_eq!(cached.branch.current_sha, old_sha);
+
+        let stale_repo = cache_github_repo_target(
+            &cached,
+            &cache_dir,
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&stale_repo, "README.md").unwrap(), "hello\n");
+
+        revalidate_cache_target(&cached, &cache_dir).unwrap();
+
+        let refreshed_repo = gix::open(cached.target.repo_path(&cache_dir)).unwrap();
+        assert_eq!(
+            read_file(&refreshed_repo, "README.md").unwrap(),
+            "new content\n"
+        );
+        let metadata = read_cache_metadata(&cached.target.metadata_path(&cache_dir)).unwrap();
+        assert_eq!(metadata.current_sha, new_sha);
+        assert!(metadata.last_error.is_none());
+    }
+
+    #[test]
+    fn cache_swr_refreshes_on_sha_change_updates_checked_at_when_sha_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, old_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let resolved = default_cache_target("owner/repo", remote_url).unwrap();
+        cache_github_repo_target(&resolved, &cache_dir, CacheAcquisitionMode::ForceInvalidate)
+            .unwrap();
+
+        let metadata_path = resolved.target.metadata_path(&cache_dir);
+        let mut metadata = read_cache_metadata(&metadata_path).unwrap();
+        metadata.last_checked_at = 1;
+        metadata.last_updated_at = 2;
+        metadata.last_error = Some("old error".to_string());
+        write_cache_metadata(&metadata_path, &metadata).unwrap();
+
+        revalidate_cache_target(&resolved, &cache_dir).unwrap();
+
+        let checked = read_cache_metadata(&metadata_path).unwrap();
+        assert_eq!(checked.current_sha, old_sha);
+        assert!(checked.last_checked_at > 1);
+        assert_eq!(checked.last_updated_at, 2);
+        assert!(checked.last_error.is_none());
+    }
+
+    #[test]
+    fn cache_swr_refreshes_on_sha_change_refreshes_only_when_sha_differs() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, old_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let resolved = default_cache_target("owner/repo", remote_url).unwrap();
+        cache_github_repo_target(&resolved, &cache_dir, CacheAcquisitionMode::ForceInvalidate)
+            .unwrap();
+
+        let new_sha = commit_and_push_file(&temp, "trunk", "new content\n");
+        assert_ne!(old_sha, new_sha);
+
+        revalidate_cache_target(&resolved, &cache_dir).unwrap();
+
+        let refreshed_repo = gix::open(resolved.target.repo_path(&cache_dir)).unwrap();
+        assert_eq!(
+            read_file(&refreshed_repo, "README.md").unwrap(),
+            "new content\n"
+        );
+        let metadata = read_cache_metadata(&resolved.target.metadata_path(&cache_dir)).unwrap();
+        assert_eq!(metadata.current_sha, new_sha);
+        assert!(metadata.last_error.is_none());
+    }
+
+    #[test]
+    fn cache_swr_refreshes_on_sha_change_preserves_cache_on_remote_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, old_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let resolved = default_cache_target("owner/repo", remote_url).unwrap();
+        cache_github_repo_target(&resolved, &cache_dir, CacheAcquisitionMode::ForceInvalidate)
+            .unwrap();
+        let missing_remote = temp.path().join("missing.git");
+        let failing = ResolvedCacheTarget {
+            target: resolved.target.clone(),
+            remote_url: missing_remote.to_string_lossy().to_string(),
+            branch: resolved.branch.clone(),
+        };
+
+        let err = revalidate_cache_target(&failing, &cache_dir).unwrap_err();
+        assert!(err.to_string().contains("git ls-remote failed"));
+
+        let repo = gix::open(resolved.target.repo_path(&cache_dir)).unwrap();
+        assert_eq!(read_file(&repo, "README.md").unwrap(), "hello\n");
+        let metadata = read_cache_metadata(&resolved.target.metadata_path(&cache_dir)).unwrap();
+        assert_eq!(metadata.current_sha, old_sha);
+        assert!(metadata.last_error.is_some());
+    }
+
+    #[test]
+    fn cache_force_invalidation_refreshes_before_returning() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, old_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let initial = default_cache_target("owner/repo", remote_url).unwrap();
+        cache_github_repo_target(&initial, &cache_dir, CacheAcquisitionMode::ForceInvalidate)
+            .unwrap();
+
+        let new_sha = commit_and_push_file(&temp, "trunk", "forced refresh\n");
+        assert_ne!(old_sha, new_sha);
+        let refreshed = default_cache_target_for_cache(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+
+        let repo = cache_github_repo_target(
+            &refreshed,
+            &cache_dir,
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+
+        assert_eq!(read_file(&repo, "README.md").unwrap(), "forced refresh\n");
+        let metadata = read_cache_metadata(&refreshed.target.metadata_path(&cache_dir)).unwrap();
+        assert_eq!(metadata.current_sha, new_sha);
+        assert!(metadata.last_error.is_none());
+    }
+
+    #[test]
+    fn cache_metadata_round_trips_required_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let resolved =
+            resolved_cache_target_for_test("trunk", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let metadata_path = resolved.target.metadata_path(temp.path());
+        let metadata = CacheMetadata::new(&resolved, 100, 200);
+
+        write_cache_metadata(&metadata_path, &metadata).unwrap();
+
+        let stored = read_cache_metadata(&metadata_path).unwrap();
+        assert_eq!(stored, metadata);
+        assert!(cache_metadata_is_usable(&metadata_path, &resolved));
+
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        for key in [
+            "cache_schema_version",
+            "owner_repo",
+            "branch",
+            "remote_url",
+            "current_sha",
+            "last_checked_at",
+            "last_updated_at",
+        ] {
+            assert!(raw.get(key).is_some(), "metadata missing {key}");
+        }
+        assert_eq!(raw["owner_repo"], "owner/repo");
+        assert_eq!(raw["branch"], "trunk");
+        assert_eq!(raw["remote_url"], "/tmp/remote.git");
+        assert_eq!(
+            raw["current_sha"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(raw["cache_schema_version"], CACHE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn cache_metadata_rejects_missing_corrupt_or_incompatible_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let resolved =
+            resolved_cache_target_for_test("trunk", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let metadata_path = resolved.target.metadata_path(temp.path());
+
+        assert!(!cache_metadata_is_usable(&metadata_path, &resolved));
+
+        std::fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
+        std::fs::write(&metadata_path, b"{").unwrap();
+        assert!(!cache_metadata_is_usable(&metadata_path, &resolved));
+
+        let mut old_schema = CacheMetadata::new(&resolved, 100, 200);
+        old_schema.cache_schema_version = 0;
+        std::fs::write(&metadata_path, serde_json::to_vec(&old_schema).unwrap()).unwrap();
+        assert!(!cache_metadata_is_usable(&metadata_path, &resolved));
+
+        let other_branch = resolved_cache_target_for_test(
+            "release/v1",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let wrong_identity = CacheMetadata::new(&other_branch, 100, 200);
+        std::fs::write(&metadata_path, serde_json::to_vec(&wrong_identity).unwrap()).unwrap();
+        assert!(!cache_metadata_is_usable(&metadata_path, &resolved));
+    }
+
+    #[test]
+    fn cache_metadata_atomicity_preserves_valid_metadata_when_temp_write_is_partial() {
+        let temp = tempfile::tempdir().unwrap();
+        let resolved =
+            resolved_cache_target_for_test("trunk", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let repo_path = resolved.target.repo_path(temp.path());
+        let metadata_path = resolved.target.metadata_path(temp.path());
+        let metadata = CacheMetadata::new(&resolved, 100, 200);
+
+        create_bare_repo_with_commit(&temp, &repo_path);
+        let repo = gix::open(&repo_path).unwrap();
+        assert!(cache_has_head_commit(&repo));
+
+        write_cache_metadata(&metadata_path, &metadata).unwrap();
+        let updated = CacheMetadata::new(&resolved, 300, 400);
+        let temp_path = write_cache_metadata_temp(&metadata_path, &updated).unwrap();
+
+        let repo = gix::open(&repo_path).unwrap();
+        assert!(cache_has_head_commit(&repo));
+        assert_eq!(read_cache_metadata(&metadata_path).unwrap(), metadata);
+        assert!(cache_metadata_is_usable(&metadata_path, &resolved));
+
+        std::fs::write(&temp_path, b"{").unwrap();
+
+        let repo = gix::open(&repo_path).unwrap();
+        assert!(cache_has_head_commit(&repo));
+        assert_eq!(read_cache_metadata(&metadata_path).unwrap(), metadata);
+        assert!(cache_metadata_is_usable(&metadata_path, &resolved));
+
+        write_cache_metadata(&metadata_path, &updated).unwrap();
+        assert_eq!(read_cache_metadata(&metadata_path).unwrap(), updated);
+        assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn cache_metadata_atomicity_removes_stale_metadata_before_repo_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let resolved =
+            resolved_cache_target_for_test("trunk", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let repo_path = resolved.target.repo_path(temp.path());
+        let metadata_path = resolved.target.metadata_path(temp.path());
+        let metadata = CacheMetadata::new(&resolved, 100, 200);
+
+        create_bare_repo_with_commit(&temp, &repo_path);
+        write_cache_metadata(&metadata_path, &metadata).unwrap();
+        assert!(cache_metadata_is_usable(&metadata_path, &resolved));
+
+        remove_cache_metadata(&metadata_path).unwrap();
+
+        let repo = gix::open(&repo_path).unwrap();
+        assert!(cache_has_head_commit(&repo));
+        assert!(!cache_metadata_is_usable(&metadata_path, &resolved));
     }
 
     // ==================== Glob Matching Tests ====================
@@ -1174,16 +2380,20 @@ mod tests {
     }
 
     #[test]
-    fn test_acquire_cache_lock_blocks_parallel_calls() {
-        let _temp = tempfile::tempdir().unwrap();
-        let first_lock = acquire_cache_lock().unwrap();
+    fn cache_branch_locks_same_branch_serializes_unrelated_branches_do_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = CacheTarget::new("owner/repo", "main").unwrap();
+        let feature = CacheTarget::new("owner/repo", "feature/x").unwrap();
+        let other_repo = CacheTarget::new("owner/other", "main").unwrap();
+        let first_lock = acquire_cache_lock(&main.lock_path(temp.path())).unwrap();
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let same_path = main.lock_path(temp.path());
 
         let handle = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            let _second_lock = acquire_cache_lock().unwrap();
+            let _second_lock = acquire_cache_lock(&same_path).unwrap();
             acquired_tx.send(()).unwrap();
         });
 
@@ -1196,6 +2406,9 @@ mod tests {
                 .is_err(),
             "second lock should block while first lock is held"
         );
+
+        let _feature_lock = acquire_cache_lock(&feature.lock_path(temp.path())).unwrap();
+        let _other_repo_lock = acquire_cache_lock(&other_repo.lock_path(temp.path())).unwrap();
 
         drop(first_lock);
 
@@ -1345,7 +2558,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_grep_repo_basic() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let result = grep_repo(&repo, "impl Widget").unwrap();
 
         if let GrepResult::Matches(matches) = result {
@@ -1359,7 +2577,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_grep_repo_ignore_case() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let opts = GrepOptions::new().ignore_case(true);
         let result = grep_repo_with_options(&repo, "README", &opts).unwrap();
 
@@ -1374,7 +2597,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_grep_repo_max_count() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let opts = GrepOptions::new().max_count(5);
         let result = grep_repo_with_options(&repo, "fn", &opts).unwrap();
 
@@ -1389,7 +2617,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_grep_repo_glob_filter() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let opts = GrepOptions::new().glob(Some("*.toml".to_string()));
         let result = grep_repo_with_options(&repo, "version", &opts).unwrap();
 
@@ -1406,7 +2639,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_grep_repo_files_with_matches() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let opts = GrepOptions::new()
             .glob(Some("*.rs".to_string()))
             .files_with_matches(true);
@@ -1423,7 +2661,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_grep_repo_count() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let opts = GrepOptions::new()
             .glob(Some("Cargo.toml".to_string()))
             .count(true);
@@ -1443,7 +2686,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_head_basic() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let result = head(&repo, "Cargo.toml", 5, false).unwrap();
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 5, "head should return exactly 5 lines");
@@ -1452,7 +2700,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_head_with_numbers() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let result = head(&repo, "Cargo.toml", 3, true).unwrap();
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 3);
@@ -1469,7 +2722,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_tail_basic() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let result = tail(&repo, "Cargo.toml", 5, None, false).unwrap();
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 5, "tail should return exactly 5 lines");
@@ -1478,7 +2736,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_tail_from_line() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         // Get total lines first
         let full = read_file(&repo, "Cargo.toml").unwrap();
         let total_lines = full.lines().count();
@@ -1496,7 +2759,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_tail_with_numbers() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let full = read_file(&repo, "Cargo.toml").unwrap();
         let total_lines = full.lines().count();
 
@@ -1515,11 +2783,21 @@ mod tests {
     #[ignore = "requires network access"]
     async fn test_cache_github_repo_uses_existing() {
         // First cache the repo
-        let repo1 = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo1 = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let path1 = repo1.path().to_path_buf();
 
         // Second call with refresh=false should reuse the cache
-        let repo2 = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo2 = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let path2 = repo2.path().to_path_buf();
 
         // Both should point to the same path (cache was reused)
@@ -1530,7 +2808,12 @@ mod tests {
     #[ignore = "requires network access"]
     async fn test_cache_github_repo_refresh_replaces() {
         // First cache the repo
-        let repo1 = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo1 = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let path1 = repo1.path().to_path_buf();
 
         // Verify cache path exists
@@ -1540,7 +2823,9 @@ mod tests {
         );
 
         // Second call with refresh=true should delete and re-clone
-        let repo2 = cache_github_repo("ratatui/ratatui", true).await.unwrap();
+        let repo2 = cache_github_repo("ratatui/ratatui", CacheAcquisitionMode::ForceInvalidate)
+            .await
+            .unwrap();
         let path2 = repo2.path().to_path_buf();
 
         // Paths should be the same location, but cache was refreshed
@@ -1561,7 +2846,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_list_dir_root() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let entries = list_dir(&repo, None, false).unwrap();
         assert!(!entries.is_empty(), "Root should have entries");
 
@@ -1585,7 +2875,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_list_dir_subdir() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let entries = list_dir(&repo, Some("ratatui/src"), false).unwrap();
         assert!(!entries.is_empty(), "ratatui/src/ should have entries");
 
@@ -1602,7 +2897,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_list_dir_long() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let entries = list_dir(&repo, Some("ratatui/src"), true).unwrap();
         assert!(!entries.is_empty());
 
@@ -1638,7 +2938,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_list_dir_nonexistent() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let entries = list_dir(&repo, Some("nonexistent_dir_xyz"), false).unwrap();
         assert!(
             entries.is_empty(),
@@ -1649,7 +2954,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_list_dir_file_path() {
-        let repo = cache_github_repo("ratatui/ratatui", false).await.unwrap();
+        let repo = cache_github_repo(
+            "ratatui/ratatui",
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .await
+        .unwrap();
         let entries = list_dir(&repo, Some("Cargo.toml"), false).unwrap();
         // Cargo.toml is a file, not a directory, so nothing is "under" it
         assert!(

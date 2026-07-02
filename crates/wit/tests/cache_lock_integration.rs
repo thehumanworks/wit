@@ -44,6 +44,28 @@ fn wait_for_exit(child: &mut Child, timeout: Duration, label: &str) -> ExitStatu
     }
 }
 
+fn assert_branch_cache_exists(cache_dir: &Path, repo: &str) {
+    let (owner, name) = repo
+        .split_once('/')
+        .expect("test repo should be formatted as owner/repo");
+    assert!(
+        cache_dir.join(owner).join(name).join("branches").exists(),
+        "branch cache directory should exist after successful runs"
+    );
+}
+
+fn default_branch_lock_path(cache_dir: &Path, repo: &str) -> std::path::PathBuf {
+    let (owner, name) = repo
+        .split_once('/')
+        .expect("test repo should be formatted as owner/repo");
+    cache_dir
+        .join(owner)
+        .join(name)
+        .join("branches")
+        .join("b-master")
+        .join(".cache.lock")
+}
+
 #[test]
 #[ignore = "requires network access"]
 fn test_cache_lock_serializes_parallel_cache_processes() {
@@ -54,7 +76,8 @@ fn test_cache_lock_serializes_parallel_cache_processes() {
     let cache_dir = temp.path().join("cache");
     fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
 
-    let lock_path = cache_dir.join(".cache.lock");
+    let lock_path = default_branch_lock_path(&cache_dir, repo);
+    fs::create_dir_all(lock_path.parent().unwrap()).expect("failed to create lock parent");
     let lock_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -99,10 +122,7 @@ fn test_cache_lock_serializes_parallel_cache_processes() {
         second_status.success(),
         "second process exited with status {second_status}"
     );
-    assert!(
-        cache_dir.join(repo).exists(),
-        "cache directory should exist after successful runs"
-    );
+    assert_branch_cache_exists(&cache_dir, repo);
 }
 
 #[test]
@@ -116,7 +136,8 @@ fn test_cache_lock_serializes_parallel_rg_processes() {
     let cache_dir = temp.path().join("cache");
     fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
 
-    let lock_path = cache_dir.join(".cache.lock");
+    let lock_path = default_branch_lock_path(&cache_dir, repo);
+    fs::create_dir_all(lock_path.parent().unwrap()).expect("failed to create lock parent");
     let lock_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -150,8 +171,5 @@ fn test_cache_lock_serializes_parallel_rg_processes() {
         let status = wait_for_exit(child, Duration::from_secs(180), "rg");
         assert!(status.success(), "rg process {index} exited with {status}");
     }
-    assert!(
-        cache_dir.join(repo).exists(),
-        "cache directory should exist after successful runs"
-    );
+    assert_branch_cache_exists(&cache_dir, repo);
 }

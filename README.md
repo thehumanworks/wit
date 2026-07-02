@@ -70,6 +70,7 @@ wit rg -l 'impl Widget' -r ratatui/ratatui                    # Find files
 wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file
 wit head -n 30 -r ratatui/ratatui Cargo.toml                  # Preview a file
 wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
+wit tree --refresh-cache -r ratatui/ratatui src               # Force fresh cache before reading
 wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 ```
 
@@ -118,6 +119,19 @@ Clone a repository into the local cache (or refresh an existing one). Pass the r
 ```bash
 wit cache -r ratatui/ratatui          # Force re-clone of ratatui
 ```
+
+### Cache freshness
+
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default: `wit` serves the cached default branch immediately when it is present, then quietly checks the remote branch and refreshes the cache when the commit SHA changed. A cold cache still clones before the read can continue.
+
+Use `--refresh-cache` on a repo-reading command when that specific read must wait for a fresh default-branch cache:
+
+```bash
+wit tree --refresh-cache -r ratatui/ratatui src
+wit rg --refresh-cache 'impl Widget' -r ratatui/ratatui
+```
+
+`wit cache -r owner/repo` is also a force-refresh command. Internally, cache entries are stored per repository and branch under `WIT_CACHE_DIR`, with metadata recording the branch name and current SHA. Public branch selection is not exposed in this release; reads target the repository's default branch. No public `--max-age` or TTL option exists.
 
 ### tree (alias: t)
 
