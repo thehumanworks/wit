@@ -38,20 +38,28 @@ When an MCP client is available, use `wit mcp --transport stdio` as the stdio se
 - `wit_skill_load`
 - `wit_skill_install`
 
-It also exposes prompts (`wit_explore_repo`, `wit_discover_repos`, `wit_read_precise`) and resources (`wit://skill/SKILL.md`, `wit://guide/workflow`, `wit://guide/tools`) so agents can retrieve the recommended workflow without the user repeating a long preamble. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
+It also exposes prompts (`wit_explore_repo`, `wit_discover_repos`, `wit_read_precise`) and resources (`wit://skill/SKILL.md`, `wit://guide/workflow`, `wit://guide/tools`) so agents can retrieve the recommended workflow without the user repeating a long preamble. MCP repo-reading tools accept optional JSON `branch` plus `refresh_cache` parameters. Omit `branch` to read the repository default branch; set `refresh_cache: true` when the selected branch must be fetched before reading. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
 
 ## Cache Behavior
 
-Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a default-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed.
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Without `--branch`, the selected branch is the repository's default branch.
 
-Use `--refresh-cache` on a repo-reading command when the read must wait for a fresh default-branch cache:
+Use `--branch BRANCH` on `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, or `tail` to target a GitHub branch under `refs/heads` instead of the repository default branch:
+
+```bash
+wit cache -r ratatui/ratatui --branch main
+wit cat --branch main -r ratatui/ratatui README.md
+wit rg --branch main 'impl Widget' -r ratatui/ratatui
+```
+
+Use `--refresh-cache` on a repo-reading command when the read must wait for a fresh cache for the selected branch:
 
 ```bash
 wit tree --refresh-cache -r ratatui/ratatui src
-wit rg --refresh-cache 'impl Widget' -r ratatui/ratatui
+wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
 ```
 
-`wit cache -r owner/repo` is also a force-refresh command. Internally, cache entries are stored per repository and branch, with metadata recording the branch name and current SHA. Public branch selection is not exposed in this release; reads target the repository's default branch. No public `--max-age` or TTL option exists.
+`wit cache -r owner/repo` is also a force-refresh command for the default branch; add `--branch BRANCH` to refresh that named branch. Internally, cache entries are stored per repository and branch, with metadata recording the branch name and current SHA. No public `--max-age` or TTL option exists.
 
 ## Commands
 

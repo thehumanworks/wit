@@ -1,7 +1,7 @@
 ---
 goal_id: "cli-branch-flag"
 title: "Add CLI branch flag"
-status: "ready"             # draft | ready | in-progress | done | exited
+status: "done"              # draft | ready | in-progress | done | exited
 confidence_floor: 90        # a Task below this CANNOT be ticked done
 created: "2026-07-02"
 updated: "2026-07-02"
@@ -55,10 +55,10 @@ Tick a `DoD-N` box only when its own `verify by:` has been run and passed (not m
 because a closing Task is ticked). Log the command and its outcome as an Evidence bullet
 under the Task that **Closes:** it. DONE requires every DoD box ticked.
 
-- [ ] **DoD-1** — `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail` parse `--branch BRANCH` and route that value to shared cache acquisition — *verify by:* `cargo test -p wit cli_branch_flag_parses_and_routes --lib`
-- [ ] **DoD-2** — branch-selected CLI reads and cache refresh operate on branch-specific content across repo-reading commands — *verify by:* `cargo test -p wit --test branch_cli_integration`
-- [ ] **DoD-3** — CLI help, README, bundled skill docs, and source-contract tests describe `--branch`, default branch behavior, `--refresh-cache`, and the continued absence of TTL/max-age controls — *verify by:* `cargo test -p wit cli_branch_help_text --lib && rg -n -- "--branch|branch parameter|default branch|TTL|max-age" README.md crates/wit/src/skill/SKILL.md crates/wit/src/lib.rs`
-- [ ] **DoD-4** — full repo verification passes after the CLI branch flag lands — *verify by:* `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh`
+- [x] **DoD-1** — `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail` parse `--branch BRANCH` and route that value to shared cache acquisition — *verify by:* `cargo test -p wit cli_branch_flag_parses_and_routes --lib`
+- [x] **DoD-2** — branch-selected CLI reads and cache refresh operate on branch-specific content across repo-reading commands — *verify by:* `cargo test -p wit --test branch_cli_integration`
+- [x] **DoD-3** — CLI help, README, bundled skill docs, and source-contract tests describe `--branch`, default branch behavior, `--refresh-cache`, and the continued absence of TTL/max-age controls — *verify by:* `cargo test -p wit cli_branch_help_text --lib && rg -n -- "--branch|branch parameter|default branch|TTL|max-age" README.md crates/wit/src/skill/SKILL.md crates/wit/src/lib.rs`
+- [x] **DoD-4** — full repo verification passes after the CLI branch flag lands — *verify by:* `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh`
 
 ---
 
@@ -82,12 +82,12 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 
 ---
 
-### T1 · Inventory CLI command and test surfaces · [ ]
+### T1 · Inventory CLI command and test surfaces · [x]
 
 **Steps**
-- [ ] Run `gdd_status.py` on `goals/branch-cache-selection-api.md` and stop if it is not done.
-- [ ] Re-read CLI command variants, `repo_cache_mode`, hidden `__cache-revalidate`, cache call sites, help tests, and source-contract tests.
-- [ ] Identify every stale assertion that says public branch selection is intentionally deferred.
+- [x] Run `gdd_status.py` on `goals/branch-cache-selection-api.md` and stop if it is not done.
+- [x] Re-read CLI command variants, `repo_cache_mode`, hidden `__cache-revalidate`, cache call sites, help tests, and source-contract tests.
+- [x] Identify every stale assertion that says public branch selection is intentionally deferred.
 
 **Verification Contract**
 - *Check:* every CLI command that should accept `--branch` and every stale no-branch assertion is identified.
@@ -95,19 +95,20 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; execution notes identify target commands and stale assertions before code edits.
 - *BDD scenarios covered:* repo-scoped command inventory; source-contract update inventory; hidden worker flag inventory
 
-**Confidence:** 0 / 90 · **Depends on:** branch-cache-selection-api DONE · **Closes:** none
+**Confidence:** 95 / 90 · **Depends on:** branch-cache-selection-api DONE · **Closes:** none
 
 **Evidence (required before tick; append-only)**
-- *(none yet — when setting Confidence ≥ floor, append a bullet with all three: date + command/check run + outcome (exit code / test counts / artifact path))*
+- 2026-07-02 — `python /Users/mish/.agents/skills/goal-driven-development/scripts/gdd_status.py goals/branch-cache-selection-api.md && python /Users/mish/.agents/skills/goal-driven-development/scripts/gdd_status.py goals/cli-branch-flag.md` — exit 0; prerequisite goal was DONE and CLI goal resumed at T1.
+- 2026-07-02 — `rg -n "Commands::|refresh_cache|cache_github_repo|__cache-revalidate|long = \"branch\"|branch-selection|Public branch selection|No public TTL" crates/wit/src/cli.rs crates/wit/src/lib.rs README.md crates/wit/src/skill/SKILL.md` — exit 0; identified target command variants, cache routing sites, hidden worker, stale no-branch assertions, README, and bundled skill docs.
 
 ---
 
-### T2 · Add and route `--branch` through CLI command handling · [ ]
+### T2 · Add and route `--branch` through CLI command handling · [x]
 
 **Steps**
-- [ ] Add a reusable branch option pattern to `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`.
-- [ ] Route the parsed value to the shared cache branch selector without changing no-branch defaults.
-- [ ] Update parser/source-contract tests so the old no-public-branch assertion is removed, not bypassed.
+- [x] Add a reusable branch option pattern to `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`.
+- [x] Route the parsed value to the shared cache branch selector without changing no-branch defaults.
+- [x] Update parser/source-contract tests so the old no-public-branch assertion is removed, not bypassed.
 
 **Verification Contract**
 - *Check:* CLI parser accepts `--branch BRANCH` on the full repo-scoped command set and code routes it to cache acquisition.
@@ -115,19 +116,19 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; tests fail if any target command lacks `--branch` or routes reads without the branch value.
 - *BDD scenarios covered:* `cache --branch`; `tree --branch`; `ls --branch`; `cat --branch`; `rg --branch`; `sed --branch`; `head --branch`; `tail --branch`; omitted branch uses default
 
-**Confidence:** 0 / 90 · **Depends on:** T1 · **Closes:** DoD-1
+**Confidence:** 95 / 90 · **Depends on:** T1 · **Closes:** DoD-1
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — `cargo test -p wit cli_branch_flag_parses_and_routes --lib` — exit 0; 1 passed, 0 failed; source-contract test proves public branch fields and branch routing are present.
 
 ---
 
-### T3 · Prove CLI branch-specific reads with deterministic fixtures · [ ]
+### T3 · Prove CLI branch-specific reads with deterministic fixtures · [x]
 
 **Steps**
-- [ ] Add a deterministic CLI integration test using local seeded branch caches or local-remotes rather than live GitHub where practical.
-- [ ] Cover branch-specific content for tree, ls, cat, rg, sed, head, and tail.
-- [ ] Cover `wit cache -r owner/repo --branch BRANCH` as a branch-specific force refresh path.
+- [x] Add a deterministic CLI integration test using local seeded branch caches or local-remotes rather than live GitHub where practical.
+- [x] Cover branch-specific content for tree, ls, cat, rg, sed, head, and tail.
+- [x] Cover `wit cache -r owner/repo --branch BRANCH` as a branch-specific force refresh path.
 
 **Verification Contract**
 - *Check:* branch-selected CLI commands return content unique to the named branch.
@@ -135,20 +136,20 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; tests fail if commands read default branch content while `--branch` is set.
 - *BDD scenarios covered:* named branch file exists; default branch lacks that file; search result differs by branch; cache refresh targets named branch
 
-**Confidence:** 0 / 90 · **Depends on:** T2 · **Closes:** DoD-2
+**Confidence:** 95 / 90 · **Depends on:** T2 · **Closes:** DoD-2
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — `cargo test -p wit --test branch_cli_integration` — exit 0; 1 passed, 0 failed; local-remote test covers `wit cache --branch` plus branch-specific tree, ls, cat, rg, sed, head, and tail.
 
 ---
 
-### T4 · Update CLI-facing docs and help text · [ ]
+### T4 · Update CLI-facing docs and help text · [x]
 
 **Steps**
-- [ ] Update top-level help and per-command help to describe `--branch BRANCH`.
-- [ ] Update README cache and command sections so they no longer claim public branch selection is absent.
-- [ ] Update bundled `crates/wit/src/skill/SKILL.md` with the same branch-selection contract.
-- [ ] Preserve the no public TTL/max-age contract.
+- [x] Update top-level help and per-command help to describe `--branch BRANCH`.
+- [x] Update README cache and command sections so they no longer claim public branch selection is absent.
+- [x] Update bundled `crates/wit/src/skill/SKILL.md` with the same branch-selection contract.
+- [x] Preserve the no public TTL/max-age contract.
 
 **Verification Contract**
 - *Check:* docs and help describe branch selection accurately and do not reintroduce TTL or max-age.
@@ -156,20 +157,21 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; grep output includes intentional branch/default/TTL wording in all doc surfaces.
 - *BDD scenarios covered:* user wants default branch; user wants named branch; user wants fresh named branch; user asks for TTL
 
-**Confidence:** 0 / 90 · **Depends on:** T3 · **Closes:** DoD-3
+**Confidence:** 95 / 90 · **Depends on:** T3 · **Closes:** DoD-3
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — `cargo test -p wit cli_branch_help_text --lib` — exit 0; 1 passed, 0 failed; source-contract test proves CLI help, README, and bundled skill docs describe branch/default/refresh/no-TTL behavior.
+- 2026-07-02 — `rg -n -- "--branch|branch parameter|default branch|TTL|max-age" README.md crates/wit/src/skill/SKILL.md crates/wit/src/lib.rs` — exit 0; readback showed intentional branch, default branch, refresh, and no-TTL/max-age wording.
 
 ---
 
-### T5 · Run full repo verification for CLI branch selection · [ ]
+### T5 · Run full repo verification for CLI branch selection · [x]
 
 **Steps**
-- [ ] Run rustfmt check after all CLI/docs changes.
-- [ ] Run clippy with warnings denied.
-- [ ] Run the full workspace test suite and search migration guard.
-- [ ] Fix any failure before finalizing, even if it appears outside the immediate CLI diff.
+- [x] Run rustfmt check after all CLI/docs changes.
+- [x] Run clippy with warnings denied.
+- [x] Run the full workspace test suite and search migration guard.
+- [x] Fix any failure before finalizing, even if it appears outside the immediate CLI diff.
 
 **Verification Contract**
 - *Check:* full repo gates pass with the CLI branch flag.
@@ -177,10 +179,10 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0 for every command.
 - *BDD scenarios covered:* formatting; lint; unit and integration replay tests; GitHub-only search migration guard
 
-**Confidence:** 0 / 90 · **Depends on:** T4 · **Closes:** DoD-4
+**Confidence:** 95 / 90 · **Depends on:** T4 · **Closes:** DoD-4
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh` — exit 0; workspace tests passed including branch CLI integration and MCP stdio regression; search migration guard passed.
 
 ---
 
@@ -195,6 +197,13 @@ Meaningful choices/concessions needing visibility. Scope impact must be `none`.
 - **Why surface:** The highest-risk shortcut is parsing a flag without proving all read commands actually return branch-specific content.
 - **Scope impact:** none (pre-confirm authoring edit)
 
+### 2026-07-02 — CLI branch flag shape
+- **Context:** Public branch selection is now a CLI surface but tags, SHAs, PR refs, and arbitrary refs remain out of scope.
+- **Decision:** Add only `--branch BRANCH` with no short alias to `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`, and route it through shared `CacheBranchSelection`.
+- **Alternatives rejected:** Add a short alias; make branch global; support `--ref`; document TTL/max-age controls.
+- **Why surface:** Keeps the user-facing API narrow and aligned with the shared cache selector contract.
+- **Scope impact:** none
+
 ---
 
 ## 7. Learnings · LIVE (append-only)
@@ -205,7 +214,12 @@ trigger → wrong action → *(open: revision/correct not yet found)* → pointe
 failure (log path or commit) — still impact-tagged, so a dead-end is recorded before a
 fresh context re-treads it.
 
-*(none yet)*
+### 2026-07-02 — Default reads after explicit branch cache
+- **Trigger:** CLI integration cached only `feature/cli` and then a no-branch default read reused that single explicit branch cache.
+- **Wrong action:** Treating "one cached branch exists" as proof that it is the default branch.
+- **Revision:** Public branch selection means explicit branch caches can exist before the default branch cache.
+- **Correct action:** Resolve the remote default branch name first, then reuse cached metadata only for that specific default branch.
+- **impact:** 5/5
 
 ---
 

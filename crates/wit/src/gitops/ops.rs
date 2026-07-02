@@ -22,6 +22,7 @@ pub const WIT_CACHE_SUBDIR: &str = ".wit/cache";
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const CACHE_METADATA_FILE: &str = "metadata.json";
 const CACHE_METADATA_TEMP_FILE: &str = "metadata.json.tmp";
+const DEFAULT_BRANCH_METADATA_FILE: &str = "default_branch.json";
 const CACHE_LOCK_FILE: &str = ".cache.lock";
 static CACHE_PROCESS_LOCKS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
@@ -49,6 +50,19 @@ pub enum CacheAcquisitionMode {
 impl CacheAcquisitionMode {
     fn is_force_invalidate(self) -> bool {
         matches!(self, Self::ForceInvalidate)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CacheBranchSelection {
+    #[default]
+    Default,
+    Named(String),
+}
+
+impl CacheBranchSelection {
+    pub fn named(branch: impl Into<String>) -> Self {
+        Self::Named(branch.into())
     }
 }
 
@@ -163,6 +177,42 @@ impl CacheMetadata {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DefaultBranchMetadata {
+    cache_schema_version: u32,
+    owner_repo: String,
+    remote_url: String,
+    branch: String,
+}
+
+impl DefaultBranchMetadata {
+    fn new(resolved: &ResolvedCacheTarget) -> Self {
+        Self {
+            cache_schema_version: CACHE_SCHEMA_VERSION,
+            owner_repo: resolved.target.owner_repo.clone(),
+            remote_url: resolved.remote_url.clone(),
+            branch: resolved.branch.name.clone(),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.cache_schema_version != CACHE_SCHEMA_VERSION {
+            anyhow::bail!(
+                "unsupported default branch metadata schema version {}",
+                self.cache_schema_version
+            );
+        }
+        if self.owner_repo.is_empty() || self.remote_url.is_empty() || self.branch.is_empty() {
+            anyhow::bail!("default branch metadata is missing required identity fields");
+        }
+        Ok(())
+    }
+
+    fn matches_identity(&self, owner_repo: &str, remote_url: &str) -> bool {
+        self.validate().is_ok() && self.owner_repo == owner_repo && self.remote_url == remote_url
+    }
+}
+
 fn encode_branch_for_path(branch: &str) -> String {
     let mut encoded = String::with_capacity(branch.len() + 2);
     encoded.push_str("b-");
@@ -215,7 +265,18 @@ fn default_cache_target_for_cache(
         return Ok(cached);
     }
 
-    default_cache_target(owner_repo, remote_url)
+    let resolved_default = default_cache_target(owner_repo, remote_url)?;
+    write_default_branch_metadata(cache_dir, &resolved_default)?;
+    if !mode.is_force_invalidate() {
+        let metadata_path = resolved_default.target.metadata_path(cache_dir);
+        if let Some(cached) =
+            cached_named_cache_target(resolved_default.target.clone(), remote_url, &metadata_path)?
+        {
+            return Ok(cached);
+        }
+    }
+
+    Ok(resolved_default)
 }
 
 fn cached_default_cache_target(
@@ -223,64 +284,84 @@ fn cached_default_cache_target(
     remote_url: &str,
     cache_dir: &Path,
 ) -> anyhow::Result<Option<ResolvedCacheTarget>> {
-    let branches_dir = repo_cache_root(cache_dir, owner_repo)?.join("branches");
-    let entries = match std::fs::read_dir(&branches_dir) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "failed to read cache branches directory '{}'",
-                    branches_dir.display()
-                )
-            });
-        }
+    let metadata_path = default_branch_metadata_path(cache_dir, owner_repo)?;
+    let metadata = match read_default_branch_metadata(&metadata_path) {
+        Ok(metadata) if metadata.matches_identity(owner_repo, remote_url) => metadata,
+        Ok(_) | Err(_) => return Ok(None),
     };
-    let mut matches = Vec::new();
+    let target = CacheTarget::new(owner_repo, &metadata.branch)?;
+    let cache_metadata_path = target.metadata_path(cache_dir);
+    cached_named_cache_target(target, remote_url, &cache_metadata_path)
+}
 
-    for entry in entries {
-        let entry = entry.with_context(|| {
-            format!(
-                "failed to read cache branch entry under '{}'",
-                branches_dir.display()
-            )
-        })?;
-        if !entry
-            .file_type()
-            .with_context(|| format!("failed to inspect '{}'", entry.path().display()))?
-            .is_dir()
+fn cache_target_for_cache(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    branch: &CacheBranchSelection,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<ResolvedCacheTarget> {
+    match branch {
+        CacheBranchSelection::Default => {
+            default_cache_target_for_cache(owner_repo, remote_url, cache_dir, mode)
+        }
+        CacheBranchSelection::Named(branch) => {
+            named_cache_target_for_cache(owner_repo, remote_url, cache_dir, branch, mode)
+        }
+    }
+}
+
+fn named_cache_target_for_cache(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    branch: &str,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<ResolvedCacheTarget> {
+    let target = CacheTarget::new(owner_repo, branch)?;
+    if !mode.is_force_invalidate() {
+        let metadata_path = target.metadata_path(cache_dir);
+        if let Some(cached) = cached_named_cache_target(target.clone(), remote_url, &metadata_path)?
         {
-            continue;
+            return Ok(cached);
         }
-
-        let metadata_path = entry.path().join(CACHE_METADATA_FILE);
-        let Ok(metadata) = read_cache_metadata(&metadata_path) else {
-            continue;
-        };
-        if metadata.owner_repo != owner_repo || metadata.remote_url != remote_url {
-            continue;
-        }
-
-        let target = CacheTarget::new(owner_repo, &metadata.branch)?;
-        if target.metadata_path(cache_dir) != metadata_path {
-            continue;
-        }
-
-        matches.push(ResolvedCacheTarget {
-            target,
-            remote_url: metadata.remote_url.clone(),
-            branch: ResolvedBranch {
-                name: metadata.branch,
-                current_sha: metadata.current_sha,
-            },
-        });
     }
 
-    Ok(if matches.len() == 1 {
-        matches.pop()
-    } else {
-        None
+    let current_sha = resolve_branch_sha(remote_url, branch)?;
+    Ok(ResolvedCacheTarget {
+        target,
+        remote_url: remote_url.to_string(),
+        branch: ResolvedBranch {
+            name: branch.to_string(),
+            current_sha,
+        },
     })
+}
+
+fn cached_named_cache_target(
+    target: CacheTarget,
+    remote_url: &str,
+    metadata_path: &Path,
+) -> anyhow::Result<Option<ResolvedCacheTarget>> {
+    let metadata = match read_cache_metadata(metadata_path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
+    if metadata.owner_repo != target.owner_repo
+        || metadata.branch != target.branch
+        || metadata.remote_url != remote_url
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(ResolvedCacheTarget {
+        target,
+        remote_url: metadata.remote_url,
+        branch: ResolvedBranch {
+            name: metadata.branch,
+            current_sha: metadata.current_sha,
+        },
+    }))
 }
 
 fn default_cache_target(owner_repo: &str, remote_url: &str) -> anyhow::Result<ResolvedCacheTarget> {
@@ -410,6 +491,83 @@ fn write_cache_metadata(metadata_path: &Path, metadata: &CacheMetadata) -> anyho
     replace_cache_metadata(&temp_path, metadata_path)
 }
 
+fn default_branch_metadata_path(cache_dir: &Path, owner_repo: &str) -> anyhow::Result<PathBuf> {
+    Ok(repo_cache_root(cache_dir, owner_repo)?.join(DEFAULT_BRANCH_METADATA_FILE))
+}
+
+fn read_default_branch_metadata(metadata_path: &Path) -> anyhow::Result<DefaultBranchMetadata> {
+    let file = File::open(metadata_path).with_context(|| {
+        format!(
+            "failed to open default branch metadata '{}'",
+            metadata_path.display()
+        )
+    })?;
+    let metadata: DefaultBranchMetadata = serde_json::from_reader(file).with_context(|| {
+        format!(
+            "failed to parse default branch metadata '{}'",
+            metadata_path.display()
+        )
+    })?;
+    metadata.validate()?;
+    Ok(metadata)
+}
+
+fn write_default_branch_metadata(
+    cache_dir: &Path,
+    resolved: &ResolvedCacheTarget,
+) -> anyhow::Result<()> {
+    let metadata = DefaultBranchMetadata::new(resolved);
+    let metadata_path = default_branch_metadata_path(cache_dir, &resolved.target.owner_repo)?;
+    metadata.validate()?;
+    let parent = metadata_path.parent().with_context(|| {
+        format!(
+            "default branch metadata path '{}' has no parent",
+            metadata_path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create default branch metadata parent '{}'",
+            parent.display()
+        )
+    })?;
+
+    let temp_path = unique_metadata_temp_path(parent, DEFAULT_BRANCH_METADATA_FILE)?;
+    let mut temp_file = File::create(&temp_path).with_context(|| {
+        format!(
+            "failed to create default branch metadata temp file '{}'",
+            temp_path.display()
+        )
+    })?;
+    serde_json::to_writer_pretty(&mut temp_file, &metadata).with_context(|| {
+        format!(
+            "failed to serialize default branch metadata '{}'",
+            temp_path.display()
+        )
+    })?;
+    temp_file.write_all(b"\n").with_context(|| {
+        format!(
+            "failed to finalize default branch metadata temp file '{}'",
+            temp_path.display()
+        )
+    })?;
+    temp_file.sync_all().with_context(|| {
+        format!(
+            "failed to sync default branch metadata temp file '{}'",
+            temp_path.display()
+        )
+    })?;
+    replace_cache_metadata(&temp_path, &metadata_path)
+}
+
+fn unique_metadata_temp_path(parent: &Path, file_name: &str) -> anyhow::Result<PathBuf> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_nanos();
+    Ok(parent.join(format!("{file_name}.{}.{}.tmp", std::process::id(), nanos)))
+}
+
 fn write_cache_metadata_temp(
     metadata_path: &Path,
     metadata: &CacheMetadata,
@@ -480,19 +638,32 @@ fn current_unix_timestamp() -> anyhow::Result<u64> {
         .as_secs())
 }
 
-pub fn revalidate_github_repo(owner_repo: &str) -> anyhow::Result<()> {
+pub fn revalidate_github_repo(
+    owner_repo: &str,
+    branch: CacheBranchSelection,
+) -> anyhow::Result<()> {
     split_owner_repo(owner_repo)?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
-    remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
-    let resolved = default_cache_target_for_cache(
+    revalidate_github_repo_from_remote(owner_repo, &remote_url, &cache_dir, branch)
+}
+
+fn revalidate_github_repo_from_remote(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    branch: CacheBranchSelection,
+) -> anyhow::Result<()> {
+    remove_legacy_repo_cache_if_present(cache_dir, owner_repo)?;
+    let resolved = cache_target_for_cache(
         owner_repo,
-        &remote_url,
-        &cache_dir,
+        remote_url,
+        cache_dir,
+        &branch,
         CacheAcquisitionMode::ServeStaleAndRevalidate,
     )?;
-    let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(&cache_dir))?;
-    revalidate_cache_target(&resolved, &cache_dir)
+    let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(cache_dir))?;
+    revalidate_cache_target(&resolved, cache_dir)
 }
 
 pub fn wit_cache_dir() -> PathBuf {
@@ -713,15 +884,26 @@ pub enum GrepResult {
 
 pub async fn cache_github_repo(
     owner_repo: &str,
+    branch: CacheBranchSelection,
     mode: CacheAcquisitionMode,
 ) -> anyhow::Result<Repository> {
     split_owner_repo(owner_repo)?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
-    remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
-    let resolved = default_cache_target_for_cache(owner_repo, &remote_url, &cache_dir, mode)?;
-    let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(&cache_dir))?;
-    cache_github_repo_target(&resolved, &cache_dir, mode)
+    cache_github_repo_from_remote(owner_repo, &remote_url, &cache_dir, branch, mode)
+}
+
+fn cache_github_repo_from_remote(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    branch: CacheBranchSelection,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<Repository> {
+    remove_legacy_repo_cache_if_present(cache_dir, owner_repo)?;
+    let resolved = cache_target_for_cache(owner_repo, remote_url, cache_dir, &branch, mode)?;
+    let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(cache_dir))?;
+    cache_github_repo_target(&resolved, cache_dir, mode)
 }
 
 fn cache_github_repo_target(
@@ -752,7 +934,7 @@ fn cache_github_repo_target(
     }
 
     remove_cache_metadata(&metadata_path)?;
-    let repo = recache_repo(&resolved.remote_url, &cache_path)?;
+    let repo = recache_repo(&resolved.remote_url, &resolved.branch.name, &cache_path)?;
     let now = current_unix_timestamp()?;
     let metadata = CacheMetadata::new(resolved, now, now);
     write_cache_metadata(&metadata_path, &metadata)?;
@@ -766,9 +948,7 @@ fn spawn_cache_revalidation(
 ) -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("failed to determine current executable")?;
     Command::new(exe)
-        .arg("__cache-revalidate")
-        .arg("--repo")
-        .arg(&resolved.target.owner_repo)
+        .args(cache_revalidation_args(resolved))
         .env(WIT_CACHE_DIR_ENV, cache_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -784,6 +964,16 @@ fn spawn_cache_revalidation(
     _cache_dir: &Path,
 ) -> anyhow::Result<()> {
     Ok(())
+}
+
+fn cache_revalidation_args(resolved: &ResolvedCacheTarget) -> Vec<String> {
+    vec![
+        "__cache-revalidate".to_string(),
+        "--repo".to_string(),
+        resolved.target.owner_repo.clone(),
+        "--branch".to_string(),
+        resolved.branch.name.clone(),
+    ]
 }
 
 fn revalidate_cache_target(resolved: &ResolvedCacheTarget, cache_dir: &Path) -> anyhow::Result<()> {
@@ -809,6 +999,7 @@ fn revalidate_cache_target(resolved: &ResolvedCacheTarget, cache_dir: &Path) -> 
             };
             match refresh_repo_preserving_existing(
                 &refreshed.remote_url,
+                &refreshed.branch.name,
                 &refreshed.target.repo_path(cache_dir),
             ) {
                 Ok(_) => {
@@ -907,7 +1098,7 @@ fn release_process_cache_lock(lock_path: &Path) {
     }
 }
 
-fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+fn recache_repo(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Result<Repository> {
     remove_cache_dir(cache_path)?;
 
     if let Some(parent) = cache_path.parent() {
@@ -915,7 +1106,7 @@ fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository>
             .with_context(|| format!("failed to create cache parent '{}'", parent.display()))?;
     }
 
-    match clone_with_gix(repo_url, cache_path) {
+    match clone_with_gix(repo_url, branch, cache_path) {
         Ok(repo) => Ok(repo),
         Err(err) => {
             remove_cache_dir(cache_path)?;
@@ -925,7 +1116,7 @@ fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository>
                         format!("failed to create cache parent '{}'", parent.display())
                     })?;
                 }
-                clone_with_git_cli(repo_url, cache_path).with_context(|| {
+                clone_with_git_cli(repo_url, branch, cache_path).with_context(|| {
                     format!("gix clone timed out and git fallback failed for '{repo_url}'")
                 })
             } else {
@@ -937,6 +1128,7 @@ fn recache_repo(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository>
 
 fn refresh_repo_preserving_existing(
     repo_url: &str,
+    branch: &str,
     cache_path: &Path,
 ) -> anyhow::Result<Repository> {
     let parent = cache_path
@@ -945,7 +1137,7 @@ fn refresh_repo_preserving_existing(
     let staging_path = parent.join("repo.git.tmp");
     remove_cache_dir(&staging_path)?;
 
-    match recache_repo(repo_url, &staging_path) {
+    match recache_repo(repo_url, branch, &staging_path) {
         Ok(_) => {
             remove_cache_dir(cache_path)?;
             std::fs::rename(&staging_path, cache_path).with_context(|| {
@@ -974,11 +1166,12 @@ fn remove_cache_dir(cache_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn clone_with_gix(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+fn clone_with_gix(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Result<Repository> {
     std::fs::create_dir_all(cache_path)
         .with_context(|| format!("failed to create cache '{}'", cache_path.display()))?;
 
     let (repo, _) = gix::prepare_clone_bare(repo_url, cache_path)?
+        .with_ref_name(Some(branch))?
         .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
             1.try_into().unwrap(),
         ))
@@ -987,12 +1180,19 @@ fn clone_with_gix(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repositor
     Ok(repo)
 }
 
-fn clone_with_git_cli(repo_url: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+fn clone_with_git_cli(
+    repo_url: &str,
+    branch: &str,
+    cache_path: &Path,
+) -> anyhow::Result<Repository> {
     let output = Command::new("git")
         .arg("clone")
         .arg("--bare")
         .arg("--depth")
         .arg("1")
+        .arg("--branch")
+        .arg(branch)
+        .arg("--single-branch")
         .arg(repo_url)
         .arg(cache_path)
         .output()
@@ -1872,6 +2072,7 @@ mod tests {
 
     fn commit_and_push_file(temp: &tempfile::TempDir, branch: &str, content: &str) -> String {
         let worktree = temp.path().join("worktree");
+        run_git(&["checkout", branch], Some(&worktree));
         std::fs::write(worktree.join("README.md"), content).unwrap();
         run_git(&["add", "README.md"], Some(&worktree));
         run_git(
@@ -1887,6 +2088,39 @@ mod tests {
             Some(&worktree),
         );
         run_git(&["push", "origin", branch], Some(&worktree));
+        git_stdout(&["rev-parse", "HEAD"], Some(&worktree))
+    }
+
+    fn create_branch_with_file(
+        temp: &tempfile::TempDir,
+        base_branch: &str,
+        branch: &str,
+        path: &str,
+        content: &str,
+    ) -> String {
+        let worktree = temp.path().join("worktree");
+        run_git(&["checkout", base_branch], Some(&worktree));
+        run_git(&["checkout", "-B", branch], Some(&worktree));
+        let file_path = worktree.join(path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&file_path, content).unwrap();
+        run_git(&["add", path], Some(&worktree));
+        let message = format!("update {branch}");
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "commit",
+                "-m",
+                &message,
+            ],
+            Some(&worktree),
+        );
+        run_git(&["push", "--force", "origin", branch], Some(&worktree));
         git_stdout(&["rev-parse", "HEAD"], Some(&worktree))
     }
 
@@ -1984,17 +2218,29 @@ mod tests {
     }
 
     #[test]
-    fn cache_default_branch_resolution_uses_cached_metadata_without_remote() {
+    fn cache_default_branch_resolution_uses_cached_default_branch_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
-        let resolved =
-            resolved_cache_target_for_test("trunk", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let remote_url = temp
+            .path()
+            .join("missing.git")
+            .to_string_lossy()
+            .to_string();
+        let resolved = ResolvedCacheTarget {
+            target: CacheTarget::new("owner/repo", "trunk").unwrap(),
+            remote_url: remote_url.clone(),
+            branch: ResolvedBranch {
+                name: "trunk".to_string(),
+                current_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            },
+        };
         let metadata = CacheMetadata::new(&resolved, 100, 200);
         write_cache_metadata(&resolved.target.metadata_path(&cache_dir), &metadata).unwrap();
+        write_default_branch_metadata(&cache_dir, &resolved).unwrap();
 
         let cached = default_cache_target_for_cache(
             "owner/repo",
-            "/tmp/remote.git",
+            &remote_url,
             &cache_dir,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
@@ -2009,6 +2255,37 @@ mod tests {
             cached.target.repo_path(&cache_dir),
             resolved.target.repo_path(&cache_dir)
         );
+    }
+
+    #[test]
+    fn cache_default_branch_stale_read_uses_marker_without_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, _) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_string_lossy().to_string();
+
+        let initial = cache_github_repo_from_remote(
+            "owner/repo",
+            &remote_url,
+            &cache_dir,
+            CacheBranchSelection::Default,
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&initial, "README.md").unwrap(), "hello\n");
+
+        std::fs::rename(&remote, temp.path().join("remote-gone.git")).unwrap();
+        let stale = cache_github_repo_from_remote(
+            "owner/repo",
+            &remote_url,
+            &cache_dir,
+            CacheBranchSelection::Default,
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+
+        assert_eq!(read_file(&stale, "README.md").unwrap(), "hello\n");
+        assert_eq!(stale.path(), initial.path());
     }
 
     #[test]
@@ -2050,6 +2327,186 @@ mod tests {
         assert_eq!(metadata.cache_schema_version, CACHE_SCHEMA_VERSION);
         assert!(metadata.last_checked_at > 0);
         assert!(metadata.last_updated_at > 0);
+    }
+
+    #[test]
+    fn cache_explicit_branch_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, default_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let branch_sha =
+            create_branch_with_file(&temp, "trunk", "feature/api", "README.md", "feature\n");
+        let remote_url = remote.to_str().unwrap();
+
+        let default_repo = cache_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::Default,
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&default_repo, "README.md").unwrap(), "hello\n");
+        let default_target = CacheTarget::new("owner/repo", "trunk").unwrap();
+        let default_metadata =
+            read_cache_metadata(&default_target.metadata_path(&cache_dir)).unwrap();
+        assert_eq!(default_metadata.branch, "trunk");
+        assert_eq!(default_metadata.current_sha, default_sha);
+
+        let named_repo = cache_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::named("feature/api"),
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&named_repo, "README.md").unwrap(), "feature\n");
+        let named_target = CacheTarget::new("owner/repo", "feature/api").unwrap();
+        let named_metadata = read_cache_metadata(&named_target.metadata_path(&cache_dir)).unwrap();
+        assert_eq!(named_metadata.branch, "feature/api");
+        assert_eq!(named_metadata.current_sha, branch_sha);
+        assert_ne!(default_repo.path(), named_repo.path());
+
+        let missing = cache_target_for_cache(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            &CacheBranchSelection::named("missing/branch"),
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("missing/branch"));
+    }
+
+    #[test]
+    fn cache_explicit_branch_isolation() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, _) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let branches = [
+            ("feature/x", "slash branch\n"),
+            ("feature%2Fx", "percent branch\n"),
+            ("Uppercase/x", "uppercase branch\n"),
+            ("release/v1.0", "dot branch\n"),
+        ];
+        for (branch, content) in branches {
+            create_branch_with_file(&temp, "trunk", branch, "branch.txt", content);
+        }
+
+        let default_repo = cache_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::Default,
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&default_repo, "README.md").unwrap(), "hello\n");
+
+        let mut paths = HashSet::new();
+        paths.insert(default_repo.path().to_path_buf());
+        for (branch, content) in branches {
+            let repo = cache_github_repo_from_remote(
+                "owner/repo",
+                remote_url,
+                &cache_dir,
+                CacheBranchSelection::named(branch),
+                CacheAcquisitionMode::ForceInvalidate,
+            )
+            .unwrap();
+            assert_eq!(read_file(&repo, "branch.txt").unwrap(), content);
+            assert!(
+                paths.insert(repo.path().to_path_buf()),
+                "branch {branch} reused another branch cache path"
+            );
+            let metadata = read_cache_metadata(
+                &CacheTarget::new("owner/repo", branch)
+                    .unwrap()
+                    .metadata_path(&cache_dir),
+            )
+            .unwrap();
+            assert_eq!(metadata.branch, branch);
+        }
+    }
+
+    #[test]
+    fn cache_explicit_branch_revalidation() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, _) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let old_sha = create_branch_with_file(&temp, "trunk", "feature/api", "README.md", "old\n");
+
+        let initial = cache_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::named("feature/api"),
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&initial, "README.md").unwrap(), "old\n");
+
+        let new_sha = commit_and_push_file(&temp, "feature/api", "new\n");
+        assert_ne!(old_sha, new_sha);
+
+        let stale = cache_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::named("feature/api"),
+            CacheAcquisitionMode::ServeStaleAndRevalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&stale, "README.md").unwrap(), "old\n");
+
+        revalidate_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::named("feature/api"),
+        )
+        .unwrap();
+        let refreshed = gix::open(stale.path()).unwrap();
+        assert_eq!(read_file(&refreshed, "README.md").unwrap(), "new\n");
+        let metadata = read_cache_metadata(
+            &CacheTarget::new("owner/repo", "feature/api")
+                .unwrap()
+                .metadata_path(&cache_dir),
+        )
+        .unwrap();
+        assert_eq!(metadata.current_sha, new_sha);
+
+        commit_and_push_file(&temp, "feature/api", "forced\n");
+        let forced = cache_github_repo_from_remote(
+            "owner/repo",
+            remote_url,
+            &cache_dir,
+            CacheBranchSelection::named("feature/api"),
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+        assert_eq!(read_file(&forced, "README.md").unwrap(), "forced\n");
+    }
+
+    #[test]
+    fn cache_explicit_branch_revalidation_worker_args_include_branch() {
+        let resolved = resolved_cache_target_for_test(
+            "feature/api",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        assert_eq!(
+            cache_revalidation_args(&resolved),
+            vec![
+                "__cache-revalidate",
+                "--repo",
+                "owner/repo",
+                "--branch",
+                "feature/api"
+            ]
+        );
     }
 
     #[test]
@@ -2717,6 +3174,7 @@ mod tests {
     async fn test_grep_repo_basic() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2736,6 +3194,7 @@ mod tests {
     async fn test_grep_repo_ignore_case() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2756,6 +3215,7 @@ mod tests {
     async fn test_grep_repo_max_count() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2776,6 +3236,7 @@ mod tests {
     async fn test_grep_repo_glob_filter() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2798,6 +3259,7 @@ mod tests {
     async fn test_grep_repo_files_with_matches() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2820,6 +3282,7 @@ mod tests {
     async fn test_grep_repo_count() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2845,6 +3308,7 @@ mod tests {
     async fn test_head_basic() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2859,6 +3323,7 @@ mod tests {
     async fn test_head_with_numbers() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2881,6 +3346,7 @@ mod tests {
     async fn test_tail_basic() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2895,6 +3361,7 @@ mod tests {
     async fn test_tail_from_line() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2918,6 +3385,7 @@ mod tests {
     async fn test_tail_with_numbers() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2942,6 +3410,7 @@ mod tests {
         // First cache the repo
         let repo1 = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2951,6 +3420,7 @@ mod tests {
         // Second call with refresh=false should reuse the cache
         let repo2 = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2967,6 +3437,7 @@ mod tests {
         // First cache the repo
         let repo1 = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -2980,9 +3451,13 @@ mod tests {
         );
 
         // Second call with refresh=true should delete and re-clone
-        let repo2 = cache_github_repo("ratatui/ratatui", CacheAcquisitionMode::ForceInvalidate)
-            .await
-            .unwrap();
+        let repo2 = cache_github_repo(
+            "ratatui/ratatui",
+            CacheBranchSelection::Default,
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .await
+        .unwrap();
         let path2 = repo2.path().to_path_buf();
 
         // Paths should be the same location, but cache was refreshed
@@ -3005,6 +3480,7 @@ mod tests {
     async fn test_list_dir_root() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -3034,6 +3510,7 @@ mod tests {
     async fn test_list_dir_subdir() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -3056,6 +3533,7 @@ mod tests {
     async fn test_list_dir_long() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -3097,6 +3575,7 @@ mod tests {
     async fn test_list_dir_nonexistent() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await
@@ -3113,6 +3592,7 @@ mod tests {
     async fn test_list_dir_file_path() {
         let repo = cache_github_repo(
             "ratatui/ratatui",
+            CacheBranchSelection::Default,
             CacheAcquisitionMode::ServeStaleAndRevalidate,
         )
         .await

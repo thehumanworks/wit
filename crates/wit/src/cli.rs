@@ -7,9 +7,10 @@ const SKILL_MD: &str = include_str!("skill/SKILL.md");
 use wit::{
     ensure_rustls_provider,
     gitops::ops::{
-        CacheAcquisitionMode, GrepOptions, GrepResult, build_tree_with_ignore, cache_github_repo,
-        grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
-        read_file_with_ignore, revalidate_github_repo, tail_with_ignore,
+        CacheAcquisitionMode, CacheBranchSelection, GrepOptions, GrepResult,
+        build_tree_with_ignore, cache_github_repo, grep_repo_with_options, head_with_ignore,
+        list_dir_with_ignore, read_file, read_file_with_ignore, revalidate_github_repo,
+        tail_with_ignore,
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
@@ -20,7 +21,7 @@ use wit::{
 #[command(
     about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
     long_about = None,
-    after_help = "Cache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age or branch-selection option is exposed."
+    after_help = "Cache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed."
 )]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
@@ -71,12 +72,16 @@ enum Commands {
         name = "cache",
         visible_alias = "c",
         about = "Clone a repository into the local cache (or refresh an existing one)",
-        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh the default branch cache before returning.\n\nRepo-reading commands normally serve cached content immediately and revalidate the branch in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when the read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui          # Force re-clone of ratatui"
+        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh the default branch cache before returning, or pass --branch BRANCH to refresh a named branch cache.\n\nRepo-reading commands normally serve cached content immediately and revalidate the selected branch in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when the read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui                    # Force re-clone of default branch\n  wit cache -r ratatui/ratatui --branch main      # Force refresh a named branch"
     )]
     Cache {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Branch name under refs/heads to cache instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
     },
     #[command(
         name = "tree",
@@ -89,6 +94,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
 
         /// Force refresh the branch cache before reading
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
@@ -112,6 +121,10 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: String,
 
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
+
         /// Force refresh the branch cache before reading
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
         refresh_cache: bool,
@@ -133,6 +146,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
 
         /// Force refresh the branch cache before reading
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
@@ -178,6 +195,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Branch name under refs/heads to search instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
 
         /// Force refresh the branch cache before reading
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
@@ -258,6 +279,10 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: String,
 
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
+
         /// Sed script and file path (positional): <SCRIPT> <PATH>, or <PATH> when using -e/-f for the script
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
@@ -272,6 +297,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
 
         /// Force refresh the branch cache before reading
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
@@ -298,6 +327,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
 
         /// Force refresh the branch cache before reading
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
@@ -342,6 +375,10 @@ enum Commands {
         /// Repository in "owner/repo" format
         #[arg(long = "repo")]
         repo: String,
+
+        /// Branch to revalidate
+        #[arg(long = "branch", hide = true)]
+        branch: Option<String>,
     },
 }
 
@@ -382,6 +419,10 @@ fn repo_cache_mode(refresh_cache: bool) -> CacheAcquisitionMode {
     }
 }
 
+fn cache_branch_selection(branch: Option<String>) -> CacheBranchSelection {
+    branch.map_or(CacheBranchSelection::Default, CacheBranchSelection::named)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     ensure_rustls_provider();
@@ -404,26 +445,43 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Commands::Cache { repo } => {
-            let repo = cache_github_repo(&repo, CacheAcquisitionMode::ForceInvalidate).await?;
+        Commands::Cache { repo, branch } => {
+            let repo = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                CacheAcquisitionMode::ForceInvalidate,
+            )
+            .await?;
             println!("Cached repository: {}", repo.path().display());
         }
         Commands::Tree {
             repo,
+            branch,
             refresh_cache,
             path,
             long,
         } => {
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
             build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
         }
         Commands::Ls {
             repo,
+            branch,
             refresh_cache,
             path,
             long,
         } => {
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
             let entries =
                 list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
 
@@ -475,6 +533,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Cat {
             repo,
+            branch,
             refresh_cache,
             path,
             number,
@@ -484,7 +543,12 @@ async fn main() -> anyhow::Result<()> {
             show_tabs,
             show_all,
         } => {
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
             let content = read_file_with_ignore(&repository, &path, &ignore_patterns)?;
 
             // -A is equivalent to -ET
@@ -533,6 +597,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Rg {
             repo,
+            branch,
             refresh_cache,
             pattern,
             ignore_case,
@@ -548,7 +613,12 @@ async fn main() -> anyhow::Result<()> {
             count,
             long_format,
         } => {
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
 
             // Build options from CLI flags
             let mut opts = GrepOptions::new()
@@ -652,12 +722,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Head {
             repo,
+            branch,
             refresh_cache,
             path,
             lines,
             number,
         } => {
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
             let output = head_with_ignore(&repository, &path, lines, number, &ignore_patterns)?;
             println!("{}", output);
         }
@@ -667,6 +743,7 @@ async fn main() -> anyhow::Result<()> {
             expressions,
             files,
             repo,
+            branch,
             args,
         } => {
             let (args, inline_ignores) = extract_sed_inline_ignores(args)?;
@@ -674,7 +751,12 @@ async fn main() -> anyhow::Result<()> {
             effective_ignore_patterns.extend(inline_ignores);
 
             let (scripts, path) = parse_sed_invocation(expressions, files, args)?;
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
             let content = read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?;
             let program = sed::parse_script(&scripts)?;
             let output = sed::run(
@@ -692,13 +774,19 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Tail {
             repo,
+            branch,
             refresh_cache,
             path,
             lines,
             from_line,
             number,
         } => {
-            let repository = cache_github_repo(&repo, repo_cache_mode(refresh_cache)).await?;
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
             let output = tail_with_ignore(
                 &repository,
                 &path,
@@ -709,8 +797,8 @@ async fn main() -> anyhow::Result<()> {
             )?;
             println!("{}", output);
         }
-        Commands::CacheRevalidate { repo } => {
-            revalidate_github_repo(&repo)?;
+        Commands::CacheRevalidate { repo, branch } => {
+            revalidate_github_repo(&repo, cache_branch_selection(branch))?;
         }
         Commands::Skill { command } => match command {
             SkillCommands::Load => {
@@ -991,6 +1079,7 @@ mod tests {
                 expressions,
                 files,
                 repo,
+                branch,
                 args,
             } => {
                 let (filtered_args, inline_ignores) =
@@ -1001,6 +1090,7 @@ mod tests {
                 assert!(expressions.is_empty());
                 assert!(files.is_empty());
                 assert_eq!(repo, "owner/repo");
+                assert_eq!(branch, None);
                 assert_eq!(inline_ignores, vec!["vendor".to_string()]);
                 assert_eq!(filtered_args, vec!["1,3p", "src/lib.rs"]);
             }
@@ -1063,17 +1153,126 @@ mod tests {
     }
 
     #[test]
-    fn cli_force_cache_invalidation_does_not_add_public_branch_flag() {
+    fn cli_branch_flag_parses_and_routes() {
         let command = WitCli::command();
-        for command in command.get_subcommands() {
-            assert!(
-                !command
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some("branch")),
-                "{} should not expose --branch in this goal",
-                command.get_name()
+        for command_name in ["cache", "tree", "ls", "cat", "rg", "sed", "head", "tail"] {
+            let branch = find_arg(find_subcommand(&command, command_name), "branch");
+            assert_eq!(
+                branch.get_long(),
+                Some("branch"),
+                "{command_name} should expose --branch"
+            );
+            assert_eq!(
+                branch.get_short(),
+                None,
+                "{command_name} should not add a branch alias"
             );
         }
+
+        let branch = Some("feature/api".to_string());
+        let cache = WitCli::try_parse_from([
+            "wit",
+            "cache",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+        ])
+        .expect("cache --branch should parse");
+        assert!(
+            matches!(cache.command, Commands::Cache { branch: parsed, .. } if parsed == branch)
+        );
+
+        let tree = WitCli::try_parse_from([
+            "wit",
+            "tree",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "src",
+        ])
+        .expect("tree --branch should parse");
+        assert!(matches!(tree.command, Commands::Tree { branch: parsed, .. } if parsed == branch));
+
+        let ls = WitCli::try_parse_from([
+            "wit",
+            "ls",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "src",
+        ])
+        .expect("ls --branch should parse");
+        assert!(matches!(ls.command, Commands::Ls { branch: parsed, .. } if parsed == branch));
+
+        let cat = WitCli::try_parse_from([
+            "wit",
+            "cat",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "README.md",
+        ])
+        .expect("cat --branch should parse");
+        assert!(matches!(cat.command, Commands::Cat { branch: parsed, .. } if parsed == branch));
+
+        let rg = WitCli::try_parse_from([
+            "wit",
+            "rg",
+            "needle",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+        ])
+        .expect("rg --branch should parse");
+        assert!(matches!(rg.command, Commands::Rg { branch: parsed, .. } if parsed == branch));
+
+        let sed = WitCli::try_parse_from([
+            "wit",
+            "sed",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "1p",
+            "README.md",
+        ])
+        .expect("sed --branch should parse");
+        assert!(matches!(sed.command, Commands::Sed { branch: parsed, .. } if parsed == branch));
+
+        let head = WitCli::try_parse_from([
+            "wit",
+            "head",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "README.md",
+        ])
+        .expect("head --branch should parse");
+        assert!(matches!(head.command, Commands::Head { branch: parsed, .. } if parsed == branch));
+
+        let tail = WitCli::try_parse_from([
+            "wit",
+            "tail",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "README.md",
+        ])
+        .expect("tail --branch should parse");
+        assert!(matches!(tail.command, Commands::Tail { branch: parsed, .. } if parsed == branch));
+
+        let source = include_str!("cli.rs");
+        assert!(
+            source.matches("cache_branch_selection(branch)").count() >= 8,
+            "repo-reading handlers should route parsed branches to cache acquisition"
+        );
     }
 
     #[test]
@@ -1082,12 +1281,14 @@ mod tests {
         let help = command.render_long_help().to_string();
 
         assert!(help.contains("branch-keyed stale-while-revalidate cache"));
+        assert!(help.contains("--branch BRANCH"));
         assert!(help.contains("--refresh-cache"));
-        assert!(help.contains("No public TTL/max-age or branch-selection option is exposed."));
+        assert!(help.contains("No public TTL/max-age option is exposed."));
 
         let mut cache = find_subcommand(&command, "cache").clone();
         let cache_help = cache.render_long_help().to_string();
-        assert!(cache_help.contains("serve cached content immediately"));
+        assert!(cache_help.contains("selected branch"));
+        assert!(cache_help.contains("--branch"));
         assert!(cache_help.contains("--refresh-cache"));
     }
 

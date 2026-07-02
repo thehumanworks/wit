@@ -70,6 +70,7 @@ wit rg -l 'impl Widget' -r ratatui/ratatui                    # Find files
 wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file
 wit head -n 30 -r ratatui/ratatui Cargo.toml                  # Preview a file
 wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
+wit cat --branch main -r ratatui/ratatui README.md            # Read a named branch
 wit tree --refresh-cache -r ratatui/ratatui src               # Force fresh cache before reading
 wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 ```
@@ -94,7 +95,7 @@ Example MCP client config:
 }
 ```
 
-`wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. Repo-reading tools use the same branch-keyed stale-while-revalidate cache as the CLI and accept `refresh_cache` when a fresh default-branch read is required. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
+`wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. Repo-reading tools use the same branch-keyed stale-while-revalidate cache as the CLI and accept optional JSON `branch` plus `refresh_cache` parameters. Omit `branch` to read the repository default branch; set `refresh_cache: true` when the selected branch must be fetched before reading. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
 
 ## Global Options
 
@@ -139,21 +140,30 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 Clone a repository into the local cache (or refresh an existing one). Pass the repository with `-r` / `--repo` (`owner/repo`). Repos are auto-cached on first use by other commands.
 
 ```bash
-wit cache -r ratatui/ratatui          # Force re-clone of ratatui
+wit cache -r ratatui/ratatui                    # Force re-clone of the default branch
+wit cache -r ratatui/ratatui --branch main      # Force refresh a named branch
 ```
 
 ### Cache freshness
 
-Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default: `wit` serves the cached default branch immediately when it is present, then quietly checks the remote branch and refreshes the cache when the commit SHA changed. A cold cache still clones before the read can continue.
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default: `wit` serves the cached selected branch immediately when it is present, then quietly checks the remote branch and refreshes the cache when the commit SHA changed. Without `--branch`, the selected branch is the repository's default branch. A cold cache still clones before the read can continue.
 
-Use `--refresh-cache` on a repo-reading command when that specific read must wait for a fresh default-branch cache:
+Use `--branch BRANCH` on `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, or `tail` to target a GitHub branch under `refs/heads` instead of the repository default branch:
+
+```bash
+wit cache -r ratatui/ratatui --branch main
+wit cat --branch main -r ratatui/ratatui README.md
+wit rg --branch main 'impl Widget' -r ratatui/ratatui
+```
+
+Use `--refresh-cache` on a repo-reading command when that specific read must wait for a fresh cache for the selected branch:
 
 ```bash
 wit tree --refresh-cache -r ratatui/ratatui src
-wit rg --refresh-cache 'impl Widget' -r ratatui/ratatui
+wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
 ```
 
-`wit cache -r owner/repo` is also a force-refresh command. Internally, cache entries are stored per repository and branch under `WIT_CACHE_DIR`, with metadata recording the branch name and current SHA. Public branch selection is not exposed in this release; reads target the repository's default branch. No public `--max-age` or TTL option exists.
+`wit cache -r owner/repo` is also a force-refresh command for the default branch; add `--branch BRANCH` to refresh that named branch. Internally, cache entries are stored per repository and branch under `WIT_CACHE_DIR`, with metadata recording the branch name and current SHA. No public `--max-age` or TTL option exists.
 
 ### tree (alias: t)
 
@@ -188,6 +198,7 @@ wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only
 | Flag | Long | Description |
 |------|------|-------------|
 | `-r` | `--repo` | GitHub repository (`owner/repo`) |
+|      | `--branch` | GitHub branch under `refs/heads` to read instead of the default branch |
 | `-n` | `--number` | Number all output lines |
 | `-b` | `--number-nonblank` | Number non-blank lines only (overrides -n) |
 | `-s` | `--squeeze-blank` | Suppress repeated empty lines |
@@ -210,6 +221,7 @@ wit rg -l --long 'Widget' -r ratatui/ratatui           # File list with line cou
 | Flag | Long | Description |
 |------|------|-------------|
 | `-r` | `--repo` | GitHub repository (`owner/repo`) |
+|      | `--branch` | GitHub branch under `refs/heads` to search instead of the default branch |
 | `-i` | `--ignore-case` | Case insensitive search |
 | `-S` | `--smart-case` | Case-insensitive if pattern is all lowercase |
 | `-w` | `--word-regexp` | Match whole words only |

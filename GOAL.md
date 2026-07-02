@@ -1,6 +1,6 @@
 # Branch Parameter Plan
 
-Status: ready for user review on 2026-07-02. Pointing an agent at the first ready goal approves execution and freezes that goal's scope.
+Status: done on 2026-07-02. Branch-aware cache selection, CLI flags, MCP parameters, docs, and tests are implemented and verified.
 
 ## Completed Prerequisites
 
@@ -10,19 +10,19 @@ Status: ready for user review on 2026-07-02. Pointing an agent at the first read
 
 ## Delivery Order
 
-1. `goals/branch-cache-selection-api.md` — ready. Shared cache acquisition targets either the default branch or a named branch without mixing branch caches.
-2. `goals/cli-branch-flag.md` — ready after `branch-cache-selection-api` is done. CLI repo-scoped cache/read commands accept `--branch BRANCH`.
-3. `goals/mcp-branch-parameter.md` — ready after `branch-cache-selection-api` and `cli-branch-flag` are done. MCP cache/read tools accept optional `branch` JSON parameters.
+1. `goals/branch-cache-selection-api.md` — done. Shared cache acquisition targets either the default branch or a named branch without mixing branch caches.
+2. `goals/cli-branch-flag.md` — done. CLI repo-scoped cache/read commands accept `--branch BRANCH`.
+3. `goals/mcp-branch-parameter.md` — done. MCP cache/read tools accept optional `branch` JSON parameters.
 
 ## Kickstart
 
-Start here:
+Original execution entrypoint:
 
 ```bash
 python /Users/mish/.agents/skills/goal-driven-development/scripts/gdd_status.py goals/branch-cache-selection-api.md
 ```
 
-Active first task: `goals/branch-cache-selection-api.md` T1, inventorying cache target and consumer assumptions before API edits.
+Final state: all delivery goals are done; no active next task remains.
 
 ## Scope Notes
 

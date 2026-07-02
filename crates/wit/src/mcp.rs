@@ -1,9 +1,9 @@
 use crate::{
     ensure_rustls_provider,
     gitops::ops::{
-        CacheAcquisitionMode, GrepOptions, GrepResult, cache_github_repo, grep_repo_with_options,
-        head_with_ignore, list_dir_with_ignore, read_file, read_file_with_ignore, tail_with_ignore,
-        tree_text_with_ignore,
+        CacheAcquisitionMode, CacheBranchSelection, GrepOptions, GrepResult, cache_github_repo,
+        grep_repo_with_options, head_with_ignore, list_dir_with_ignore, read_file,
+        read_file_with_ignore, tail_with_ignore, tree_text_with_ignore,
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, GitHubSearchClient, MAX_GITHUB_REPOS},
     sed,
@@ -85,18 +85,22 @@ pub struct SearchArgs {
 pub struct RepoArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct TreeArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Optional subdirectory path.
     pub path: Option<String>,
     /// Include line counts and approximate token estimates.
     #[serde(default)]
     pub long: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -112,12 +116,14 @@ pub struct TreeArgs {
 pub struct LsArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Optional directory path.
     pub path: Option<String>,
     /// Include line counts and approximate token estimates.
     #[serde(default)]
     pub long: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -129,6 +135,8 @@ pub struct LsArgs {
 pub struct CatArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Path to the file within the repository.
     pub path: String,
     /// Number all output lines.
@@ -149,7 +157,7 @@ pub struct CatArgs {
     /// Equivalent to show_ends plus show_tabs.
     #[serde(default)]
     pub show_all: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -163,6 +171,8 @@ pub struct CatArgs {
 pub struct RgArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Rust regex pattern to search for.
     pub pattern: String,
     #[serde(default)]
@@ -195,7 +205,7 @@ pub struct RgArgs {
     /// Include line counts and approximate token estimates with files_with_matches.
     #[serde(default)]
     pub long: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -209,6 +219,8 @@ pub struct RgArgs {
 pub struct SedArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Path to the file within the repository.
     pub path: String,
     /// Inline sed script.
@@ -222,7 +234,7 @@ pub struct SedArgs {
     /// Suppress automatic printing of pattern space.
     #[serde(default)]
     pub quiet: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -236,6 +248,8 @@ pub struct SedArgs {
 pub struct HeadArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Path to the file within the repository.
     pub path: String,
     /// Number of lines to show. Defaults to 10.
@@ -243,7 +257,7 @@ pub struct HeadArgs {
     /// Number all output lines.
     #[serde(default)]
     pub number: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -257,6 +271,8 @@ pub struct HeadArgs {
 pub struct TailArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Path to the file within the repository.
     pub path: String,
     /// Number of lines to show from the end when from_line is not set. Defaults to 10.
@@ -266,7 +282,7 @@ pub struct TailArgs {
     /// Number all output lines.
     #[serde(default)]
     pub number: bool,
-    /// Force refresh the default-branch cache before reading.
+    /// Force refresh the selected-branch cache before reading.
     #[serde(default)]
     pub refresh_cache: bool,
     /// Exclude files, directories, or glob patterns.
@@ -413,6 +429,8 @@ pub struct SkillInstallResponse {
 pub struct ExploreRepoPromptArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// The user's exploration goal.
     pub objective: Option<String>,
     /// Optional paths that are likely relevant.
@@ -437,6 +455,8 @@ pub struct DiscoverReposPromptArgs {
 pub struct ReadPrecisePromptArgs {
     /// GitHub repository in owner/repo form.
     pub repo: String,
+    /// Optional GitHub branch under refs/heads. Omit to use the repository default branch.
+    pub branch: Option<String>,
     /// Path to inspect.
     pub path: String,
     /// What the user needs to learn from the file.
@@ -496,9 +516,13 @@ impl WitMcpServer {
         &self,
         Parameters(args): Parameters<RepoArgs>,
     ) -> Result<Json<CacheResponse>, String> {
-        let repo = cache_github_repo(&args.repo, CacheAcquisitionMode::ForceInvalidate)
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .await
+        .map_err(anyhow_error)?;
         Ok(Json(CacheResponse {
             repo: args.repo,
             cache_path: repo.path().display().to_string(),
@@ -521,9 +545,13 @@ impl WitMcpServer {
             "max_entries",
         )?;
         let max_bytes = validate_text_limit(args.max_bytes)?;
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let tree = tree_text_with_ignore(
             &repo,
             args.path.as_deref(),
@@ -554,9 +582,13 @@ impl WitMcpServer {
         &self,
         Parameters(args): Parameters<LsArgs>,
     ) -> Result<Json<LsResponse>, String> {
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let entries = list_dir_with_ignore(&repo, args.path.as_deref(), args.long, &args.ignore)
             .map_err(anyhow_error)?;
         let entries = entries
@@ -589,9 +621,13 @@ impl WitMcpServer {
         Parameters(args): Parameters<CatArgs>,
     ) -> Result<Json<TextResponse>, String> {
         let max_bytes = validate_text_limit(args.max_bytes)?;
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let content =
             read_file_with_ignore(&repo, &args.path, &args.ignore).map_err(anyhow_error)?;
         let text = format_cat(&content, &args);
@@ -618,9 +654,13 @@ impl WitMcpServer {
         let max_bytes = validate_text_limit(args.max_bytes)?;
         let effective_max_count = args.max_count;
 
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let mut opts = GrepOptions::new()
             .ignore_case(args.ignore_case)
             .smart_case(args.smart_case)
@@ -719,9 +759,13 @@ impl WitMcpServer {
     ) -> Result<Json<SedResponse>, String> {
         let max_bytes = validate_text_limit(args.max_bytes)?;
         let scripts = collect_sed_scripts(&args)?;
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let content =
             read_file_with_ignore(&repo, &args.path, &args.ignore).map_err(anyhow_error)?;
         let program = sed::parse_script(&scripts).map_err(anyhow_error)?;
@@ -756,9 +800,13 @@ impl WitMcpServer {
     ) -> Result<Json<TextResponse>, String> {
         let lines = args.lines.unwrap_or(10);
         let max_bytes = validate_text_limit(args.max_bytes)?;
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let text = head_with_ignore(&repo, &args.path, lines, args.number, &args.ignore)
             .map_err(anyhow_error)?;
         Ok(Json(text_response(
@@ -780,9 +828,13 @@ impl WitMcpServer {
     ) -> Result<Json<TextResponse>, String> {
         let lines = args.lines.unwrap_or(10);
         let max_bytes = validate_text_limit(args.max_bytes)?;
-        let repo = cache_github_repo(&args.repo, cache_mode(args.refresh_cache))
-            .await
-            .map_err(anyhow_error)?;
+        let repo = cache_github_repo(
+            &args.repo,
+            cache_branch_selection(args.branch.as_deref()),
+            cache_mode(args.refresh_cache),
+        )
+        .await
+        .map_err(anyhow_error)?;
         let text = tail_with_ignore(
             &repo,
             &args.path,
@@ -860,12 +912,23 @@ impl WitMcpServer {
         } else {
             format!("Apply these ignore patterns: {}.", args.ignore.join(", "))
         };
+        let branch = args
+            .branch
+            .as_deref()
+            .map(|branch| {
+                format!(
+                    "Pass `branch: \"{branch}\"` to repo-reading tools. Use `refresh_cache: true` only when that branch must be freshly fetched."
+                )
+            })
+            .unwrap_or_else(|| {
+                "Omit `branch` to read the repository default branch; use `refresh_cache: true` only when fresh default-branch content is required.".to_string()
+            });
 
         GetPromptResult::new(vec![PromptMessage::new_text(
             Role::User,
             format!(
-                "Use the wit MCP server to explore GitHub repo `{}`. Objective: {}. {} {} Recommended workflow: call `wit_tree` or `wit_ls` to orient, use `wit_rg` to locate relevant symbols or text, then read narrowly with `wit_head`, `wit_tail`, `wit_sed`, or `wit_cat`. Prefer bounded, cited snippets over dumping whole large files. Report which paths and lines support your answer.",
-                args.repo, objective, focus, ignore
+                "Use the wit MCP server to explore GitHub repo `{}`. Objective: {}. {} {} {} Recommended workflow: call `wit_tree` or `wit_ls` to orient, use `wit_rg` to locate relevant symbols or text, then read narrowly with `wit_head`, `wit_tail`, `wit_sed`, or `wit_cat`. Prefer bounded, cited snippets over dumping whole large files. Report which paths and lines support your answer.",
+                args.repo, objective, focus, ignore, branch
             ),
         )])
         .with_description(format!("Explore `{}` with wit", args.repo))
@@ -919,12 +982,19 @@ impl WitMcpServer {
             .unwrap_or_else(|| {
                 "If line numbers are unknown, use `wit_rg` first, then `wit_head`, `wit_tail`, or `wit_sed`.".into()
             });
+        let branch = args
+            .branch
+            .as_deref()
+            .map(|branch| {
+                format!("Pass `branch: \"{branch}\"` to repo-reading tools for this file.")
+            })
+            .unwrap_or_else(|| "Omit `branch` to read the repository default branch.".to_string());
 
         GetPromptResult::new(vec![PromptMessage::new_text(
             Role::User,
             format!(
-                "Use the wit MCP server to read `{}` in `{}`. Objective: {}. {} Avoid full-file reads unless the file is small. Cite exact paths and line numbers when answering.",
-                args.path, args.repo, objective, range
+                "Use the wit MCP server to read `{}` in `{}`. Objective: {}. {} {} Avoid full-file reads unless the file is small. Cite exact paths and line numbers when answering.",
+                args.path, args.repo, objective, range, branch
             ),
         )])
         .with_description(format!("Read `{}` precisely", args.path))
@@ -944,7 +1014,7 @@ impl ServerHandler for WitMcpServer {
         )
         .with_server_info(Implementation::new("wit-mcp", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "Explore GitHub repositories through wit over MCP stdio. Start with wit_search for discovery, wit_tree or wit_ls for orientation, wit_rg for locating code, and wit_head/wit_tail/wit_sed/wit_cat for bounded reads. Use prompts and resources for workflow guidance.",
+            "Explore GitHub repositories through wit over MCP stdio. Start with wit_search for discovery, wit_tree or wit_ls for orientation, wit_rg for locating code, and wit_head/wit_tail/wit_sed/wit_cat for bounded reads. Repo-reading tools accept optional branch; omit it for the repository default branch. Use prompts and resources for workflow guidance.",
         )
     }
 
@@ -1000,8 +1070,9 @@ const WIT_WORKFLOW_GUIDE: &str = r#"# wit MCP workflow
 3. Use `wit_rg` to locate symbols, text, filenames, or likely implementation areas. Use `glob` and `ignore` to reduce noise.
 4. Use `wit_head`, `wit_tail`, or `wit_sed` for precise reads. Use `wit_cat` for small-to-medium files.
 5. `wit_sed` runs in MCP-safe mode: local sed file I/O commands are disabled and script files are rejected. Use inline `script` or `expressions`.
-6. Use `refresh_cache` only when fresh default-branch content matters. Normal reads use wit's stale-while-revalidate cache.
-7. Fetch `wit://skill/SKILL.md` when an agent needs the full reusable skill guidance.
+6. Repo-reading tools accept optional `branch`; omit it to use the repository default branch.
+7. Use `refresh_cache` only when fresh selected-branch content matters. Normal reads use wit's branch-keyed stale-while-revalidate cache.
+8. Fetch `wit://skill/SKILL.md` when an agent needs the full reusable skill guidance.
 "#;
 
 const WIT_TOOLS_GUIDE: &str = r#"# wit MCP tools
@@ -1018,7 +1089,7 @@ const WIT_TOOLS_GUIDE: &str = r#"# wit MCP tools
 - `wit_skill_load`: return the bundled wit skill.
 - `wit_skill_install`: install or overwrite the bundled wit skill under a local directory.
 
-All repo-reading tools accept `repo`, optional `refresh_cache`, and optional `ignore` patterns. Public branch selection and TTL/max-age controls are intentionally not exposed.
+All repo-reading tools accept `repo`, optional `branch`, optional `refresh_cache`, and optional `ignore` patterns. Omit `branch` to use the repository default branch. `refresh_cache` waits for a fresh cache of the selected branch before reading. TTL/max-age controls are intentionally not exposed.
 "#;
 
 fn cache_mode(refresh_cache: bool) -> CacheAcquisitionMode {
@@ -1027,6 +1098,10 @@ fn cache_mode(refresh_cache: bool) -> CacheAcquisitionMode {
     } else {
         CacheAcquisitionMode::ServeStaleAndRevalidate
     }
+}
+
+fn cache_branch_selection(branch: Option<&str>) -> CacheBranchSelection {
+    branch.map_or(CacheBranchSelection::Default, CacheBranchSelection::named)
 }
 
 fn validate_search_limit(limit: Option<usize>) -> Result<usize, String> {
@@ -1367,5 +1442,82 @@ mod tests {
             prompt_names,
             vec!["wit_discover_repos", "wit_explore_repo", "wit_read_precise"]
         );
+    }
+
+    #[test]
+    fn mcp_branch_parameter_schema_and_routing() {
+        let server = WitMcpServer::new();
+        let tools = server.tool_router.list_all();
+        let branch_tools = [
+            "wit_cache_refresh",
+            "wit_tree",
+            "wit_ls",
+            "wit_cat",
+            "wit_rg",
+            "wit_sed",
+            "wit_head",
+            "wit_tail",
+        ];
+
+        for name in branch_tools {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("missing MCP tool {name}"));
+            let schema = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+            let branch_schema = schema
+                .pointer("/properties/branch")
+                .unwrap_or_else(|| panic!("{name} schema is missing branch: {schema}"));
+            assert!(
+                branch_schema.to_string().contains("string"),
+                "{name} branch schema should accept strings: {branch_schema}"
+            );
+            if let Some(required) = schema
+                .pointer("/required")
+                .and_then(|value| value.as_array())
+            {
+                assert!(
+                    !required
+                        .iter()
+                        .any(|value| value.as_str() == Some("branch")),
+                    "{name} branch must be optional"
+                );
+            }
+        }
+
+        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mcp.rs"));
+        let routed_handlers = source
+            .matches("cache_branch_selection(args.branch.as_deref())")
+            .count();
+        assert!(
+            routed_handlers >= branch_tools.len(),
+            "expected at least one branch selection route per branch-aware tool, found {routed_handlers}"
+        );
+    }
+
+    #[test]
+    fn mcp_branch_guidance() {
+        let readme = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"));
+        let guidance = [
+            ("workflow guide", WIT_WORKFLOW_GUIDE),
+            ("tools guide", WIT_TOOLS_GUIDE),
+            ("bundled skill", SKILL_MD),
+            ("readme", readme),
+        ];
+
+        for (name, text) in guidance {
+            assert!(text.contains("branch"), "{name} should mention branch");
+            assert!(
+                text.contains("default branch"),
+                "{name} should mention default branch behavior"
+            );
+            assert!(
+                text.contains("refresh_cache"),
+                "{name} should mention refresh_cache interaction"
+            );
+        }
+
+        assert!(!WIT_TOOLS_GUIDE.contains("Public branch selection"));
+        assert!(WIT_TOOLS_GUIDE.contains("TTL/max-age controls are intentionally not exposed"));
     }
 }

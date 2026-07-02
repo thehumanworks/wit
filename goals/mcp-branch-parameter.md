@@ -1,7 +1,7 @@
 ---
 goal_id: "mcp-branch-parameter"
 title: "Add MCP branch parameter"
-status: "ready"             # draft | ready | in-progress | done | exited
+status: "done"       # draft | ready | in-progress | done | exited
 confidence_floor: 90        # a Task below this CANNOT be ticked done
 created: "2026-07-02"
 updated: "2026-07-02"
@@ -55,10 +55,10 @@ Tick a `DoD-N` box only when its own `verify by:` has been run and passed (not m
 because a closing Task is ticked). Log the command and its outcome as an Evidence bullet
 under the Task that **Closes:** it. DONE requires every DoD box ticked.
 
-- [ ] **DoD-1** — `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, and `wit_tail` expose optional `branch` in their MCP schemas and route it to shared cache acquisition — *verify by:* `cargo test -p wit mcp_branch_parameter_schema_and_routing --lib`
-- [ ] **DoD-2** — stdio MCP calls with `branch` return branch-specific content across cache refresh and repo-reading tools — *verify by:* `cargo test -p wit --test mcp_stdio branch_parameter`
-- [ ] **DoD-3** — MCP resources, prompts, bundled skill docs, and README describe the `branch` JSON parameter, default-branch behavior, and `refresh_cache` interaction — *verify by:* `cargo test -p wit mcp_branch_guidance --lib && rg -n -- "branch|default branch|refresh_cache" crates/wit/src/mcp.rs crates/wit/src/skill/SKILL.md README.md`
-- [ ] **DoD-4** — full repo verification passes after the MCP branch parameter lands — *verify by:* `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh`
+- [x] **DoD-1** — `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, and `wit_tail` expose optional `branch` in their MCP schemas and route it to shared cache acquisition — *verify by:* `cargo test -p wit mcp_branch_parameter_schema_and_routing --lib`
+- [x] **DoD-2** — stdio MCP calls with `branch` return branch-specific content across cache refresh and repo-reading tools — *verify by:* `cargo test -p wit --test mcp_stdio branch_parameter`
+- [x] **DoD-3** — MCP resources, prompts, bundled skill docs, and README describe the `branch` JSON parameter, default-branch behavior, and `refresh_cache` interaction — *verify by:* `cargo test -p wit mcp_branch_guidance --lib && rg -n -- "branch|default branch|refresh_cache" crates/wit/src/mcp.rs crates/wit/src/skill/SKILL.md README.md`
+- [x] **DoD-4** — full repo verification passes after the MCP branch parameter lands — *verify by:* `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh`
 
 ---
 
@@ -82,12 +82,12 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 
 ---
 
-### T1 · Inventory MCP schema, tool, and guidance surfaces · [ ]
+### T1 · Inventory MCP schema, tool, and guidance surfaces · [x]
 
 **Steps**
-- [ ] Run `gdd_status.py` on `goals/branch-cache-selection-api.md` and `goals/cli-branch-flag.md`; stop if either is not done.
-- [ ] Re-read MCP argument structs, tool handlers, resources, prompts, guidance constants, and stdio tests.
-- [ ] Identify where existing MCP guidance says only default-branch cache reads are supported.
+- [x] Run `gdd_status.py` on `goals/branch-cache-selection-api.md` and `goals/cli-branch-flag.md`; stop if either is not done.
+- [x] Re-read MCP argument structs, tool handlers, resources, prompts, guidance constants, and stdio tests.
+- [x] Identify where existing MCP guidance says only default-branch cache reads are supported.
 
 **Verification Contract**
 - *Check:* every MCP tool that should accept `branch` and every guidance surface that should mention it is identified.
@@ -95,19 +95,19 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; execution notes identify target MCP schemas, handlers, and docs before code edits.
 - *BDD scenarios covered:* MCP schema inventory; default-branch wording inventory; stdio fixture inventory
 
-**Confidence:** 0 / 90 · **Depends on:** branch-cache-selection-api DONE, cli-branch-flag DONE · **Closes:** none
+**Confidence:** 95 / 90 · **Depends on:** branch-cache-selection-api DONE, cli-branch-flag DONE · **Closes:** none
 
 **Evidence (required before tick; append-only)**
-- *(none yet — when setting Confidence ≥ floor, append a bullet with all three: date + command/check run + outcome (exit code / test counts / artifact path))*
+- 2026-07-02 — Ran prerequisite/status review from the current worktree, then `rg -n "RepoArgs|TreeArgs|LsArgs|CatArgs|RgArgs|SedArgs|HeadArgs|TailArgs|cache_github_repo|WIT_WORKFLOW_GUIDE|WIT_TOOLS_GUIDE|default-branch|branch selection|mcp_stdio" crates/wit/src/mcp.rs crates/wit/tests/mcp_stdio.rs README.md crates/wit/src/skill/SKILL.md`; exit 0. Identified target MCP schemas (`RepoArgs`, `TreeArgs`, `LsArgs`, `CatArgs`, `RgArgs`, `SedArgs`, `HeadArgs`, `TailArgs`), handlers hard-coding `CacheBranchSelection::Default`, prompt structs/guidance constants, README/skill MCP wording, and stdio fixture coverage.
 
 ---
 
-### T2 · Add and route MCP `branch` parameters · [ ]
+### T2 · Add and route MCP `branch` parameters · [x]
 
 **Steps**
-- [ ] Add optional `branch` fields to the repo-scoped MCP argument structs.
-- [ ] Route `branch` through `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, and `wit_tail`.
-- [ ] Add schema/routing tests that would fail if any tool omits the field or ignores it.
+- [x] Add optional `branch` fields to the repo-scoped MCP argument structs.
+- [x] Route `branch` through `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, and `wit_tail`.
+- [x] Add schema/routing tests that would fail if any tool omits the field or ignores it.
 
 **Verification Contract**
 - *Check:* MCP schemas expose `branch` and handlers pass it to shared cache acquisition.
@@ -115,19 +115,19 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; tests fail if any target tool lacks `branch` or routes reads without it.
 - *BDD scenarios covered:* cache refresh with branch; tree with branch; ls with branch; cat with branch; rg with branch; sed with branch; head with branch; tail with branch
 
-**Confidence:** 0 / 90 · **Depends on:** T1 · **Closes:** DoD-1
+**Confidence:** 95 / 90 · **Depends on:** T1 · **Closes:** DoD-1
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — Ran `cargo test -p wit mcp_branch_parameter_schema_and_routing --lib`; exit 0, 1 passed. Test inspects live MCP router input schemas for `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, and `wit_tail`, and asserts branch selection routing is present in MCP handlers.
 
 ---
 
-### T3 · Prove branch-specific stdio MCP behavior · [ ]
+### T3 · Prove branch-specific stdio MCP behavior · [x]
 
 **Steps**
-- [ ] Extend `crates/wit/tests/mcp_stdio.rs` fixtures to include at least two branch cache entries with distinct files/content.
-- [ ] Call each repo-reading MCP tool with `branch` and assert it returns the named branch's content.
-- [ ] Include `wit_cache_refresh` coverage when a deterministic local-remote or seeded cache path can prove branch-specific refresh without live GitHub.
+- [x] Extend `crates/wit/tests/mcp_stdio.rs` fixtures to include at least two branch cache entries with distinct files/content.
+- [x] Call each repo-reading MCP tool with `branch` and assert it returns the named branch's content.
+- [x] Include `wit_cache_refresh` coverage when a deterministic local-remote or seeded cache path can prove branch-specific refresh without live GitHub.
 
 **Verification Contract**
 - *Check:* a real stdio MCP client can pass `branch` and receive branch-specific results.
@@ -135,19 +135,19 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; test fails if stdio schema, JSON deserialization, or handler routing drops the branch value.
 - *BDD scenarios covered:* MCP branch tree; MCP branch ls; MCP branch cat; MCP branch rg; MCP branch sed; MCP branch head; MCP branch tail; MCP branch cache refresh
 
-**Confidence:** 0 / 90 · **Depends on:** T2 · **Closes:** DoD-2
+**Confidence:** 95 / 90 · **Depends on:** T2 · **Closes:** DoD-2
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — Ran `cargo test -p wit --test mcp_stdio branch_parameter`; exit 0, 1 passed. The stdio test starts `wit-mcp`, pushes a distinct `feature/mcp` branch in a local GitHub URL rewrite fixture, calls `wit_cache_refresh` with `branch`, then verifies branch-specific content through `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, and `wit_tail`.
 
 ---
 
-### T4 · Update MCP guidance, resources, and docs · [ ]
+### T4 · Update MCP guidance, resources, and docs · [x]
 
 **Steps**
-- [ ] Update `WIT_WORKFLOW_GUIDE` and `WIT_TOOLS_GUIDE` to mention optional `branch` and default-branch behavior.
-- [ ] Update README MCP server section and bundled skill docs to describe `branch` and its interaction with `refresh_cache`.
-- [ ] Keep `wit-mcp` startup unchanged; branch is per tool call, not a server launch option.
+- [x] Update `WIT_WORKFLOW_GUIDE` and `WIT_TOOLS_GUIDE` to mention optional `branch` and default-branch behavior.
+- [x] Update README MCP server section and bundled skill docs to describe `branch` and its interaction with `refresh_cache`.
+- [x] Keep `wit-mcp` startup unchanged; branch is per tool call, not a server launch option.
 
 **Verification Contract**
 - *Check:* MCP-facing docs and resources describe the branch parameter without implying TTL/max-age or launcher-level branch configuration.
@@ -155,20 +155,20 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0; grep output shows intentional branch/default/refresh wording in MCP resources and docs.
 - *BDD scenarios covered:* agent asks how to read default branch; agent asks how to read named branch; agent asks how to force fresh named branch
 
-**Confidence:** 0 / 90 · **Depends on:** T3 · **Closes:** DoD-3
+**Confidence:** 95 / 90 · **Depends on:** T3 · **Closes:** DoD-3
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — Ran `cargo test -p wit mcp_branch_guidance --lib && rg -n -- "branch|default branch|refresh_cache" crates/wit/src/mcp.rs crates/wit/src/skill/SKILL.md README.md`; exit 0, unit test 1 passed and grep output showed intentional `branch`, default-branch, and `refresh_cache` wording in MCP resources, prompts, bundled skill docs, and README.
 
 ---
 
-### T5 · Run full repo verification for MCP branch selection · [ ]
+### T5 · Run full repo verification for MCP branch selection · [x]
 
 **Steps**
-- [ ] Run rustfmt check after all MCP/docs changes.
-- [ ] Run clippy with warnings denied.
-- [ ] Run the full workspace test suite and search migration guard.
-- [ ] Fix any failure before finalizing, including schema or stdio smoke fallout.
+- [x] Run rustfmt check after all MCP/docs changes.
+- [x] Run clippy with warnings denied.
+- [x] Run the full workspace test suite and search migration guard.
+- [x] Fix any failure before finalizing, including schema or stdio smoke fallout.
 
 **Verification Contract**
 - *Check:* full repo gates pass with MCP branch parameters.
@@ -176,10 +176,11 @@ trailing `[ ]` only when the Verification Contract passes and Confidence ≥ flo
 - *Expected:* exit 0 for every command.
 - *BDD scenarios covered:* formatting; lint; unit and integration replay tests; MCP stdio; GitHub-only search migration guard
 
-**Confidence:** 0 / 90 · **Depends on:** T4 · **Closes:** DoD-4
+**Confidence:** 95 / 90 · **Depends on:** T4 · **Closes:** DoD-4
 
 **Evidence (required before tick; append-only)**
-- *(none yet)*
+- 2026-07-02 — Ran `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh`; exit 0. Full gate passed after MCP branch parameter changes, including 91 lib tests passed/18 ignored, 15 CLI tests passed, branch CLI integration passed, 2 MCP stdio tests passed, replay integration tests passed, doctests passed, and search migration guard passed.
+- 2026-07-02 — Re-ran `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/check_wit_search_migration.sh` after post-review default-cache marker fix; exit 0. Full gate passed with 92 lib tests passed/18 ignored, 15 CLI tests passed, branch CLI integration passed, 2 MCP stdio tests passed, replay integration tests passed, doctests passed, and search migration guard passed.
 
 ---
 

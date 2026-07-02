@@ -1,6 +1,6 @@
 use anyhow::Context;
 use tracing_subscriber::EnvFilter;
-use wit::gitops::ops::revalidate_github_repo;
+use wit::gitops::ops::{CacheBranchSelection, revalidate_github_repo};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -13,9 +13,9 @@ async fn main() -> anyhow::Result<()> {
             println!("wit-mcp {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        StartupMode::Revalidate(repo) => {
+        StartupMode::Revalidate { repo, branch } => {
             init_tracing();
-            revalidate_github_repo(&repo)?;
+            revalidate_github_repo(&repo, branch)?;
             Ok(())
         }
         StartupMode::Serve => {
@@ -36,7 +36,10 @@ fn init_tracing() {
 enum StartupMode {
     Help,
     Version,
-    Revalidate(String),
+    Revalidate {
+        repo: String,
+        branch: CacheBranchSelection,
+    },
     Serve,
 }
 
@@ -55,17 +58,30 @@ fn startup_mode() -> anyhow::Result<StartupMode> {
         return Ok(StartupMode::Serve);
     }
 
-    let flag = args.next().context("__cache-revalidate requires --repo")?;
-    if flag != "--repo" {
-        anyhow::bail!("__cache-revalidate expects --repo, got {flag}");
+    let mut repo = None;
+    let mut branch = None;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--repo" => {
+                repo = Some(
+                    args.next()
+                        .context("__cache-revalidate --repo requires a value")?,
+                );
+            }
+            "--branch" => {
+                branch = Some(
+                    args.next()
+                        .context("__cache-revalidate --branch requires a value")?,
+                );
+            }
+            _ => anyhow::bail!("__cache-revalidate received unexpected argument {flag}"),
+        }
     }
-    let repo = args
-        .next()
-        .context("__cache-revalidate --repo requires a value")?;
-    if args.next().is_some() {
-        anyhow::bail!("__cache-revalidate received unexpected extra arguments");
-    }
-    Ok(StartupMode::Revalidate(repo))
+    let repo = repo.context("__cache-revalidate requires --repo")?;
+    Ok(StartupMode::Revalidate {
+        repo,
+        branch: branch.map_or(CacheBranchSelection::Default, CacheBranchSelection::named),
+    })
 }
 
 fn print_help() {
