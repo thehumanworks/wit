@@ -1,6 +1,6 @@
 [package]
 name = "wit"
-version = "0.1.25"
+version = "0.1.26"
 edition = "2024"
 
 [lib]
@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] 
 tempfile = "3.13.0"
 wiremock = "0.6"
 rmcp = { version = "2", features = ["client", "transport-child-process"] }
+
 
 
 
