@@ -25,6 +25,7 @@ const CACHE_METADATA_FILE: &str = "metadata.json";
 const CACHE_METADATA_TEMP_FILE: &str = "metadata.json.tmp";
 const DEFAULT_BRANCH_METADATA_FILE: &str = "default_branch.json";
 const CACHE_LOCK_FILE: &str = ".cache.lock";
+const CACHE_REVALIDATION_LOCK_FILE: &str = ".revalidation.lock";
 static CACHE_PROCESS_LOCKS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 struct CacheLock {
@@ -34,11 +35,8 @@ struct CacheLock {
 
 impl Drop for CacheLock {
     fn drop(&mut self) {
-        if let Ok(mut locks) = CACHE_PROCESS_LOCKS.lock()
-            && let Some(paths) = locks.as_mut()
-        {
-            paths.remove(&self.path);
-        }
+        let _ = self._file_lock.unlock();
+        release_process_cache_lock(&self.path);
     }
 }
 
@@ -146,6 +144,11 @@ impl CacheTarget {
 
     fn lock_path(&self, cache_dir: &Path) -> PathBuf {
         self.branch_dir(cache_dir).join(CACHE_LOCK_FILE)
+    }
+
+    fn revalidation_lock_path(&self, cache_dir: &Path) -> PathBuf {
+        self.branch_dir(cache_dir)
+            .join(CACHE_REVALIDATION_LOCK_FILE)
     }
 }
 
@@ -980,8 +983,14 @@ fn revalidate_github_repo_from_remote(
         &branch,
         CacheAcquisitionMode::ServeStaleAndRevalidate,
     )?;
+    let Some(_revalidation_lock) =
+        try_acquire_cache_lock(&resolved.target.revalidation_lock_path(cache_dir))?
+    else {
+        return Ok(());
+    };
+    let remote_sha = resolve_branch_sha(&resolved.remote_url, &resolved.branch.name);
     let _cache_lock = acquire_cache_lock(&resolved.target.lock_path(cache_dir))?;
-    revalidate_cache_target(&resolved, cache_dir)
+    apply_cache_revalidation(&resolved, cache_dir, remote_sha)
 }
 
 pub fn wit_cache_dir() -> PathBuf {
@@ -1294,12 +1303,25 @@ fn cache_revalidation_args(resolved: &ResolvedCacheTarget) -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
 fn revalidate_cache_target(resolved: &ResolvedCacheTarget, cache_dir: &Path) -> anyhow::Result<()> {
+    let remote_sha = resolve_branch_sha(&resolved.remote_url, &resolved.branch.name);
+    apply_cache_revalidation(resolved, cache_dir, remote_sha)
+}
+
+fn apply_cache_revalidation(
+    resolved: &ResolvedCacheTarget,
+    cache_dir: &Path,
+    remote_sha: anyhow::Result<String>,
+) -> anyhow::Result<()> {
     let metadata_path = resolved.target.metadata_path(cache_dir);
     let mut metadata = read_cache_metadata(&metadata_path)?;
+    if metadata.current_sha != resolved.branch.current_sha {
+        return Ok(());
+    }
     let now = current_unix_timestamp()?;
 
-    match resolve_branch_sha(&resolved.remote_url, &metadata.branch) {
+    match remote_sha {
         Ok(remote_sha) if remote_sha == metadata.current_sha => {
             metadata.last_checked_at = now;
             metadata.last_error = None;
@@ -1392,26 +1414,79 @@ fn acquire_cache_lock(lock_path: &Path) -> anyhow::Result<CacheLock> {
     })
 }
 
+fn try_acquire_cache_lock(lock_path: &Path) -> anyhow::Result<Option<CacheLock>> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create cache lock parent '{}'", parent.display())
+        })?;
+    }
+
+    if !try_acquire_process_cache_lock(lock_path) {
+        return Ok(None);
+    }
+
+    let lock_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+    {
+        Ok(lock_file) => lock_file,
+        Err(err) => {
+            release_process_cache_lock(lock_path);
+            return Err(err)
+                .with_context(|| format!("failed to open cache lock '{}'", lock_path.display()));
+        }
+    };
+
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(CacheLock {
+            path: lock_path.to_path_buf(),
+            _file_lock: lock_file,
+        })),
+        Err(err) if is_lock_contended(&err) => {
+            release_process_cache_lock(lock_path);
+            Ok(None)
+        }
+        Err(err) => {
+            release_process_cache_lock(lock_path);
+            Err(err).with_context(|| format!("failed to lock cache '{}'", lock_path.display()))
+        }
+    }
+}
+
+fn is_lock_contended(err: &std::io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    match expected.raw_os_error() {
+        Some(code) => err.raw_os_error() == Some(code),
+        None => err.kind() == expected.kind(),
+    }
+}
+
 fn acquire_process_cache_lock(lock_path: &Path) {
-    let lock_path = lock_path.to_path_buf();
     loop {
-        {
-            let mut locks = CACHE_PROCESS_LOCKS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let paths = locks.get_or_insert_with(HashSet::new);
-            if paths.insert(lock_path.clone()) {
-                return;
-            }
+        if try_acquire_process_cache_lock(lock_path) {
+            return;
         }
         thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
+fn try_acquire_process_cache_lock(lock_path: &Path) -> bool {
+    let mut locks = CACHE_PROCESS_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks
+        .get_or_insert_with(HashSet::new)
+        .insert(lock_path.to_path_buf())
+}
+
 fn release_process_cache_lock(lock_path: &Path) {
-    if let Ok(mut locks) = CACHE_PROCESS_LOCKS.lock()
-        && let Some(paths) = locks.as_mut()
-    {
+    let mut locks = CACHE_PROCESS_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(paths) = locks.as_mut() {
         paths.remove(lock_path);
     }
 }
@@ -3017,6 +3092,50 @@ mod tests {
     }
 
     #[test]
+    fn cache_revalidation_discards_sample_after_concurrent_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let (remote, old_sha) = create_remote_with_default_branch(&temp, "trunk");
+        let remote_url = remote.to_str().unwrap();
+        let original = default_cache_target("owner/repo", remote_url).unwrap();
+        cache_github_repo_target(&original, &cache_dir, CacheAcquisitionMode::ForceInvalidate)
+            .unwrap();
+
+        let new_sha = commit_and_push_file(&temp, "trunk", "forced refresh\n");
+        assert_ne!(old_sha, new_sha);
+        let refreshed = default_cache_target("owner/repo", remote_url).unwrap();
+        cache_github_repo_target(
+            &refreshed,
+            &cache_dir,
+            CacheAcquisitionMode::ForceInvalidate,
+        )
+        .unwrap();
+        let metadata_path = refreshed.target.metadata_path(&cache_dir);
+        let expected_metadata = read_cache_metadata(&metadata_path).unwrap();
+
+        apply_cache_revalidation(&original, &cache_dir, Ok(old_sha)).unwrap();
+        assert_eq!(
+            read_cache_metadata(&metadata_path).unwrap(),
+            expected_metadata,
+            "a stale SHA sample must not overwrite a concurrently refreshed cache"
+        );
+
+        apply_cache_revalidation(
+            &original,
+            &cache_dir,
+            Err(anyhow::anyhow!("stale lookup failure")),
+        )
+        .unwrap();
+        assert_eq!(
+            read_cache_metadata(&metadata_path).unwrap(),
+            expected_metadata,
+            "a stale lookup failure must not overwrite newer refresh metadata"
+        );
+        let repo = gix::open(refreshed.target.repo_path(&cache_dir)).unwrap();
+        assert_eq!(read_file(&repo, "README.md").unwrap(), "forced refresh\n");
+    }
+
+    #[test]
     fn cache_explicit_branch_revalidation_worker_args_include_branch() {
         let resolved = resolved_cache_target_for_test(
             "feature/api",
@@ -3555,6 +3674,59 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("worker thread did not acquire lock after release");
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn cache_revalidation_lock_is_single_flight_and_separate_from_mutation_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = CacheTarget::new("owner/repo", "main").unwrap();
+        let revalidation_path = target.revalidation_lock_path(temp.path());
+
+        let first = try_acquire_cache_lock(&revalidation_path)
+            .unwrap()
+            .expect("first revalidation should acquire the lock");
+        assert!(
+            try_acquire_cache_lock(&revalidation_path)
+                .unwrap()
+                .is_none(),
+            "a concurrent revalidation should skip instead of waiting"
+        );
+
+        let _mutation_lock = acquire_cache_lock(&target.lock_path(temp.path())).unwrap();
+        drop(first);
+
+        assert!(
+            try_acquire_cache_lock(&revalidation_path)
+                .unwrap()
+                .is_some(),
+            "the next revalidation should run after the first finishes"
+        );
+    }
+
+    #[test]
+    fn cache_try_lock_recognizes_os_file_lock_contention() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join(".cache.lock");
+        let held_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        held_file.lock_exclusive().unwrap();
+
+        assert!(
+            try_acquire_cache_lock(&lock_path).unwrap().is_none(),
+            "OS file-lock contention should be reported as a skipped try-lock"
+        );
+        held_file.unlock().unwrap();
+        drop(held_file);
+
+        assert!(
+            try_acquire_cache_lock(&lock_path).unwrap().is_some(),
+            "a contended try-lock must release its in-process reservation"
+        );
     }
 
     #[test]

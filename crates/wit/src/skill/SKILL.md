@@ -43,7 +43,7 @@ It also exposes prompts (`wit_explore_repo`, `wit_discover_repos`, `wit_read_pre
 
 ## Cache Behavior
 
-Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Without `--branch`, the selected branch is the repository's default branch.
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Concurrent checks for the same repository and branch are coalesced, so a remote SHA lookup does not hold up other valid warm-cache reads. Without `--branch`, the selected branch is the repository's default branch.
 
 Use `wit branches -r owner/repo` to list branch names under `refs/heads` before passing one to `--branch`. The table shows the default marker, tip SHA, tip commit author, tip commit time, ahead and behind counts, graph-merged status against the repository default branch, created time, and created source. `merged` means the branch tip is reachable from the default branch, not PR or squash-merge state. Created time is inferred from the first unique commit when one exists; otherwise the created source is `tip commit fallback` and the value is the branch tip commit time.
 

@@ -157,7 +157,7 @@ wit cache -r ratatui/ratatui --branch main      # Force refresh a named branch
 
 ### Cache freshness
 
-Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default: `wit` serves the cached selected branch immediately when it is present, then quietly checks the remote branch and refreshes the cache when the commit SHA changed. Without `--branch`, the selected branch is the repository's default branch. A cold cache still clones before the read can continue.
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default: `wit` serves the cached selected branch immediately when it is present, then quietly checks the remote branch and refreshes the cache when the commit SHA changed. Concurrent freshness checks for the same repository and branch are coalesced, and their remote SHA lookup does not block other valid warm-cache reads. Without `--branch`, the selected branch is the repository's default branch. A cold cache still clones before the read can continue.
 
 Run `wit branches -r owner/repo` to list available branch names with ahead/behind, graph-merged, author, tip, and created-time metadata before passing one to `--branch`.
 

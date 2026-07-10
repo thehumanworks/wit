@@ -41,6 +41,7 @@ Implementation decisions:
    - these paths refresh the branch cache before returning content
 6. Scope cache locks to the repo+branch cache key, with the lock file beside the branch metadata:
    - `$WIT_CACHE_DIR/<owner>/<repo>/branches/<encoded-branch>/.cache.lock`
+   - use a separate `.revalidation.lock` to make remote SHA checks single-flight without holding the cache mutation lock
 7. Do not expose public branch selection in this decision. The cache layout is branch-addressable now so branch-reading can be added later without another cache migration.
 8. Do not expose a public TTL or max-age option.
 
