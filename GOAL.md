@@ -1,6 +1,6 @@
 # Branch Parameter Plan
 
-Status: done on 2026-07-02. Branch-aware cache selection, CLI flags, MCP parameters, docs, and tests are implemented and verified.
+Status: original branch-parameter plan done on 2026-07-02. Branch-aware cache selection, CLI flags, MCP parameters, docs, and tests are implemented and verified. New branch discovery goal is ready.
 
 ## Completed Prerequisites
 
@@ -14,6 +14,10 @@ Status: done on 2026-07-02. Branch-aware cache selection, CLI flags, MCP paramet
 2. `goals/cli-branch-flag.md` — done. CLI repo-scoped cache/read commands accept `--branch BRANCH`.
 3. `goals/mcp-branch-parameter.md` — done. MCP cache/read tools accept optional `branch` JSON parameters.
 
+## Ready Goals
+
+1. `goals/list-repo-branches.md` — done. Adds `wit branches -r owner/repo` to list available branches with metadata for choosing an existing `--branch` value.
+
 ## Kickstart
 
 Original execution entrypoint:
@@ -22,7 +26,7 @@ Original execution entrypoint:
 python /Users/mish/.agents/skills/goal-driven-development/scripts/gdd_status.py goals/branch-cache-selection-api.md
 ```
 
-Final state: all delivery goals are done; no active next task remains.
+Final state: the original delivery goals are done; `goals/list-repo-branches.md` is done for the new branch discovery feature.
 
 ## Scope Notes
 

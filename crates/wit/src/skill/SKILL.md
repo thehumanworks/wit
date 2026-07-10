@@ -21,6 +21,7 @@ description: >
 4. Read files: `wit cat`, `wit head`, `wit tail`, `wit sed`
 
 All repo-scoped commands take `-r/--repo <owner/repo>` as a required flag.
+When the user asks for a non-default branch, run `wit branches -r owner/repo` first to list available branch names and metadata before choosing `--branch BRANCH`.
 
 ## MCP Server
 
@@ -43,6 +44,8 @@ It also exposes prompts (`wit_explore_repo`, `wit_discover_repos`, `wit_read_pre
 ## Cache Behavior
 
 Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Without `--branch`, the selected branch is the repository's default branch.
+
+Use `wit branches -r owner/repo` to list branch names under `refs/heads` before passing one to `--branch`. The table shows the default marker, tip SHA, tip commit author, tip commit time, ahead and behind counts, graph-merged status against the repository default branch, created time, and created source. `merged` means the branch tip is reachable from the default branch, not PR or squash-merge state. Created time is inferred from the first unique commit when one exists; otherwise the created source is `tip commit fallback` and the value is the branch tip commit time.
 
 Use `--branch BRANCH` on `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, or `tail` to target a GitHub branch under `refs/heads` instead of the repository default branch:
 
@@ -79,6 +82,16 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 | `-l/--lang` | GitHub `language:` qualifier |
 | `-q/--query` | Raw GitHub search qualifiers passed through unchanged |
 | `-n/--limit` | Max repositories to return (default 10, max 1000) |
+
+### branches
+
+List branch names and default-branch comparison metadata before choosing `--branch`:
+
+```bash
+wit branches -r ratatui/ratatui
+```
+
+Columns include branch name, default marker, tip SHA, tip author/time, ahead, behind, merged, created, and created source. Ahead, behind, and merged compare each branch to the repository default branch. Created uses the first unique commit when available; default or no-unique branches use a tip commit fallback.
 
 ### cache (alias: c)
 

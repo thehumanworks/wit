@@ -130,4 +130,91 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn cli_branches_command_parses() {
+        let cli = include_str!("cli.rs");
+        assert!(
+            cli.contains("name = \"branches\""),
+            "CLI should expose a public branches subcommand"
+        );
+        assert!(
+            cli.contains("Commands::Branches { repo }"),
+            "branches handler should route the repo argument"
+        );
+        assert!(
+            cli.contains("list_remote_branches(&repo)"),
+            "branches should use reusable branch metadata collection"
+        );
+        assert!(
+            cli.contains("override_usage = \"wit branches -r <REPO>\""),
+            "branches help should require -r/--repo"
+        );
+        assert!(
+            cli.contains("branches should not have a short alias"),
+            "parser tests should assert no short alias was added"
+        );
+        assert!(
+            cli.contains("cat --branch should still parse"),
+            "parser tests should preserve existing --branch reads"
+        );
+    }
+
+    #[test]
+    fn cli_branches_help_text() {
+        let cli = include_str!("cli.rs");
+        assert!(
+            cli.contains("wit branches -r <REPO>"),
+            "CLI help should show branches usage"
+        );
+        assert!(
+            cli.contains("ahead/behind"),
+            "CLI help should mention ahead/behind metadata"
+        );
+        assert!(
+            cli.contains("merged"),
+            "CLI help should mention merged metadata"
+        );
+        assert!(
+            cli.contains("first commit unique to the branch"),
+            "CLI help should document created-time inference"
+        );
+        assert!(
+            cli.contains("branch tip commit time"),
+            "CLI help should document created-time fallback"
+        );
+
+        for (name, text) in [
+            ("README.md", include_str!("../../../README.md")),
+            (
+                "crates/wit/src/skill/SKILL.md",
+                include_str!("skill/SKILL.md"),
+            ),
+        ] {
+            assert!(
+                text.contains("`wit branches -r"),
+                "{name} should document the branches command"
+            );
+            assert!(
+                text.contains("ahead") && text.contains("behind"),
+                "{name} should document ahead/behind columns"
+            );
+            assert!(
+                text.contains("graph-merged") || text.contains("merged"),
+                "{name} should document merged semantics"
+            );
+            assert!(
+                text.contains("first unique commit"),
+                "{name} should document created-time inference"
+            );
+            assert!(
+                text.contains("tip commit fallback"),
+                "{name} should document created-time fallback"
+            );
+            assert!(
+                text.contains("`--branch BRANCH`"),
+                "{name} should preserve existing branch-read docs"
+            );
+        }
+    }
 }

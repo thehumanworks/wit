@@ -7,10 +7,10 @@ const SKILL_MD: &str = include_str!("skill/SKILL.md");
 use wit::{
     ensure_rustls_provider,
     gitops::ops::{
-        CacheAcquisitionMode, CacheBranchSelection, GrepOptions, GrepResult,
+        BranchMetadata, CacheAcquisitionMode, CacheBranchSelection, GrepOptions, GrepResult,
         build_tree_with_ignore, cache_github_repo, grep_repo_with_options, head_with_ignore,
-        list_dir_with_ignore, read_file, read_file_with_ignore, revalidate_github_repo,
-        tail_with_ignore,
+        list_dir_with_ignore, list_remote_branches, read_file, read_file_with_ignore,
+        revalidate_github_repo, tail_with_ignore,
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
@@ -21,7 +21,7 @@ use wit::{
 #[command(
     about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
     long_about = None,
-    after_help = "Cache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed."
+    after_help = "Branch discovery: run wit branches -r owner/repo to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed."
 )]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
@@ -67,6 +67,17 @@ enum Commands {
             value_parser = parse_search_limit
         )]
         limit: usize,
+    },
+    #[command(
+        name = "branches",
+        about = "List remote branches with default-branch comparison metadata",
+        override_usage = "wit branches -r <REPO>",
+        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nExamples:\n  wit branches -r ratatui/ratatui"
+    )]
+    Branches {
+        /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
+        repo: String,
     },
     #[command(
         name = "cache",
@@ -444,6 +455,10 @@ async fn main() -> anyhow::Result<()> {
                 &ignore_patterns,
             )
             .await?;
+        }
+        Commands::Branches { repo } => {
+            let branches = list_remote_branches(&repo)?;
+            print_branch_results(&branches);
         }
         Commands::Cache { repo, branch } => {
             let repo = cache_github_repo(
@@ -897,6 +912,37 @@ fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>,
     Ok((remaining_args, ignores))
 }
 
+fn print_branch_results(branches: &[BranchMetadata]) {
+    println!(
+        "{:<30} {:<7} {:<40} {:>5} {:>6} {:<6} {:<20} {:<20} {:<20} AUTHOR",
+        "BRANCH",
+        "DEFAULT",
+        "TIP",
+        "AHEAD",
+        "BEHIND",
+        "MERGED",
+        "TIP_TIME",
+        "CREATED",
+        "CREATED_SOURCE"
+    );
+
+    for branch in branches {
+        println!(
+            "{:<30} {:<7} {:<40} {:>5} {:>6} {:<6} {:<20} {:<20} {:<20} {}",
+            branch.name,
+            if branch.is_default { "*" } else { "-" },
+            branch.tip_sha,
+            branch.ahead,
+            branch.behind,
+            if branch.merged { "yes" } else { "no" },
+            branch.tip_time,
+            branch.created_time,
+            branch.created_source.label(),
+            branch.tip_author
+        );
+    }
+}
+
 async fn search(
     pattern: Option<&str>,
     lang: Option<&str>,
@@ -958,7 +1004,8 @@ mod tests {
         assert_eq!(
             subcommands,
             vec![
-                "search", "cache", "tree", "ls", "cat", "rg", "sed", "head", "tail", "skill", "mcp"
+                "search", "branches", "cache", "tree", "ls", "cat", "rg", "sed", "head", "tail",
+                "skill", "mcp"
             ]
         );
         assert_eq!(
@@ -978,6 +1025,13 @@ mod tests {
                 .get_visible_aliases()
                 .collect::<Vec<_>>(),
             vec!["t"]
+        );
+        assert!(
+            find_subcommand(&command, "branches")
+                .get_visible_aliases()
+                .next()
+                .is_none(),
+            "branches should not add a short alias"
         );
 
         let skill = find_subcommand(&command, "skill");
@@ -1276,6 +1330,50 @@ mod tests {
     }
 
     #[test]
+    fn cli_branches_command_parses() {
+        let command = WitCli::command();
+        let branches = find_subcommand(&command, "branches");
+        let repo = find_arg(branches, "repo");
+        assert_eq!(repo.get_short(), Some('r'));
+        assert_eq!(repo.get_long(), Some("repo"));
+        assert!(repo.is_required_set());
+        assert_eq!(repo.get_index(), None);
+        assert!(
+            branches.get_visible_aliases().next().is_none(),
+            "branches should not have a short alias"
+        );
+
+        let parsed = WitCli::try_parse_from(["wit", "branches", "-r", "owner/repo"])
+            .expect("branches -r owner/repo should parse");
+        assert!(matches!(parsed.command, Commands::Branches { repo } if repo == "owner/repo"));
+
+        let missing_repo = match WitCli::try_parse_from(["wit", "branches"]) {
+            Ok(_) => panic!("branches should require --repo"),
+            Err(err) => err,
+        };
+        assert_eq!(missing_repo.kind(), ErrorKind::MissingRequiredArgument);
+
+        let short_alias = match WitCli::try_parse_from(["wit", "b", "-r", "owner/repo"]) {
+            Ok(_) => panic!("branches should not have a short alias"),
+            Err(err) => err,
+        };
+        assert_eq!(short_alias.kind(), ErrorKind::InvalidSubcommand);
+
+        let branch = Some("feature/api".to_string());
+        let cat = WitCli::try_parse_from([
+            "wit",
+            "cat",
+            "-r",
+            "owner/repo",
+            "--branch",
+            "feature/api",
+            "README.md",
+        ])
+        .expect("cat --branch should still parse");
+        assert!(matches!(cat.command, Commands::Cat { branch: parsed, .. } if parsed == branch));
+    }
+
+    #[test]
     fn cli_cache_help_text_mentions_cache_contract() {
         let mut command = WitCli::command();
         let help = command.render_long_help().to_string();
@@ -1290,6 +1388,22 @@ mod tests {
         assert!(cache_help.contains("selected branch"));
         assert!(cache_help.contains("--branch"));
         assert!(cache_help.contains("--refresh-cache"));
+    }
+
+    #[test]
+    fn cli_branches_help_text() {
+        let command = WitCli::command();
+        let mut branches = find_subcommand(&command, "branches").clone();
+        let help = branches.render_long_help().to_string();
+        let help_lower = help.to_ascii_lowercase();
+
+        assert!(help.contains("Usage: wit branches -r <REPO>"));
+        assert!(help.contains("default-branch comparison metadata"));
+        assert!(help_lower.contains("ahead"));
+        assert!(help_lower.contains("behind"));
+        assert!(help_lower.contains("merged"));
+        assert!(help.contains("first commit unique to the branch"));
+        assert!(help.contains("branch tip commit time"));
     }
 
     #[test]

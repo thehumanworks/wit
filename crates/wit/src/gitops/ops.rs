@@ -8,6 +8,7 @@ use ptree::{TreeBuilder, print_tree};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
+    ffi::OsStr,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -64,6 +65,42 @@ impl CacheBranchSelection {
     pub fn named(branch: impl Into<String>) -> Self {
         Self::Named(branch.into())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchCreatedSource {
+    FirstUniqueCommit,
+    TipCommitFallback,
+}
+
+impl BranchCreatedSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::FirstUniqueCommit => "first unique commit",
+            Self::TipCommitFallback => "tip commit fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchMetadata {
+    pub name: String,
+    pub is_default: bool,
+    pub tip_sha: String,
+    pub tip_author: String,
+    pub tip_time: String,
+    pub ahead: usize,
+    pub behind: usize,
+    pub merged: bool,
+    pub created_time: String,
+    pub created_source: BranchCreatedSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitMetadata {
+    sha: String,
+    author: String,
+    time: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +288,287 @@ fn repo_cache_root(cache_dir: &Path, owner_repo: &str) -> anyhow::Result<PathBuf
 
 fn github_remote_url(owner_repo: &str) -> String {
     format!("https://github.com/{owner_repo}", owner_repo = owner_repo)
+}
+
+pub fn list_remote_branches(owner_repo: &str) -> anyhow::Result<Vec<BranchMetadata>> {
+    split_owner_repo(owner_repo)?;
+    let remote_url = github_remote_url(owner_repo);
+    list_remote_branches_from_remote(owner_repo, &remote_url)
+}
+
+fn list_remote_branches_from_remote(
+    owner_repo: &str,
+    remote_url: &str,
+) -> anyhow::Result<Vec<BranchMetadata>> {
+    split_owner_repo(owner_repo)?;
+    let default_branch = resolve_default_branch(remote_url)?;
+    let branch_heads = resolve_branch_heads(remote_url)?;
+    if !branch_heads.contains_key(&default_branch.name) {
+        anyhow::bail!(
+            "remote default branch '{}' was not listed under refs/heads",
+            default_branch.name
+        );
+    }
+
+    let graph = BranchGraphTempDir::create()?;
+    fetch_branch_graph(remote_url, graph.path())?;
+    let default_sha = default_branch.current_sha.as_str();
+    let mut branches = Vec::with_capacity(branch_heads.len());
+
+    for (name, tip_sha) in branch_heads {
+        let tip = commit_metadata(graph.path(), &tip_sha)?;
+        let (behind, ahead) = branch_ahead_behind(graph.path(), default_sha, &tip_sha)?;
+        let merged = branch_is_merged(graph.path(), &tip_sha, default_sha)?;
+        let (created_time, created_source) =
+            branch_created_time(graph.path(), default_sha, &tip_sha, &tip)?;
+
+        branches.push(BranchMetadata {
+            is_default: name == default_branch.name,
+            name,
+            tip_sha: tip.sha,
+            tip_author: tip.author,
+            tip_time: tip.time,
+            ahead,
+            behind,
+            merged,
+            created_time,
+            created_source,
+        });
+    }
+
+    branches.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(branches)
+}
+
+fn resolve_branch_heads(remote_url: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let output = git_stdout(
+        ["ls-remote", remote_url, "refs/heads/*"],
+        None,
+        "list remote branches",
+    )?;
+    parse_branch_heads_ls_remote(&output)
+}
+
+fn parse_branch_heads_ls_remote(output: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut branches = BTreeMap::new();
+    for line in output.lines() {
+        if let Some((value, target)) = line.split_once('\t')
+            && let Some(name) = target.strip_prefix("refs/heads/")
+            && !name.is_empty()
+            && value.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            branches.insert(name.to_string(), value.to_string());
+        }
+    }
+
+    if branches.is_empty() {
+        anyhow::bail!("remote did not list any refs/heads branches");
+    }
+    Ok(branches)
+}
+
+struct BranchGraphTempDir {
+    path: PathBuf,
+}
+
+impl BranchGraphTempDir {
+    fn create() -> anyhow::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system time is before UNIX epoch")?
+            .as_nanos();
+        let path = std::env::temp_dir()
+            .join(WIT_CACHE_SUBDIR)
+            .join("branch-graphs")
+            .join(format!("{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("failed to create branch graph '{}'", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for BranchGraphTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn fetch_branch_graph(remote_url: &str, graph_path: &Path) -> anyhow::Result<()> {
+    let graph_path_arg = graph_path.to_string_lossy().into_owned();
+    git_stdout(
+        ["init", "--bare", graph_path_arg.as_str()],
+        None,
+        "initialize branch metadata graph",
+    )?;
+    git_stdout(
+        ["remote", "add", "origin", remote_url],
+        Some(graph_path),
+        "configure branch metadata graph remote",
+    )?;
+    git_stdout(
+        [
+            "fetch",
+            "--filter=blob:none",
+            "--prune",
+            "--no-tags",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+        ],
+        Some(graph_path),
+        "fetch branch metadata graph",
+    )?;
+    Ok(())
+}
+
+fn commit_metadata(graph_path: &Path, sha: &str) -> anyhow::Result<CommitMetadata> {
+    let output = git_stdout(
+        ["show", "-s", "--format=%H%x00%an <%ae>%x00%aI", sha],
+        Some(graph_path),
+        "read branch commit metadata",
+    )?;
+    let mut parts = output.trim_end_matches('\n').split('\0');
+    let parsed_sha = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("branch commit metadata omitted SHA")?;
+    let author = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("branch commit metadata omitted author")?;
+    let time = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("branch commit metadata omitted time")?;
+    if parts.next().is_some() {
+        anyhow::bail!("branch commit metadata had unexpected fields");
+    }
+
+    Ok(CommitMetadata {
+        sha: parsed_sha.to_string(),
+        author: author.to_string(),
+        time: time.to_string(),
+    })
+}
+
+fn branch_ahead_behind(
+    graph_path: &Path,
+    default_sha: &str,
+    branch_sha: &str,
+) -> anyhow::Result<(usize, usize)> {
+    let range = format!("{default_sha}...{branch_sha}");
+    let output = git_stdout(
+        ["rev-list", "--left-right", "--count", &range],
+        Some(graph_path),
+        "compute branch ahead/behind",
+    )?;
+    let mut counts = output.split_whitespace();
+    let behind = counts
+        .next()
+        .context("missing behind count")?
+        .parse::<usize>()
+        .context("invalid behind count")?;
+    let ahead = counts
+        .next()
+        .context("missing ahead count")?
+        .parse::<usize>()
+        .context("invalid ahead count")?;
+    if counts.next().is_some() {
+        anyhow::bail!("unexpected ahead/behind output: '{}'", output.trim());
+    }
+    Ok((behind, ahead))
+}
+
+fn branch_is_merged(
+    graph_path: &Path,
+    branch_sha: &str,
+    default_sha: &str,
+) -> anyhow::Result<bool> {
+    let status = git_status(
+        ["merge-base", "--is-ancestor", branch_sha, default_sha],
+        Some(graph_path),
+        "compute branch merged status",
+    )?;
+    match status {
+        0 => Ok(true),
+        1 => Ok(false),
+        code => anyhow::bail!("git merge-base failed with status {code}"),
+    }
+}
+
+fn branch_created_time(
+    graph_path: &Path,
+    default_sha: &str,
+    branch_sha: &str,
+    tip: &CommitMetadata,
+) -> anyhow::Result<(String, BranchCreatedSource)> {
+    let range = format!("{default_sha}..{branch_sha}");
+    let output = git_stdout(
+        ["rev-list", "--reverse", &range],
+        Some(graph_path),
+        "find first unique branch commit",
+    )?;
+    if let Some(first_unique_sha) = output.lines().find(|line| !line.trim().is_empty()) {
+        let first_unique = commit_metadata(graph_path, first_unique_sha)?;
+        return Ok((first_unique.time, BranchCreatedSource::FirstUniqueCommit));
+    }
+
+    Ok((tip.time.clone(), BranchCreatedSource::TipCommitFallback))
+}
+
+fn git_stdout<I, S>(args: I, workdir: Option<&Path>, action: &str) -> anyhow::Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = git_output(args, workdir, action)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        anyhow::bail!(
+            "git failed to {action} (status: {}) stderr: '{}' stdout: '{}'",
+            output.status,
+            stderr,
+            stdout
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn git_status<I, S>(args: I, workdir: Option<&Path>, action: &str) -> anyhow::Result<i32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = git_output(args, workdir, action)?;
+    Ok(output.status.code().unwrap_or(-1))
+}
+
+fn git_output<I, S>(
+    args: I,
+    workdir: Option<&Path>,
+    action: &str,
+) -> anyhow::Result<std::process::Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(dir) = workdir {
+        command.current_dir(dir);
+    }
+    command
+        .output()
+        .with_context(|| format!("failed to invoke git to {action}"))
 }
 
 fn default_cache_target_for_cache(
@@ -1997,6 +2315,213 @@ mod tests {
         assert!(CacheTarget::new("owner/repo\nnext", "main").is_err());
         assert!(CacheTarget::new(r"owner\repo/name", "main").is_err());
         assert!(CacheTarget::new("owner/repo", "").is_err());
+    }
+
+    #[test]
+    fn branches_metadata_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = create_branch_metadata_fixture(&temp);
+        let branches =
+            list_remote_branches_from_remote("owner/repo", fixture.remote.to_str().unwrap())
+                .unwrap();
+
+        let names: Vec<&str> = branches.iter().map(|branch| branch.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["main", "behind-only", "feature/active", "feature/merged"]
+        );
+
+        let main = branch_by_name(&branches, "main");
+        assert!(main.is_default);
+        assert_eq!(main.tip_sha, fixture.main_sha);
+        assert_eq!(main.tip_author, "Main Author <main@example.com>");
+        assert_eq!(main.tip_time, "2024-01-05T00:00:00Z");
+        assert_eq!(main.ahead, 0);
+        assert_eq!(main.behind, 0);
+        assert!(main.merged);
+        assert_eq!(main.created_time, main.tip_time);
+        assert_eq!(main.created_source, BranchCreatedSource::TipCommitFallback);
+        assert_eq!(main.created_source.label(), "tip commit fallback");
+
+        let active = branch_by_name(&branches, "feature/active");
+        assert!(!active.is_default);
+        assert_eq!(active.tip_sha, fixture.active_sha);
+        assert_eq!(active.tip_author, "Feature Author <feature@example.com>");
+        assert_eq!(active.tip_time, "2024-01-02T00:00:00Z");
+        assert_eq!(active.ahead, 1);
+        assert_eq!(active.behind, 3);
+        assert!(!active.merged);
+        assert_eq!(active.created_time, "2024-01-02T00:00:00Z");
+        assert_eq!(
+            active.created_source,
+            BranchCreatedSource::FirstUniqueCommit
+        );
+        assert_eq!(active.created_source.label(), "first unique commit");
+
+        let behind_only = branch_by_name(&branches, "behind-only");
+        assert!(!behind_only.is_default);
+        assert_eq!(behind_only.tip_sha, fixture.base_sha);
+        assert_eq!(behind_only.ahead, 0);
+        assert_eq!(behind_only.behind, 3);
+        assert!(behind_only.merged);
+        assert_eq!(behind_only.created_time, behind_only.tip_time);
+        assert_eq!(
+            behind_only.created_source,
+            BranchCreatedSource::TipCommitFallback
+        );
+
+        let merged = branch_by_name(&branches, "feature/merged");
+        assert!(!merged.is_default);
+        assert_eq!(merged.tip_sha, fixture.merged_sha);
+        assert_eq!(merged.tip_author, "Merged Author <merged@example.com>");
+        assert_eq!(merged.tip_time, "2024-01-03T00:00:00Z");
+        assert_eq!(merged.ahead, 0);
+        assert_eq!(merged.behind, 2);
+        assert!(merged.merged);
+        assert_eq!(merged.created_time, merged.tip_time);
+        assert_eq!(
+            merged.created_source,
+            BranchCreatedSource::TipCommitFallback
+        );
+    }
+
+    fn branch_by_name<'a>(branches: &'a [BranchMetadata], name: &str) -> &'a BranchMetadata {
+        branches
+            .iter()
+            .find(|branch| branch.name == name)
+            .unwrap_or_else(|| panic!("missing branch {name}"))
+    }
+
+    struct BranchMetadataFixture {
+        remote: PathBuf,
+        base_sha: String,
+        active_sha: String,
+        merged_sha: String,
+        main_sha: String,
+    }
+
+    fn create_branch_metadata_fixture(temp: &tempfile::TempDir) -> BranchMetadataFixture {
+        let worktree = temp.path().join("branches-worktree");
+        let remote = temp.path().join("branches-remote.git");
+
+        run_git(&["init", worktree.to_str().unwrap()], None);
+        run_git(&["checkout", "-b", "main"], Some(&worktree));
+        std::fs::write(worktree.join("README.md"), "main base\n").unwrap();
+        let base_sha = commit_all_with_author(
+            &worktree,
+            "main base",
+            "Main Author",
+            "main@example.com",
+            "2024-01-01T00:00:00 +0000",
+        );
+
+        run_git(&["init", "--bare", remote.to_str().unwrap()], None);
+        run_git(
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+            Some(&worktree),
+        );
+        run_git(&["push", "origin", "main"], Some(&worktree));
+        run_git(&["symbolic-ref", "HEAD", "refs/heads/main"], Some(&remote));
+        run_git(&["branch", "behind-only", &base_sha], Some(&worktree));
+        run_git(&["push", "origin", "behind-only"], Some(&worktree));
+
+        run_git(&["checkout", "-b", "feature/active"], Some(&worktree));
+        std::fs::write(worktree.join("active.txt"), "active\n").unwrap();
+        let active_sha = commit_all_with_author(
+            &worktree,
+            "active branch",
+            "Feature Author",
+            "feature@example.com",
+            "2024-01-02T00:00:00 +0000",
+        );
+        run_git(&["push", "origin", "feature/active"], Some(&worktree));
+
+        run_git(&["checkout", "main"], Some(&worktree));
+        run_git(&["checkout", "-b", "feature/merged"], Some(&worktree));
+        std::fs::write(worktree.join("merged.txt"), "merged\n").unwrap();
+        let merged_sha = commit_all_with_author(
+            &worktree,
+            "merged branch",
+            "Merged Author",
+            "merged@example.com",
+            "2024-01-03T00:00:00 +0000",
+        );
+        run_git(&["push", "origin", "feature/merged"], Some(&worktree));
+
+        run_git(&["checkout", "main"], Some(&worktree));
+        run_git_with_author(
+            &[
+                "-c",
+                "user.name=Main Author",
+                "-c",
+                "user.email=main@example.com",
+                "merge",
+                "--no-ff",
+                "feature/merged",
+                "-m",
+                "merge feature",
+            ],
+            Some(&worktree),
+            "2024-01-04T00:00:00 +0000",
+        );
+        std::fs::write(worktree.join("README.md"), "main advanced\n").unwrap();
+        let main_sha = commit_all_with_author(
+            &worktree,
+            "main advance",
+            "Main Author",
+            "main@example.com",
+            "2024-01-05T00:00:00 +0000",
+        );
+        run_git(&["push", "origin", "main"], Some(&worktree));
+
+        BranchMetadataFixture {
+            remote,
+            base_sha,
+            active_sha,
+            merged_sha,
+            main_sha,
+        }
+    }
+
+    fn commit_all_with_author(
+        worktree: &Path,
+        message: &str,
+        name: &str,
+        email: &str,
+        date: &str,
+    ) -> String {
+        run_git(&["add", "."], Some(worktree));
+        run_git_with_author(
+            &[
+                "-c",
+                &format!("user.name={name}"),
+                "-c",
+                &format!("user.email={email}"),
+                "commit",
+                "-m",
+                message,
+            ],
+            Some(worktree),
+            date,
+        );
+        git_stdout(&["rev-parse", "HEAD"], Some(worktree))
+    }
+
+    fn run_git_with_author(args: &[&str], workdir: Option<&Path>, date: &str) {
+        let mut command = Command::new("git");
+        command.args(args);
+        command.env("GIT_AUTHOR_DATE", date);
+        command.env("GIT_COMMITTER_DATE", date);
+        if let Some(dir) = workdir {
+            command.current_dir(dir);
+        }
+        let output = command.output().expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn run_git(args: &[&str], workdir: Option<&Path>) {

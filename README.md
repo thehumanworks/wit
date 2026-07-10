@@ -70,6 +70,7 @@ wit rg -l 'impl Widget' -r ratatui/ratatui                    # Find files
 wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file
 wit head -n 30 -r ratatui/ratatui Cargo.toml                  # Preview a file
 wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
+wit branches -r ratatui/ratatui                               # List branches before choosing --branch
 wit cat --branch main -r ratatui/ratatui README.md            # Read a named branch
 wit tree --refresh-cache -r ratatui/ratatui src               # Force fresh cache before reading
 wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
@@ -135,6 +136,16 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 | `-q` | `--query` | Raw GitHub search terms and qualifiers, passed through as-is |
 | `-n` | `--limit` | Maximum repositories to print (default `10`, max `1000`) |
 
+### branches
+
+List GitHub branches under `refs/heads` before choosing a value for `--branch` on cache/read commands.
+
+```bash
+wit branches -r ratatui/ratatui
+```
+
+The output includes branch name, default marker, tip SHA, tip commit author, tip commit time, ahead and behind counts, graph-merged status, created time, and created source. Ahead, behind, and merged are computed against the repository default branch; merged means the branch tip is reachable from the default branch, not PR or squash-merge state. Created time is inferred from the first unique commit on the branch when one exists. For the default branch and branches with no unique commits, created time falls back to the tip commit time and the source column says `tip commit fallback`.
+
 ### cache (alias: c)
 
 Clone a repository into the local cache (or refresh an existing one). Pass the repository with `-r` / `--repo` (`owner/repo`). Repos are auto-cached on first use by other commands.
@@ -147,6 +158,8 @@ wit cache -r ratatui/ratatui --branch main      # Force refresh a named branch
 ### Cache freshness
 
 Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default: `wit` serves the cached selected branch immediately when it is present, then quietly checks the remote branch and refreshes the cache when the commit SHA changed. Without `--branch`, the selected branch is the repository's default branch. A cold cache still clones before the read can continue.
+
+Run `wit branches -r owner/repo` to list available branch names with ahead/behind, graph-merged, author, tip, and created-time metadata before passing one to `--branch`.
 
 Use `--branch BRANCH` on `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, or `tail` to target a GitHub branch under `refs/heads` instead of the repository default branch:
 
