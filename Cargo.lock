@@ -5518,7 +5518,7 @@ dependencies = [
 
 [[package]]
 name = "wit"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "anyhow",
  "clap",
@@ -5789,3 +5789,4 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 
 >>>>>>> 4d98fb07b9726ac2440977b83f2730b13e6597a7
+
