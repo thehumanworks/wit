@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "1b23e77c4c0e",
+  "strategy": "manual-commit",
+  "branch": "codex/implement-agent-mcp-proposals",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.lock",
+    "README.md",
+    "crates/wit/Cargo.toml",
+    "crates/wit/src/bin/wit-mcp.rs",
+    "crates/wit/src/cli.rs",
+    "crates/wit/src/lib.rs",
+    "crates/wit/src/mcp.rs",
+    "crates/wit/src/mcp_compat.rs",
+    "crates/wit/src/skill/SKILL.md",
+    "crates/wit/tests/fixtures/agent-contract.json",
+    "crates/wit/tests/mcp_stdio.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/1b/23e77c4c0e/0/metadata.json",
+      "transcript": "/1b/23e77c4c0e/0/full.jsonl",
+      "compact_transcript": "/1b/23e77c4c0e/0/transcript.jsonl",
+      "content_hash": "/1b/23e77c4c0e/0/content_hash.txt",
+      "prompt": "/1b/23e77c4c0e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 399504,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 10043648,
+    "output_tokens": 69210,
+    "api_call_count": 81
+  }
+}

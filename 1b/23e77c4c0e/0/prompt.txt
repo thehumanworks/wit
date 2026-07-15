@@ -1,0 +1,5 @@
+Review the change in flight in this project - assess its completion. If so, run a build+tests and if all succeeds, push to remote
+
+---
+
+complete the work, validate,build and then push to remote
