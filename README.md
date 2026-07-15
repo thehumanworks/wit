@@ -78,7 +78,17 @@ wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude pat
 
 ## MCP Server
 
-`wit mcp --transport stdio` starts a stdio MCP server for agents that need to explore GitHub repositories without cloning them directly. The standalone `wit-mcp` binary remains available for clients that prefer a dedicated command. The server exposes the public `wit` command surface as MCP tools (`wit_search`, `wit_cache_refresh`, `wit_tree`, `wit_ls`, `wit_cat`, `wit_rg`, `wit_sed`, `wit_head`, `wit_tail`, `wit_skill_load`, and `wit_skill_install`), plus prompts for coherent repo exploration and resources for usage guidance.
+`wit mcp --transport stdio` starts the agent-native MCP v2 server. The standalone `wit-mcp` binary provides the same default surface. V2 is snapshot-first: call `wit_open` to pin a repository ref to an immutable commit, then reuse its `snapshot_id` with the semantic exploration tools:
+
+- `wit_find_repositories`: discover `owner/repo` when it is unknown.
+- `wit_refs`: discover the default branch, branches, and tags.
+- `wit_open`: pin the default branch, a named branch, tag, or full commit SHA.
+- `wit_list`: list repository structure with explicit depth.
+- `wit_search_code`: run bounded multi-query code search with context and provenance.
+- `wit_read`: read explicit one-based inclusive line ranges.
+- `wit_context`: rank and merge deterministic multi-file evidence without an internal model.
+
+Every evidence item includes the repository, immutable commit, path, blob identity, and applicable line range. Collection responses are structured by default, use a 64 KiB default whole-response budget, and return `next_cursor` whenever `has_more` is true. A cursor is bound to the tool, snapshot, and normalized arguments; changing any of them returns an error instead of silently mixing result sets. Set `include_rendered_text: true` only for a text-oriented consumer.
 
 Example MCP client config:
 
@@ -96,7 +106,11 @@ Example MCP client config:
 }
 ```
 
-`wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. Repo-reading tools use the same branch-keyed stale-while-revalidate cache as the CLI and accept optional JSON `branch` plus `refresh_cache` parameters. Omit `branch` to read the repository default branch; set `refresh_cache: true` when the selected branch must be fetched before reading. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
+`wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. `wit_open` uses the branch-keyed stale-while-revalidate cache by default and reports that state explicitly. Set `freshness: "require_fresh"` to refresh a branch before pinning it. Tags and full commit SHAs are fetched directly into the immutable server-lifetime snapshot store. Pull-request head refs are not yet resolved directly; pass the PR head's full commit SHA.
+
+The original Unix-shaped MCP v1 tools remain available as a deprecated compatibility surface with `wit mcp --compat-v1` or `wit-mcp --compat-v1`. In compatibility mode, repo-reading tools retain optional `branch` and `refresh_cache` parameters: omit `branch` for the default branch, or set `refresh_cache: true` to wait for fresh selected-branch content. This mode remains supported throughout the 0.1 release line; any removal requires a separately announced release. The human CLI commands and behavior are unchanged.
+
+The fixed `agent-contract` corpus covers cache discovery, branch comparison, symbol reads, multi-file evidence, cursor resumption, and precise citations against the same local repository fixture for both surfaces. Run it with `cargo test -p wit --test mcp_stdio agent_contract_corpus -- --nocapture`; the test reports schema bytes/tokens, median calls, invalid calls, contract accuracy, citation precision, and wall-clock time.
 
 ## Global Options
 
@@ -300,8 +314,9 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end
 crates/wit/src/
 ├── cli.rs           # CLI entry point
 ├── bin/wit-mcp.rs   # stdio MCP server entry point
-├── lib.rs           # Library exports (gitops, sed, search, search_run)
-├── mcp.rs           # MCP tools, prompts, resources, and response shaping
+├── lib.rs           # Library exports (gitops, MCP, sed, search, search_run)
+├── mcp.rs           # Agent-native MCP v2 snapshots, tools, cursors, and budgets
+├── mcp_compat.rs    # Deprecated MCP v1 compatibility surface
 ├── search.rs        # GitHub repository search, query assembly, limit-aware pagination
 ├── search_run.rs    # `wit search`: GitHub-only orchestration
 ├── sed.rs
