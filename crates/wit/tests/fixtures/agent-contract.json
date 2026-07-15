@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "identify-cache-freshness",
+      "v1_tools": ["wit_rg", "wit_cat", "wit_cat"],
+      "v2_tools": ["wit_open", "wit_context"],
+      "evidence": "path, immutable commit, blob, and supporting line range"
+    },
+    {
+      "id": "compare-two-branches",
+      "v1_tools": ["wit_tree", "wit_tree", "wit_rg", "wit_rg"],
+      "v2_tools": ["wit_open", "wit_open", "wit_context", "wit_context"],
+      "evidence": "two independently pinned commit identities"
+    },
+    {
+      "id": "locate-symbol-and-read-implementation",
+      "v1_tools": ["wit_rg", "wit_sed", "wit_cat"],
+      "v2_tools": ["wit_open", "wit_context"],
+      "evidence": "symbol match and merged implementation window"
+    },
+    {
+      "id": "gather-multi-file-evidence",
+      "v1_tools": ["wit_rg", "wit_cat", "wit_cat", "wit_cat"],
+      "v2_tools": ["wit_open", "wit_context"],
+      "evidence": "deterministically ranked snippets from several files"
+    },
+    {
+      "id": "resume-truncated-search",
+      "v1_tools": ["wit_rg", "wit_rg", "wit_cat"],
+      "v2_tools": ["wit_open", "wit_search_code", "wit_search_code"],
+      "evidence": "stable ordered pages joined through next_cursor"
+    },
+    {
+      "id": "answer-with-precise-citation",
+      "v1_tools": ["wit_rg", "wit_sed", "wit_cat"],
+      "v2_tools": ["wit_open", "wit_read"],
+      "evidence": "repository, commit, path, blob, start line, and end line"
+    }
+  ]
+}

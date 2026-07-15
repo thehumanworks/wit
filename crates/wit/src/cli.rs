@@ -373,13 +373,17 @@ enum Commands {
     },
     #[command(
         name = "mcp",
-        about = "Start the wit MCP server",
-        after_help = "Examples:\n  wit mcp --transport stdio             # Start the MCP server over stdio"
+        about = "Start the agent-native wit MCP v2 server",
+        after_help = "The default v2 surface is snapshot-first, structured, bounded, and resumable. Use --compat-v1 only for clients that still require the deprecated Unix-shaped MCP tools.\n\nExamples:\n  wit mcp --transport stdio             # Start MCP v2 over stdio\n  wit mcp --compat-v1                   # Start the MCP v1 compatibility surface"
     )]
     Mcp {
         /// MCP transport to use
         #[arg(long, value_enum, default_value = "stdio")]
         transport: McpTransport,
+
+        /// Serve the deprecated MCP v1 compatibility tool surface
+        #[arg(long = "compat-v1", action = ArgAction::SetTrue)]
+        compat_v1: bool,
     },
     #[command(name = "__cache-revalidate", hide = true)]
     CacheRevalidate {
@@ -839,7 +843,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", skill_path.display());
             }
         },
-        Commands::Mcp { transport } => match transport {
+        Commands::Mcp {
+            transport,
+            compat_v1,
+        } => match transport {
+            McpTransport::Stdio if compat_v1 => wit::mcp_compat::serve_stdio_compat().await?,
             McpTransport::Stdio => wit::mcp::serve_stdio().await?,
         },
     }
@@ -1539,14 +1547,36 @@ mod tests {
             .expect("mcp stdio args should parse");
 
         match cli.command {
-            Commands::Mcp { transport } => assert_eq!(transport, McpTransport::Stdio),
+            Commands::Mcp {
+                transport,
+                compat_v1,
+            } => {
+                assert_eq!(transport, McpTransport::Stdio);
+                assert!(!compat_v1);
+            }
             _ => panic!("expected mcp command"),
         }
 
         let defaulted = WitCli::try_parse_from(["wit", "mcp"]).expect("mcp should default stdio");
         match defaulted.command {
-            Commands::Mcp { transport } => assert_eq!(transport, McpTransport::Stdio),
+            Commands::Mcp {
+                transport,
+                compat_v1,
+            } => {
+                assert_eq!(transport, McpTransport::Stdio);
+                assert!(!compat_v1);
+            }
             _ => panic!("expected mcp command"),
         }
+
+        let compat = WitCli::try_parse_from(["wit", "mcp", "--compat-v1"])
+            .expect("mcp compatibility mode should parse");
+        assert!(matches!(
+            compat.command,
+            Commands::Mcp {
+                transport: McpTransport::Stdio,
+                compat_v1: true,
+            }
+        ));
     }
 }

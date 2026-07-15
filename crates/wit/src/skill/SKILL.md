@@ -25,21 +25,20 @@ When the user asks for a non-default branch, run `wit branches -r owner/repo` fi
 
 ## MCP Server
 
-When an MCP client is available, use `wit mcp --transport stdio` as the stdio server instead of shelling out. The standalone `wit-mcp` binary remains available for clients that prefer a dedicated command. The server exposes the CLI command surface as MCP tools:
+When an MCP client is available, use `wit mcp --transport stdio` as the stdio server instead of shelling out. The standalone `wit-mcp` binary exposes the same agent-native MCP v2 surface.
 
-- `wit_search`
-- `wit_cache_refresh`
-- `wit_tree`
-- `wit_ls`
-- `wit_cat`
-- `wit_rg`
-- `wit_sed`
-- `wit_head`
-- `wit_tail`
-- `wit_skill_load`
-- `wit_skill_install`
+Use the snapshot-first workflow:
 
-It also exposes prompts (`wit_explore_repo`, `wit_discover_repos`, `wit_read_precise`) and resources (`wit://skill/SKILL.md`, `wit://guide/workflow`, `wit://guide/tools`) so agents can retrieve the recommended workflow without the user repeating a long preamble. MCP repo-reading tools accept optional JSON `branch` plus `refresh_cache` parameters. Omit `branch` to read the repository default branch; set `refresh_cache: true` when the selected branch must be fetched before reading. MCP `wit_sed` disables local sed file I/O and local script files; `wit_skill_install` writes the bundled skill under a local directory.
+1. Call `wit_find_repositories` only when `owner/repo` is unknown.
+2. Call `wit_refs` if branch or tag discovery matters.
+3. Call `wit_open`, then reuse its immutable `snapshot_id` for every read in the task. Use `freshness: "require_fresh"` only when a branch must be refreshed before pinning.
+4. Call `wit_list` for bounded structural orientation, `wit_search_code` for one or more known regex queries, and `wit_read` for explicit one-based inclusive line ranges.
+5. Call `wit_context` when one deterministic operation should rank and merge bounded evidence across files. It does not call an internal model or embeddings.
+6. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Cursors are bound to the tool, snapshot, and normalized query.
+
+Evidence items carry repository, commit SHA, path, blob identity, and line provenance. Collection responses are structured by default and use a 64 KiB whole-response budget. Set `include_rendered_text: true` only when a text rendering is required. Fetch `wit://skill/SKILL.md`, `wit://guide/workflow`, or `wit://guide/tools` for reusable guidance.
+
+The deprecated Unix-shaped MCP v1 tools remain available with `wit mcp --compat-v1` or `wit-mcp --compat-v1` throughout the 0.1 release line. In that mode, repo-reading tools retain optional `branch` and `refresh_cache` parameters: omit `branch` for the default branch, or set `refresh_cache: true` to wait for fresh selected-branch content. Human CLI behavior is unchanged.
 
 ## Cache Behavior
 
