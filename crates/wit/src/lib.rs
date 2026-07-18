@@ -1,6 +1,5 @@
 pub mod gitops;
 pub mod mcp;
-pub mod mcp_compat;
 pub mod search;
 pub mod search_run;
 pub mod sed;

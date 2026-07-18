@@ -36,9 +36,7 @@ Use the snapshot-first workflow:
 5. Call `wit_context` when one deterministic operation should rank and merge bounded evidence across files. It does not call an internal model or embeddings.
 6. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Cursors are bound to the tool, snapshot, and normalized query.
 
-Evidence items carry repository, commit SHA, path, blob identity, and line provenance. Collection responses are structured by default and use a 64 KiB whole-response budget. Set `include_rendered_text: true` only when a text rendering is required. Fetch `wit://skill/SKILL.md`, `wit://guide/workflow`, or `wit://guide/tools` for reusable guidance.
-
-The deprecated Unix-shaped MCP v1 tools remain available with `wit mcp --compat-v1` or `wit-mcp --compat-v1` throughout the 0.1 release line. In that mode, repo-reading tools retain optional `branch` and `refresh_cache` parameters: omit `branch` for the default branch, or set `refresh_cache: true` to wait for fresh selected-branch content. Human CLI behavior is unchanged.
+Evidence items carry repository, commit SHA, path, blob identity, and line provenance. Collection responses are structured and use a 64 KiB whole-response budget. Fetch `wit://skill/SKILL.md`, `wit://guide/workflow`, or `wit://guide/tools` for reusable guidance.
 
 ## Cache Behavior
 

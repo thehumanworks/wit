@@ -88,7 +88,7 @@ wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude pat
 - `wit_read`: read explicit one-based inclusive line ranges.
 - `wit_context`: rank and merge deterministic multi-file evidence without an internal model.
 
-Every evidence item includes the repository, immutable commit, path, blob identity, and applicable line range. Collection responses are structured by default, use a 64 KiB default whole-response budget, and return `next_cursor` whenever `has_more` is true. A cursor is bound to the tool, snapshot, and normalized arguments; changing any of them returns an error instead of silently mixing result sets. Set `include_rendered_text: true` only for a text-oriented consumer.
+Every evidence item includes the repository, immutable commit, path, blob identity, and applicable line range. Collection responses are structured, use a 64 KiB default whole-response budget, and return `next_cursor` whenever `has_more` is true. A cursor is bound to the tool, snapshot, and normalized arguments; changing any of them returns an error instead of silently mixing result sets.
 
 Example MCP client config:
 
@@ -107,10 +107,6 @@ Example MCP client config:
 ```
 
 `wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. `wit_open` uses the branch-keyed stale-while-revalidate cache by default and reports that state explicitly. Set `freshness: "require_fresh"` to refresh a branch before pinning it. Tags and full commit SHAs are fetched directly into the immutable server-lifetime snapshot store. Pull-request head refs are not yet resolved directly; pass the PR head's full commit SHA.
-
-The original Unix-shaped MCP v1 tools remain available as a deprecated compatibility surface with `wit mcp --compat-v1` or `wit-mcp --compat-v1`. In compatibility mode, repo-reading tools retain optional `branch` and `refresh_cache` parameters: omit `branch` for the default branch, or set `refresh_cache: true` to wait for fresh selected-branch content. This mode remains supported throughout the 0.1 release line; any removal requires a separately announced release. The human CLI commands and behavior are unchanged.
-
-The fixed `agent-contract` corpus covers cache discovery, branch comparison, symbol reads, multi-file evidence, cursor resumption, and precise citations against the same local repository fixture for both surfaces. Run it with `cargo test -p wit --test mcp_stdio agent_contract_corpus -- --nocapture`; the test reports schema bytes/tokens, median calls, invalid calls, contract accuracy, citation precision, and wall-clock time.
 
 ## Global Options
 
@@ -316,7 +312,6 @@ crates/wit/src/
 ├── bin/wit-mcp.rs   # stdio MCP server entry point
 ├── lib.rs           # Library exports (gitops, MCP, sed, search, search_run)
 ├── mcp.rs           # Agent-native MCP v2 snapshots, tools, cursors, and budgets
-├── mcp_compat.rs    # Deprecated MCP v1 compatibility surface
 ├── search.rs        # GitHub repository search, query assembly, limit-aware pagination
 ├── search_run.rs    # `wit search`: GitHub-only orchestration
 ├── sed.rs
