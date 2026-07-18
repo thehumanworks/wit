@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "77e0ca9fcb5e",
+  "session_id": "019f67cd-3f83-7360-a0ea-524774b6c6ab",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-18T12:11:47.443142Z",
+  "branch": "agent/remove-mcp-v1-compat",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "crates/wit/src/bin/wit-mcp.rs",
+    "crates/wit/src/cli.rs",
+    "crates/wit/src/lib.rs",
+    "crates/wit/src/mcp_compat.rs",
+    "crates/wit/src/skill/SKILL.md",
+    "crates/wit/tests/fixtures/agent-contract.json"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "b4f80e415472",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 656475,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 13126912,
+    "output_tokens": 76748,
+    "api_call_count": 101
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-18T12:11:47.379861Z",
+    "agent_lines": 12,
+    "agent_removed": 1627,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 12,
+    "total_lines_changed": 1639,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+remove the 'compat-v1' command and any code that delivers backwards compatibility. Then commit and push to remote, and reinstall in my machine using cargo install --path . --force

@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "77e0ca9fcb5e",
+  "strategy": "manual-commit",
+  "branch": "agent/remove-mcp-v1-compat",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "crates/wit/src/bin/wit-mcp.rs",
+    "crates/wit/src/cli.rs",
+    "crates/wit/src/lib.rs",
+    "crates/wit/src/mcp_compat.rs",
+    "crates/wit/src/skill/SKILL.md",
+    "crates/wit/tests/fixtures/agent-contract.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/77/e0ca9fcb5e/0/metadata.json",
+      "transcript": "/77/e0ca9fcb5e/0/full.jsonl",
+      "compact_transcript": "/77/e0ca9fcb5e/0/transcript.jsonl",
+      "content_hash": "/77/e0ca9fcb5e/0/content_hash.txt",
+      "prompt": "/77/e0ca9fcb5e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 656475,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 13126912,
+    "output_tokens": 76748,
+    "api_call_count": 101
+  }
+}
