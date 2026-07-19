@@ -1,0 +1,7 @@
+tackle github issue '11' for this project ('thehumanworks/wit'), by completing all sub-issues associated with it.
+
+Parallelize as much as possible, using codex subagents to deliver the work efficiently. 
+
+DEFINITION OF DONE
+- 1 review done per task using gpt-5.6-sol with low reasoning (do not do more than 1 review pass with a subagent)
+- changes proved as working with test cases to validate them
