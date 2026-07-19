@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "adapter_version": "1.0.0",
+  "process_environment": {
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "PYTHONHASHSEED": "0"
+  },
+  "responses_api": {
+    "endpoint": "https://api.openai.com/v1/responses",
+    "store": false,
+    "parallel_tool_calls": false,
+    "tool_choice": "auto",
+    "truncation": "disabled",
+    "max_output_tokens": 4096,
+    "prompt_cache_policy": "unique_key_per_task_mode_repetition",
+    "timeout_seconds": 120
+  },
+  "commands": {
+    "direct": ["target/release/wit-mcp", "--mode", "direct"],
+    "code": ["target/release/wit-mcp", "--mode", "code"]
+  },
+  "mcp": {
+    "protocol_version": "2025-11-25",
+    "client_name": "wit-codemode-benchmark",
+    "client_version": "1.0.0",
+    "maximum_outer_calls": 32,
+    "cancellation_after_ms": 100
+  },
+  "instrumentation": {
+    "environment_variable": "WIT_BENCHMARK_METRICS_FILE",
+    "required_fields": ["inner_host_calls", "worker_startup_ms"],
+    "resource_sample_interval_ms": 10
+  },
+  "tokenizer": {
+    "package": "tiktoken",
+    "package_version": "0.12.0",
+    "encoding": "o200k_base",
+    "scope": "canonical_utf8_tools_list"
+  },
+  "schema_validator": {
+    "package": "jsonschema",
+    "package_version": "4.25.1",
+    "validator": "Draft202012Validator"
+  },
+  "network": {
+    "model_adapter": "api.openai.com:443_only",
+    "mcp_subprocess": "repository_network_disabled",
+    "mcp_proxy_environment": {
+      "HTTP_PROXY": "http://127.0.0.1:9",
+      "HTTPS_PROXY": "http://127.0.0.1:9",
+      "ALL_PROXY": "http://127.0.0.1:9",
+      "NO_PROXY": ""
+    }
+  }
+}

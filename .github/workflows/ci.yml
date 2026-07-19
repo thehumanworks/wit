@@ -15,6 +15,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned TypeScript compiler
+        run: npm install --global typescript@7.0.2
+
       - name: rustfmt
         run: cargo fmt --all -- --check
 
@@ -24,8 +31,140 @@ jobs:
       - name: tests
         run: cargo test --workspace
 
+      - name: Code Mode declaration type check
+        run: bash scripts/check_codemode_types.sh
+
       - name: wit search migration guard
         run: bash scripts/check_wit_search_migration.sh
 
       - name: release workflow guard
         run: bash scripts/check_release_workflows.sh
+
+  cancellation-platforms:
+    name: cancellation (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Process-tree cancellation
+        run: cargo test -p wit --lib operation_context::tests
+
+      - name: Adapter-context cancellation and deadline
+        run: cargo test -p wit --lib mcp::tests::adapter_context_applies_deadline_and_bridges_cancellation
+
+      - name: Stdio cancellation propagation
+        if: runner.os != 'Windows'
+        run: cargo test -p wit --test mcp_stdio stdio_cancel_notification_stops_dynamic_route_git_work
+
+  mcp-behavior-platforms:
+    name: MCP behavior (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Direct MCP snapshot contract
+        run: cargo test -p wit --test mcp_stdio wit_mcp_v2_snapshot_provenance_pagination_and_replay
+
+      - name: Shipped Code Mode stdio contract
+        run: cargo test -p wit --test codemode_stdio
+
+      - name: Worker adversarial containment and restart
+        run: cargo test -p wit-quickjs-spike --test containment
+
+  release-targets:
+    name: package ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+            bin: wit
+            mcp_bin: wit-mcp
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+            bin: wit
+            mcp_bin: wit-mcp
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            use_cross: false
+            archive: tar.gz
+            bin: wit
+            mcp_bin: wit-mcp
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            use_cross: false
+            archive: tar.gz
+            bin: wit
+            mcp_bin: wit-mcp
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            use_cross: false
+            archive: zip
+            bin: wit.exe
+            mcp_bin: wit-mcp.exe
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            use_cross: false
+            archive: zip
+            bin: wit.exe
+            mcp_bin: wit-mcp.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build both public binaries with cross
+        if: matrix.use_cross
+        run: cross build --locked --release --target "${{ matrix.target }}" -p wit --bins
+
+      - name: Build both public binaries with cargo
+        if: matrix.use_cross == false
+        run: cargo build --locked --release --target "${{ matrix.target }}" -p wit --bins
+
+      - name: Package and verify both public binaries (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="wit-${{ matrix.target }}.tar.gz"
+          tar -C "target/${{ matrix.target }}/release" -czf "$artifact" "${{ matrix.bin }}" "${{ matrix.mcp_bin }}"
+          [ "$(tar -tzf "$artifact" | sort)" = $'wit\nwit-mcp' ]
+
+      - name: Package and verify both public binaries (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $artifact = "wit-${{ matrix.target }}.zip"
+          $files = @(
+            "target/${{ matrix.target }}/release/${{ matrix.bin }}",
+            "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
+          )
+          Compress-Archive -Path $files -DestinationPath $artifact -Force
+          $entries = @(tar -tf $artifact | Sort-Object)
+          if (($entries -join "`n") -ne "wit-mcp.exe`nwit.exe") {
+            throw "package must contain exactly wit.exe and wit-mcp.exe; found $entries"
+          }

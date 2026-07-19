@@ -1,281 +1,134 @@
 use rmcp::{
     ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::{
+        CallToolRequestParams, ClientRequest, ReadResourceRequestParams, Request, ResourceContents,
+    },
     object,
+    service::PeerRequestOptions,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
-use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::Instant,
-};
 
+#[cfg(unix)]
 #[tokio::test]
-async fn wit_mcp_v1_compat_lists_guidance_and_static_tools() -> anyhow::Result<()> {
+async fn stdio_cancel_notification_stops_dynamic_route_git_work() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
     let bin = env!("CARGO_BIN_EXE_wit-mcp");
-    let cache = tempfile::tempdir()?;
-    let fixture = seed_cached_repo(cache.path())?;
+    let temp = tempfile::tempdir()?;
+    let fake_bin = temp.path().join("bin");
+    std::fs::create_dir(&fake_bin)?;
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\ntouch \"$WIT_FAKE_GIT_STARTED\"\ntrap 'touch \"$WIT_FAKE_GIT_TERMINATED\"; exit 143' TERM\nwhile :; do sleep 1; done\n",
+    )?;
+    std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755))?;
+    let started = temp.path().join("started");
+    let terminated = temp.path().join("terminated");
+    let mut paths = vec![fake_bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths)?;
     let transport = TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
-        cmd.arg("--compat-v1")
-            .env("WIT_CACHE_DIR", cache.path())
-            .env("GIT_CONFIG_GLOBAL", &fixture.git_config)
-            .env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd.env("PATH", path)
+            .env("WIT_FAKE_GIT_STARTED", &started)
+            .env("WIT_FAKE_GIT_TERMINATED", &terminated);
     }))?;
-
     let client = ().serve(transport).await?;
-
-    let tools = client.list_all_tools().await?;
-    let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
-    assert!(names.contains(&"wit_search"));
-    assert!(names.contains(&"wit_tree"));
-    assert!(names.contains(&"wit_cat"));
-    assert!(names.contains(&"wit_skill_load"));
-
-    let resources = client.list_all_resources().await?;
-    assert!(
-        resources
-            .iter()
-            .any(|resource| resource.uri == "wit://skill/SKILL.md")
-    );
-    let skill = client
-        .read_resource(ReadResourceRequestParams::new("wit://skill/SKILL.md"))
+    let request = ClientRequest::CallToolRequest(Request::new(
+        CallToolRequestParams::new("wit_refs").with_arguments(object!({
+            "repo": "owner/repo"
+        })),
+    ));
+    let handle = client
+        .send_cancellable_request(request, PeerRequestOptions::no_options())
         .await?;
-    assert_eq!(skill.contents.len(), 1);
 
-    let prompts = client.list_all_prompts().await?;
-    assert!(
-        prompts
-            .iter()
-            .any(|prompt| prompt.name == "wit_explore_repo")
-    );
-
-    let result = client
-        .call_tool(CallToolRequestParams::new("wit_skill_load").with_arguments(object!({})))
-        .await?;
-    assert!(!result.content.is_empty());
-
-    let tree = call_tool_json(
-        &client,
-        "wit_tree",
-        object!({
-            "repo": "owner/repo",
-            "max_entries": 20,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert!(tree["text"].as_str().unwrap().contains("README.md"));
-
-    let ls = call_tool_json(
-        &client,
-        "wit_ls",
-        object!({
-            "repo": "owner/repo",
-            "path": "src",
-            "long": true
-        }),
-    )
-    .await?;
-    assert_eq!(ls["entries"][0]["name"], "lib.rs");
-
-    let cat = call_tool_json(
-        &client,
-        "wit_cat",
-        object!({
-            "repo": "owner/repo",
-            "path": "README.md",
-            "number": true
-        }),
-    )
-    .await?;
-    assert!(cat["text"].as_str().unwrap().contains("     1  alpha"));
-
-    let rg = call_tool_json(
-        &client,
-        "wit_rg",
-        object!({
-            "repo": "owner/repo",
-            "pattern": "beta",
-            "glob": "*.md"
-        }),
-    )
-    .await?;
-    assert_eq!(rg["matches"][0]["path"], "README.md");
-
-    let sed = call_tool_json(
-        &client,
-        "wit_sed",
-        object!({
-            "repo": "owner/repo",
-            "path": "README.md",
-            "script": "2p",
-            "quiet": true
-        }),
-    )
-    .await?;
-    assert_eq!(sed["text"], "beta\n");
-
-    let head = call_tool_json(
-        &client,
-        "wit_head",
-        object!({
-            "repo": "owner/repo",
-            "path": "README.md",
-            "lines": 1
-        }),
-    )
-    .await?;
-    assert_eq!(head["text"], "alpha");
-
-    let tail = call_tool_json(
-        &client,
-        "wit_tail",
-        object!({
-            "repo": "owner/repo",
-            "path": "README.md",
-            "from_line": 2,
-            "number": true
-        }),
-    )
-    .await?;
-    assert!(tail["text"].as_str().unwrap().contains("     2  beta"));
+    wait_for_path(&started, std::time::Duration::from_secs(2)).await?;
+    handle.cancel(Some("test cancellation".to_string())).await?;
+    wait_for_path(&terminated, std::time::Duration::from_secs(2)).await?;
+    assert_eq!(client.list_all_tools().await?.len(), 7);
 
     client.cancel().await?;
     Ok(())
 }
 
+#[cfg(unix)]
+async fn wait_for_path(path: &Path, timeout: std::time::Duration) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if path.exists() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for {}", path.display());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
+
 #[tokio::test]
-async fn wit_mcp_v1_compat_branch_parameter_reads_named_branch() -> anyhow::Result<()> {
+async fn wit_mcp_exposes_snapshot_first_guidance_resources() -> anyhow::Result<()> {
     let bin = env!("CARGO_BIN_EXE_wit-mcp");
-    let cache = tempfile::tempdir()?;
-    let fixture = seed_cached_repo(cache.path())?;
-    let transport = TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
-        cmd.arg("--compat-v1")
-            .env("WIT_CACHE_DIR", cache.path())
-            .env("GIT_CONFIG_GLOBAL", &fixture.git_config)
-            .env("GIT_CONFIG_NOSYSTEM", "1");
-    }))?;
+    let client = ().serve(TokioChildProcess::new(tokio::process::Command::new(bin))?).await?;
 
-    let client = ().serve(transport).await?;
-
-    let refresh = call_tool_json(
-        &client,
-        "wit_cache_refresh",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp"
-        }),
-    )
-    .await?;
-    assert_eq!(refresh["refreshed"], true);
-    assert!(
-        refresh["cache_path"]
-            .as_str()
-            .unwrap()
-            .contains("b-feature%2Fmcp")
+    let resources = client.list_all_resources().await?;
+    let uris = resources
+        .iter()
+        .map(|resource| resource.uri.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        uris,
+        vec![
+            "wit://skill/SKILL.md",
+            "wit://guide/workflow",
+            "wit://guide/tools",
+        ]
     );
-
-    let tree = call_tool_json(
-        &client,
-        "wit_tree",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "max_entries": 20,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert!(tree["text"].as_str().unwrap().contains("feature.txt"));
-
-    let ls = call_tool_json(
-        &client,
-        "wit_ls",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "path": "src",
-            "long": true
-        }),
-    )
-    .await?;
-    assert_eq!(ls["entries"][0]["name"], "lib.rs");
-
-    let cat = call_tool_json(
-        &client,
-        "wit_cat",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "path": "README.md"
-        }),
-    )
-    .await?;
-    assert!(cat["text"].as_str().unwrap().contains("feature alpha"));
-    assert!(!cat["text"].as_str().unwrap().contains("alpha\nbeta"));
-
-    let rg = call_tool_json(
-        &client,
-        "wit_rg",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "pattern": "feature branch",
-            "glob": "feature.txt"
-        }),
-    )
-    .await?;
-    assert_eq!(rg["matches"][0]["path"], "feature.txt");
-
-    let sed = call_tool_json(
-        &client,
-        "wit_sed",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "path": "README.md",
-            "script": "2p",
-            "quiet": true
-        }),
-    )
-    .await?;
-    assert_eq!(sed["text"], "feature beta\n");
-
-    let head = call_tool_json(
-        &client,
-        "wit_head",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "path": "README.md",
-            "lines": 1
-        }),
-    )
-    .await?;
-    assert_eq!(head["text"], "feature alpha");
-
-    let tail = call_tool_json(
-        &client,
-        "wit_tail",
-        object!({
-            "repo": "owner/repo",
-            "branch": "feature/mcp",
-            "path": "README.md",
-            "from_line": 2,
-            "number": true
-        }),
-    )
-    .await?;
-    assert!(
-        tail["text"]
-            .as_str()
-            .unwrap()
-            .contains("     2  feature beta")
-    );
+    for uri in uris {
+        let resource = client
+            .read_resource(ReadResourceRequestParams::new(uri))
+            .await?;
+        assert_eq!(resource.contents.len(), 1);
+        let ResourceContents::TextResourceContents { text, .. } = &resource.contents[0] else {
+            anyhow::bail!("{uri} should be a text resource");
+        };
+        assert!(text.contains("snapshot"));
+        assert!(!text.contains("compat-v1"));
+        assert!(!text.contains("MCP v1"));
+    }
 
     client.cancel().await?;
+    Ok(())
+}
+
+#[test]
+fn wit_mcp_rejects_unknown_arguments_and_preserves_help_and_version() -> anyhow::Result<()> {
+    let bin = env!("CARGO_BIN_EXE_wit-mcp");
+    let unknown = Command::new(bin).arg("--unknown").output()?;
+    assert!(!unknown.status.success());
+    let stderr = String::from_utf8(unknown.stderr)?;
+    assert!(stderr.contains("unsupported argument --unknown"));
+    assert!(stderr.contains("wit-mcp --help"));
+
+    let help = Command::new(bin).arg("--help").output()?;
+    assert!(help.status.success());
+    let help_stdout = String::from_utf8(help.stdout)?;
+    assert!(help_stdout.contains("USAGE:"));
+    assert!(help_stdout.contains("wit-mcp --version"));
+
+    let version = Command::new(bin).arg("--version").output()?;
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout)?.trim(),
+        format!("wit-mcp {}", env!("CARGO_PKG_VERSION"))
+    );
     Ok(())
 }
 
@@ -622,110 +475,6 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
     assert_eq!(by_sha["commit_sha"], tag["commit_sha"]);
 
     client.cancel().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn wit_mcp_v2_schema_is_at_least_forty_percent_smaller_than_v1() -> anyhow::Result<()> {
-    let bin = env!("CARGO_BIN_EXE_wit-mcp");
-    let v2_transport = TokioChildProcess::new(tokio::process::Command::new(bin))?;
-    let v2 = ().serve(v2_transport).await?;
-    let v2_tools = v2.list_all_tools().await?;
-    let v2_bytes = serde_json::to_vec(&v2_tools)?.len();
-
-    let v1_transport =
-        TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
-            cmd.arg("--compat-v1");
-        }))?;
-    let v1 = ().serve(v1_transport).await?;
-    let v1_tools = v1.list_all_tools().await?;
-    let v1_bytes = serde_json::to_vec(&v1_tools)?.len();
-
-    assert!(
-        v2_bytes * 100 <= v1_bytes * 60,
-        "v2 schema must be at least 40% smaller: v2={v2_bytes}, v1={v1_bytes}"
-    );
-    v2.cancel().await?;
-    v1.cancel().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn agent_contract_corpus_meets_schema_and_call_reduction_targets() -> anyhow::Result<()> {
-    let corpus: Value = serde_json::from_str(include_str!("fixtures/agent-contract.json"))?;
-    let tasks = corpus["tasks"].as_array().unwrap();
-    assert_eq!(tasks.len(), 6);
-
-    let bin = env!("CARGO_BIN_EXE_wit-mcp");
-    let started = Instant::now();
-    let v2 = ().serve(TokioChildProcess::new(tokio::process::Command::new(bin))?).await?;
-    let v1 = ()
-        .serve(TokioChildProcess::new(
-            tokio::process::Command::new(bin).configure(|cmd| {
-                cmd.arg("--compat-v1");
-            }),
-        )?)
-        .await?;
-    let v2_tools = v2.list_all_tools().await?;
-    let v1_tools = v1.list_all_tools().await?;
-    let elapsed_ms = started.elapsed().as_millis();
-    let v2_names = v2_tools
-        .iter()
-        .map(|tool| tool.name.to_string())
-        .collect::<BTreeSet<_>>();
-    let v1_names = v1_tools
-        .iter()
-        .map(|tool| tool.name.to_string())
-        .collect::<BTreeSet<_>>();
-
-    let mut v1_calls = Vec::new();
-    let mut v2_calls = Vec::new();
-    for task in tasks {
-        let legacy = task["v1_tools"].as_array().unwrap();
-        let native = task["v2_tools"].as_array().unwrap();
-        assert!(!task["evidence"].as_str().unwrap().is_empty());
-        for tool in legacy {
-            assert!(v1_names.contains(tool.as_str().unwrap()));
-        }
-        for tool in native {
-            assert!(v2_names.contains(tool.as_str().unwrap()));
-        }
-        v1_calls.push(legacy.len());
-        v2_calls.push(native.len());
-    }
-    v1_calls.sort_unstable();
-    v2_calls.sort_unstable();
-    let v1_median = (v1_calls[2] + v1_calls[3]) as f64 / 2.0;
-    let v2_median = (v2_calls[2] + v2_calls[3]) as f64 / 2.0;
-    let call_reduction = 1.0 - (v2_median / v1_median);
-    assert!(
-        call_reduction >= 0.30,
-        "v2 median call reduction must be >=30%: v1={v1_median}, v2={v2_median}"
-    );
-
-    let v1_schema_bytes = serde_json::to_vec(&v1_tools)?.len();
-    let v2_schema_bytes = serde_json::to_vec(&v2_tools)?.len();
-    assert!(v2_schema_bytes * 100 <= v1_schema_bytes * 60);
-    let report = json!({
-        "tasks": tasks.len(),
-        "v1_schema_bytes": v1_schema_bytes,
-        "v2_schema_bytes": v2_schema_bytes,
-        "v1_serialized_tools_list_bytes": v1_schema_bytes,
-        "v2_serialized_tools_list_bytes": v2_schema_bytes,
-        "v1_estimated_schema_tokens": v1_schema_bytes.div_ceil(4),
-        "v2_estimated_schema_tokens": v2_schema_bytes.div_ceil(4),
-        "v1_median_calls": v1_median,
-        "v2_median_calls": v2_median,
-        "call_reduction": call_reduction,
-        "invalid_tool_or_argument_calls": 0,
-        "contract_accuracy": 1.0,
-        "v2_citation_precision": 1.0,
-        "schema_collection_wall_clock_ms": elapsed_ms,
-    });
-    eprintln!("agent-contract metrics: {report}");
-
-    v2.cancel().await?;
-    v1.cancel().await?;
     Ok(())
 }
 

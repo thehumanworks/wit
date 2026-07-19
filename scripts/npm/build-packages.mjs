@@ -101,11 +101,20 @@ async function assertArtifactsExist(artifactsDir, targets) {
       fail(`checksum entry missing for ${target.artifact} in ${checksumsPath}`);
     }
 
-    const archivedFiles = archiveFileBasenames(artifactPath);
-    for (const binaryFile of [target.binaryFile, target.mcpBinaryFile].filter(Boolean)) {
-      if (!archivedFiles.has(path.basename(binaryFile))) {
-        fail(`artifact ${target.artifact} is missing ${binaryFile}`);
-      }
+    const archivedFiles = archiveFileEntries(artifactPath);
+    const expectedFiles = [target.binaryFile, target.mcpBinaryFile]
+      .filter(Boolean)
+      .map(normalizeArchiveEntry)
+      .sort();
+    if (archivedFiles.length !== expectedFiles.length) {
+      fail(
+        `artifact ${target.artifact} must contain exactly the two configured binaries; found ${archivedFiles.join(", ")}`,
+      );
+    }
+    if (JSON.stringify(archivedFiles) !== JSON.stringify(expectedFiles)) {
+      fail(
+        `artifact ${target.artifact} entries must exactly match ${expectedFiles.join(", ")}; found ${archivedFiles.join(", ")}`,
+      );
     }
   }
 }
@@ -123,7 +132,19 @@ function runCapture(command, args) {
   return result.stdout;
 }
 
-function archiveFileBasenames(artifactPath) {
+function normalizeArchiveEntry(entry) {
+  const normalized = entry.replaceAll("\\", "/").replace(/^\.\//, "");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.split("/").some((component) => component === "..")
+  ) {
+    fail(`unsafe archive entry: ${entry}`);
+  }
+  return normalized;
+}
+
+function archiveFileEntries(artifactPath) {
   let listing;
   if (artifactPath.endsWith(".tar.gz")) {
     listing = runCapture("tar", ["-tzf", artifactPath]);
@@ -133,12 +154,12 @@ function archiveFileBasenames(artifactPath) {
     fail(`unsupported artifact format: ${artifactPath}`);
   }
 
-  return new Set(
-    listing
-      .split(/\r?\n/)
-      .map((entry) => path.basename(entry.trim()))
-      .filter(Boolean),
-  );
+  return listing
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && !entry.endsWith("/"))
+    .map(normalizeArchiveEntry)
+    .sort();
 }
 
 function buildLauncher({ binaryName, packageName }, targets, binaryFileKey = "binaryFile") {
@@ -438,6 +459,8 @@ async function writePackage({ artifactsDir, outputDir, version, config, targets 
       ...launcherConfigs.map((launcher) => launcher.relativePath),
       installerRelativePath,
       "README.md",
+      "THIRD-PARTY-LICENSES.md",
+      "wit-sbom.spdx.json",
       "dists/*",
     ],
   };
@@ -466,6 +489,14 @@ async function writePackage({ artifactsDir, outputDir, version, config, targets 
 
   const rootReadmePath = path.join(repoRoot, "README.md");
   await fs.copyFile(rootReadmePath, path.join(packageDir, "README.md"));
+  await fs.copyFile(
+    path.join(repoRoot, "THIRD-PARTY-LICENSES.md"),
+    path.join(packageDir, "THIRD-PARTY-LICENSES.md"),
+  );
+  await fs.copyFile(
+    path.join(artifactsDir, "wit-sbom.spdx.json"),
+    path.join(packageDir, "wit-sbom.spdx.json"),
+  );
 
   for (const target of targets) {
     await fs.copyFile(

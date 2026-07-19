@@ -137,6 +137,8 @@ jobs:
             allow_failure: false
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -162,6 +164,8 @@ jobs:
           wit --help
           wit rg --help
           wit-mcp --version
+          node scripts/smoke_mcp_modes.mjs wit-mcp
+          node scripts/smoke_mcp_modes.mjs wit mcp --transport stdio
           npx "${package}" --help
 
       - name: Install and smoke test package (Windows)
@@ -188,4 +192,6 @@ jobs:
           wit --help
           wit rg --help
           wit-mcp --version
+          node scripts/smoke_mcp_modes.mjs wit-mcp
+          node scripts/smoke_mcp_modes.mjs wit mcp --transport stdio
           npx $package --help

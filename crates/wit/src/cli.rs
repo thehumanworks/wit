@@ -373,13 +373,17 @@ enum Commands {
     },
     #[command(
         name = "mcp",
-        about = "Start the agent-native wit MCP v2 server",
-        after_help = "The MCP surface is snapshot-first, structured, bounded, and resumable.\n\nExamples:\n  wit mcp --transport stdio             # Start MCP v2 over stdio"
+        about = "Start wit MCP (direct by default; Code Mode experimental)",
+        after_help = "Direct mode exposes seven typed snapshot-first tools, is the default, and is recommended for simple calls. Experimental Code Mode exposes one native JavaScript code tool. Both are structured, bounded, and resumable; neither requires an external JavaScript runtime.\n\nExamples:\n  wit mcp --transport stdio --mode direct   # Default seven-tool surface\n  wit mcp --transport stdio --mode code     # Experimental one-tool surface"
     )]
     Mcp {
         /// MCP transport to use
         #[arg(long, value_enum, default_value = "stdio")]
         transport: McpTransport,
+
+        /// MCP tool surface to expose
+        #[arg(long, value_enum, default_value = "direct")]
+        mode: McpMode,
     },
     #[command(name = "__cache-revalidate", hide = true)]
     CacheRevalidate {
@@ -410,6 +414,14 @@ enum McpTransport {
     Stdio,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum McpMode {
+    /// Recommended default: seven snapshot-first repository tools
+    Direct,
+    /// Experimental: one bounded native JavaScript code tool
+    Code,
+}
+
 fn parse_search_limit(value: &str) -> Result<usize, String> {
     let limit = value
         .parse::<usize>()
@@ -436,6 +448,14 @@ fn cache_branch_selection(branch: Option<String>) -> CacheBranchSelection {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__codemode-worker")) {
+        anyhow::ensure!(
+            std::env::args_os().nth(2).is_none(),
+            "__codemode-worker does not accept arguments"
+        );
+        wit_quickjs_spike::worker::run_worker_process().await;
+    }
+
     ensure_rustls_provider();
     let cli = WitCli::parse();
     let ignore_patterns = cli.ignore;
@@ -839,8 +859,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", skill_path.display());
             }
         },
-        Commands::Mcp { transport } => match transport {
-            McpTransport::Stdio => wit::mcp::serve_stdio().await?,
+        Commands::Mcp { transport, mode } => match (transport, mode) {
+            (McpTransport::Stdio, McpMode::Direct) => wit::mcp::serve_stdio().await?,
+            (McpTransport::Stdio, McpMode::Code) => {
+                wit::codemode::serve_stdio_with_worker(std::env::current_exe()?).await?
+            }
         },
     }
 
@@ -1535,18 +1558,48 @@ mod tests {
 
     #[test]
     fn test_mcp_stdio_parses() {
-        let cli = WitCli::try_parse_from(["wit", "mcp", "--transport", "stdio"])
+        let cli = WitCli::try_parse_from(["wit", "mcp", "--transport", "stdio", "--mode", "code"])
             .expect("mcp stdio args should parse");
 
         match cli.command {
-            Commands::Mcp { transport } => assert_eq!(transport, McpTransport::Stdio),
+            Commands::Mcp { transport, mode } => {
+                assert_eq!(transport, McpTransport::Stdio);
+                assert_eq!(mode, McpMode::Code);
+            }
             _ => panic!("expected mcp command"),
         }
 
         let defaulted = WitCli::try_parse_from(["wit", "mcp"]).expect("mcp should default stdio");
         match defaulted.command {
-            Commands::Mcp { transport } => assert_eq!(transport, McpTransport::Stdio),
+            Commands::Mcp { transport, mode } => {
+                assert_eq!(transport, McpTransport::Stdio);
+                assert_eq!(mode, McpMode::Direct);
+            }
             _ => panic!("expected mcp command"),
         }
+
+        let error = match WitCli::try_parse_from(["wit", "mcp", "--mode", "unknown"]) {
+            Ok(_) => panic!("unknown MCP mode must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+        assert!(error.to_string().contains("possible values: direct, code"));
+    }
+
+    #[test]
+    fn mcp_help_agrees_on_default_and_experimental_status() {
+        let command = WitCli::command();
+        let root_help = command.clone().render_long_help().to_string();
+        assert!(root_help.contains("direct by default; Code Mode experimental"));
+
+        let mcp_help = find_subcommand(&command, "mcp")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(mcp_help.contains("[default: direct]"));
+        assert!(mcp_help.contains("recommended for simple calls"));
+        assert!(mcp_help.contains("Experimental Code Mode"));
+        assert!(mcp_help.contains("one native JavaScript code tool"));
+        assert!(mcp_help.contains("--mode <MODE>"));
     }
 }

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "declared_for_issue": "thehumanworks/wit#20",
+  "declaration_status": "pre_results",
+  "promotion": {
+    "minimum_repetitions_per_task_mode": 10,
+    "required_task_coverage": 1.0,
+    "minimum_correctness": 1.0,
+    "minimum_provenance_precision": 1.0,
+    "minimum_provenance_recall": 1.0,
+    "maximum_invalid_call_rate": 0.02,
+    "composition_heavy": {
+      "task_classes": [
+        "symbol_search_precise_read",
+        "multipage_search_filter",
+        "multifile_context",
+        "compare_refs"
+      ],
+      "minimum_outer_call_reduction": 0.30,
+      "minimum_model_visible_byte_reduction": 0.25,
+      "reduction_rule": "either",
+      "must_pass_each_task": true,
+      "must_pass_each_class": true
+    },
+    "maximum_code_mode_wall_time_p95_ms": 12000,
+    "maximum_code_mode_worker_startup_p95_ms": 750,
+    "simple_task_must_be_reported": true,
+    "failure_and_cancellation_must_match_expected_outcome": true
+  },
+  "failure_policy": {
+    "recommendation_when_any_gate_fails": "direct",
+    "code_mode_status_when_any_gate_fails": "experimental",
+    "missing_or_non_model_runs_fail_promotion": true
+  }
+}

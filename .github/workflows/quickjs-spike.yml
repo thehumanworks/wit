@@ -1,0 +1,90 @@
+name: QuickJS feasibility gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/quickjs-spike.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/wit-quickjs-spike/**"
+      - "docs/adr/0003-child-process-quickjs-feasibility.md"
+      - "scripts/check_quickjs_spike.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    name: release build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            use_cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            use_cross: false
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            use_cross: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+      - name: Build worker with cross
+        if: matrix.use_cross
+        run: cross build --locked --release -p wit-quickjs-spike --target "${{ matrix.target }}"
+      - name: Build worker with cargo
+        if: matrix.use_cross == false
+        run: cargo build --locked --release -p wit-quickjs-spike --target "${{ matrix.target }}"
+      - name: Record worker size (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ls -ln "target/${{ matrix.target }}/release/wit-quickjs-spike-worker"
+      - name: Record worker size (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-Item "target/${{ matrix.target }}/release/wit-quickjs-spike-worker.exe" | Select-Object Name,Length
+
+  native-containment:
+    name: native containment ${{ matrix.host }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: linux-x64
+            runner: ubuntu-latest
+          - host: macos-arm64
+            runner: macos-14
+          - host: windows-x64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run child-process containment tests
+        run: cargo test --locked --release -p wit-quickjs-spike --test containment
+
+  contract:
+    name: validate feasibility contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check_quickjs_spike.sh

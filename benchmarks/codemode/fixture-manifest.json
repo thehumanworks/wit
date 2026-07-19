@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "algorithm": "sha256",
+  "files": {
+    "base/src/cache.rs": "cfe4b9f3cbf6ec7c15efde430a723f597a5156ee36ecd86872aa32fdf3eb7edc",
+    "base/src/lib.rs": "0ce0273044b18b22720dd302f661464d008bc79d7c7894100c226c126dbdd0c1",
+    "base/src/search.rs": "8a0924d170a456a3698f6008c92d1543987d93cdd7bd420f1499cc8b96b34fb8",
+    "target/src/cache.rs": "0c6211d14363974bb464187ac58f82b044f42f13caa4dd79a2aae27df8b494f3",
+    "target/src/lib.rs": "0ce0273044b18b22720dd302f661464d008bc79d7c7894100c226c126dbdd0c1",
+    "target/src/search.rs": "8a0924d170a456a3698f6008c92d1543987d93cdd7bd420f1499cc8b96b34fb8"
+  }
+}

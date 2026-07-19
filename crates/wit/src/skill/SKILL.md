@@ -25,7 +25,9 @@ When the user asks for a non-default branch, run `wit branches -r owner/repo` fi
 
 ## MCP Server
 
-When an MCP client is available, use `wit mcp --transport stdio` as the stdio server instead of shelling out. The standalone `wit-mcp` binary exposes the same agent-native MCP v2 surface.
+When an MCP client is available, use `wit mcp --transport stdio` as the stdio server instead of shelling out. The standalone `wit-mcp` binary exposes the same surface. Both default to direct mode; use `wit mcp --transport stdio --mode code` or `wit-mcp --mode code` only to opt into experimental Code Mode.
+
+Choose direct mode for a simple open, list, search, read, or other one-operation task. It is the default and current recommendation. Choose Code Mode only when bounded JavaScript composition can gather, filter, or compare several pieces of evidence before returning one focused result. Code Mode exposes one normal MCP `code` tool and is not required by MCP.
 
 Use the snapshot-first workflow:
 
@@ -37,6 +39,35 @@ Use the snapshot-first workflow:
 6. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Cursors are bound to the tool, snapshot, and normalized query.
 
 Evidence items carry repository, commit SHA, path, blob identity, and line provenance. Collection responses are structured and use a 64 KiB whole-response budget. Fetch `wit://skill/SKILL.md`, `wit://guide/workflow`, or `wit://guide/tools` for reusable guidance.
+
+### Experimental Code Mode workflow
+
+The `code` input is an async JavaScript function body. Use `await` and the generated `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.read`, and `codemode.wit.context` methods; no TypeScript syntax or module imports are available. Open once, reuse the parent-server-lifetime `snapshot_id`, and follow explicit `next_cursor` values with otherwise unchanged arguments. Return one focused JSON-serializable value, retaining `repo`, `commit_sha`, `snapshot_id`, `path`, `blob_sha`, and exact line ranges for evidence.
+
+```js
+const opened = await codemode.wit.open({ repo: "owner/repo" });
+const found = await codemode.wit.searchCode({
+  snapshot_id: opened.snapshot_id,
+  queries: ["TargetSymbol"],
+  max_results: 4,
+  max_bytes: 16_384
+});
+const hit = found.items[0];
+if (!hit) return { snapshot_id: opened.snapshot_id, items: [] };
+return await codemode.wit.read({
+  snapshot_id: opened.snapshot_id,
+  path: hit.path,
+  start_line: hit.start_line,
+  end_line: hit.end_line,
+  max_bytes: 16_384
+});
+```
+
+The fixed defaults bound source, wall time, host calls/concurrency, pages, snapshots, host-result bytes, cumulative bytes, and final JSON. The sandbox has no filesystem, network, environment, process, subprocess, shell, or module-loader capability; credentials, snapshots, cache access, and privileged operations remain in the Rust parent. Host errors are catchable with stable `code`, `operation`, and redacted `message` fields. Cancellation, timeout, resource exhaustion, invalid final JSON, worker exit, and protocol errors fail explicitly. A failed worker is killed and reaped, and the next invocation starts fresh.
+
+Generated source is not persisted or logged. Worker diagnostic content is drained but neither returned nor logged; only capped byte counts and a truncation flag are retained. Never put secrets in source or results. Snapshots do not survive a parent server restart, so call `open` again after reconnecting.
+
+The checked-in external model evaluation is unrun, so Code Mode remains experimental and direct mode remains the fail-closed recommendation. Do not claim token, outer-call, or latency improvements unless a complete checked-in benchmark report passes every predeclared correctness, provenance, efficiency, latency, startup, and invalid-call gate.
 
 ## Cache Behavior
 

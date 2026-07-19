@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "corpus_id": "wit-codemode-v1",
+  "executable_harness": {
+    "path": "harness.py",
+    "sha256": "437755263398b76c9c9f0eaad092080c28e53b7fc597db43042c9670d173cd2f",
+    "config_path": "harness-config.json",
+    "config_sha256": "2d974e6e0ad47f7906859549e25613dcee8e0444daefc667bd644759047171d8",
+    "requirements_path": "requirements.lock",
+    "requirements_sha256": "e0496358a0a7aa119ce1bd8a3615e284a92f87dad0424abf201144bbd9171288"
+  },
+  "grader": {
+    "path": "grader.py",
+    "version": "1.0.0",
+    "sha256": "efa414bb842d42f8e97225be6984c47236033b894e729fe96c39d2f9816acec5"
+  },
+  "repository": {
+    "id": "local/wit-codemode-benchmark",
+    "fixture_root": "fixtures",
+    "refs": {
+      "base": "base",
+      "target": "target"
+    },
+    "expected_commit_shas": {
+      "base": "4b4ad47d82db70dcdc27db70a073d28681509de0",
+      "target": "b1c932f6317aa3b1e127010f49cbcd9860f76964"
+    },
+    "fixture_manifest": "fixture-manifest.json"
+  },
+  "policy": {
+    "model": {
+      "provider": "openai",
+      "id": "gpt-4.1-2025-04-14",
+      "version": "2025-04-14",
+      "temperature": 0
+    },
+    "prompt": {
+      "system": "Investigate only the supplied repository fixture. Return JSON with facts and evidence. Every fact must cite an exact ref, path, and inclusive line range. Do not use prior knowledge.",
+      "mode_specific_text_allowed": "Only the server-provided tool descriptions and schemas may differ between modes.",
+      "retries": 0,
+      "result_budget_bytes": 16384
+    },
+    "cache": {
+      "initial_state": "cold",
+      "reset_between_modes": true,
+      "reset_between_repetitions": true,
+      "repository_network": "disabled_by_local_git_rewrite_and_dead_proxies",
+      "model_api_network": "api.openai.com:443_only",
+      "repository_source": "checked_in_fixture",
+      "cache_root_lifecycle": "new_temporary_directory_per_run"
+    },
+    "measurement": {
+      "repetitions_per_task_mode": 10,
+      "latency_percentile_method": "nearest_rank",
+      "tool_description_tokens": "runner_adapter_native_tokenizer",
+      "resource_sampling_interval_ms": 10,
+      "peak_resources": ["rss_bytes", "cpu_percent", "process_count"]
+    },
+    "cancellation": {
+      "task_id": "cancelled-workflow",
+      "notification": "notifications/cancelled",
+      "delay_ms": 100,
+      "reason": "benchmark cancellation"
+    }
+  },
+  "tasks": [
+    {
+      "id": "simple-open-read",
+      "class": "simple_open_read",
+      "composition_heavy": false,
+      "prompt": "At ref base, report the repository name and cite its implementation.",
+      "refs": ["base"],
+      "expected_status": "completed",
+      "expected_facts": [
+        {"id": "repository-name", "text": "repository_name returns benchmark-fixture"}
+      ],
+      "expected_evidence": [
+        {"fact_id": "repository-name", "ref": "base", "path": "src/lib.rs", "start_line": 4, "end_line": 6}
+      ]
+    },
+    {
+      "id": "symbol-search-read",
+      "class": "symbol_search_precise_read",
+      "composition_heavy": true,
+      "prompt": "At ref base, locate rank_matches, explain its complete ordering behavior, and cite the complete function.",
+      "refs": ["base"],
+      "expected_status": "completed",
+      "expected_facts": [
+        {"id": "rank-order", "text": "rank_matches sorts score descending and breaks ties by path ascending"}
+      ],
+      "expected_evidence": [
+        {"fact_id": "rank-order", "ref": "base", "path": "src/search.rs", "start_line": 6, "end_line": 14}
+      ]
+    },
+    {
+      "id": "multipage-filter",
+      "class": "multipage_search_filter",
+      "composition_heavy": true,
+      "prompt": "At ref base, search for path with max_items 1, follow every cursor, filter to Rust-source filtering behavior, and return only the supporting implementation.",
+      "refs": ["base"],
+      "expected_status": "completed",
+      "expected_facts": [
+        {"id": "rust-filter", "text": "keep_rust_sources retains candidates whose paths end in .rs"}
+      ],
+      "expected_evidence": [
+        {"fact_id": "rust-filter", "ref": "base", "path": "src/search.rs", "start_line": 16, "end_line": 21}
+      ]
+    },
+    {
+      "id": "multifile-context",
+      "class": "multifile_context",
+      "composition_heavy": true,
+      "prompt": "At ref base, identify the public cache module and explain its freshness behavior including the TTL and boundary comparison. Gather exact evidence from every file needed, within the result budget.",
+      "refs": ["base"],
+      "expected_status": "completed",
+      "expected_facts": [
+        {"id": "cache-module", "text": "the crate publicly exports the cache module"},
+        {"id": "base-ttl", "text": "the base TTL is 300 seconds"},
+        {"id": "base-boundary", "text": "base freshness uses a strict less-than comparison"}
+      ],
+      "expected_evidence": [
+        {"fact_id": "cache-module", "ref": "base", "path": "src/lib.rs", "start_line": 1, "end_line": 1},
+        {"fact_id": "base-ttl", "ref": "base", "path": "src/cache.rs", "start_line": 1, "end_line": 1},
+        {"fact_id": "base-boundary", "ref": "base", "path": "src/cache.rs", "start_line": 3, "end_line": 5}
+      ]
+    },
+    {
+      "id": "compare-refs",
+      "class": "compare_refs",
+      "composition_heavy": true,
+      "prompt": "Compare cache freshness between refs base and target. Report every semantic change with exact evidence from both snapshots.",
+      "refs": ["base", "target"],
+      "expected_status": "completed",
+      "expected_facts": [
+        {"id": "ttl-change", "text": "the TTL changes from 300 to 120 seconds"},
+        {"id": "boundary-change", "text": "the boundary changes from strict less-than to inclusive less-than-or-equal"}
+      ],
+      "expected_evidence": [
+        {"fact_id": "ttl-change", "ref": "base", "path": "src/cache.rs", "start_line": 1, "end_line": 1},
+        {"fact_id": "ttl-change", "ref": "target", "path": "src/cache.rs", "start_line": 1, "end_line": 1},
+        {"fact_id": "boundary-change", "ref": "base", "path": "src/cache.rs", "start_line": 3, "end_line": 5},
+        {"fact_id": "boundary-change", "ref": "target", "path": "src/cache.rs", "start_line": 3, "end_line": 5}
+      ]
+    },
+    {
+      "id": "failed-workflow",
+      "class": "failure_and_cancellation",
+      "composition_heavy": false,
+      "prompt": "Open missing ref does-not-exist and report the structured failure without retrying another ref.",
+      "refs": ["does-not-exist"],
+      "expected_status": "failed",
+      "expected_error_code": "ref_not_found",
+      "expected_facts": [],
+      "expected_evidence": []
+    },
+    {
+      "id": "cancelled-workflow",
+      "class": "failure_and_cancellation",
+      "composition_heavy": false,
+      "prompt": "Start the supplied deliberately-blocked search and cancel it when the harness sends cancellation; report no repository claim.",
+      "refs": ["base"],
+      "expected_status": "cancelled",
+      "expected_error_code": "cancelled",
+      "expected_facts": [],
+      "expected_evidence": []
+    }
+  ]
+}

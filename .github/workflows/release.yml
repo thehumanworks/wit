@@ -38,6 +38,7 @@ jobs:
             bin: wit
             mcp_bin: wit-mcp
             use_cross: true
+            native_smoke: true
             platform: linux
             arch: x86_64
           - target: aarch64-unknown-linux-musl
@@ -46,6 +47,7 @@ jobs:
             bin: wit
             mcp_bin: wit-mcp
             use_cross: true
+            native_smoke: false
             platform: linux
             arch: aarch64
           - target: x86_64-apple-darwin
@@ -54,6 +56,7 @@ jobs:
             bin: wit
             mcp_bin: wit-mcp
             use_cross: false
+            native_smoke: false
             platform: macos
             arch: x86_64
           - target: aarch64-apple-darwin
@@ -62,6 +65,7 @@ jobs:
             bin: wit
             mcp_bin: wit-mcp
             use_cross: false
+            native_smoke: true
             platform: macos
             arch: aarch64
           - target: x86_64-pc-windows-msvc
@@ -70,6 +74,7 @@ jobs:
             bin: wit.exe
             mcp_bin: wit-mcp.exe
             use_cross: false
+            native_smoke: true
             platform: windows
             arch: x86_64
           - target: aarch64-pc-windows-msvc
@@ -78,6 +83,7 @@ jobs:
             bin: wit.exe
             mcp_bin: wit-mcp.exe
             use_cross: false
+            native_smoke: false
             platform: windows
             arch: aarch64
 
@@ -98,19 +104,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cross build --locked --release --target "${{ matrix.target }}"
+          cross build --locked --release --target "${{ matrix.target }}" -p wit --bins
 
       - name: Build binary (cargo on Unix)
         if: matrix.use_cross == false && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release --target "${{ matrix.target }}"
+          cargo build --locked --release --target "${{ matrix.target }}" -p wit --bins
 
       - name: Build binary (cargo on Windows)
         if: matrix.use_cross == false && runner.os == 'Windows'
         shell: pwsh
-        run: cargo build --locked --release --target "${{ matrix.target }}"
+        run: cargo build --locked --release --target "${{ matrix.target }}" -p wit --bins
 
       - name: Package binary (tar.gz)
         if: matrix.archive == 'tar.gz'
@@ -131,6 +137,21 @@ jobs:
           )
           Compress-Archive -Path $files -DestinationPath $artifact -Force
 
+      - name: Smoke direct and Code Mode tools (Unix)
+        if: matrix.native_smoke && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.bin }}" mcp --transport stdio
+
+      - name: Smoke direct and Code Mode tools (Windows)
+        if: matrix.native_smoke && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.bin }}" mcp --transport stdio
+
       - name: Upload packaged binary
         uses: actions/upload-artifact@v4
         with:
@@ -143,9 +164,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
+      actions: read
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -159,6 +183,15 @@ jobs:
           cd dist
           sha256sum wit-* > wit-checksums.txt
 
+      - name: Build SPDX dependency SBOM
+        uses: anchore/sbom-action@v0.20.6
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/wit-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Attach artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -166,6 +199,8 @@ jobs:
             dist/wit-*.tar.gz
             dist/wit-*.zip
             dist/wit-checksums.txt
+            dist/wit-sbom.spdx.json
+            THIRD-PARTY-LICENSES.md
           fail_on_unmatched_files: false
           generate_release_notes: true
 

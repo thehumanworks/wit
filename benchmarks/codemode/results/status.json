@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "corpus_id": "wit-codemode-v1",
+  "model_evaluation": "not_run",
+  "deterministic_validation": "run_via_scripts/check_codemode_benchmark.sh",
+  "promotion_eligible": false,
+  "code_mode_status": "experimental",
+  "recommendation": "direct",
+  "reason": "Issue #19 and public Code Mode startup are not complete, and no external model evaluation records have been supplied. This file is status metadata, not a benchmark report."
+}

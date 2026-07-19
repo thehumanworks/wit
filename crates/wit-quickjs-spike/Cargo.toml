@@ -1,0 +1,21 @@
+[package]
+name = "wit-quickjs-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "wit-quickjs-spike-worker"
+path = "src/bin/worker.rs"
+
+[dependencies]
+anyhow.workspace = true
+rquickjs = { version = "0.12.1", features = ["futures"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3.13.0"
+tokio.workspace = true
+
+# rquickjs 0.12.1 does not ship pre-generated bindings for Windows ARM64.
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+rquickjs = { version = "0.12.1", features = ["futures", "bindgen"] }

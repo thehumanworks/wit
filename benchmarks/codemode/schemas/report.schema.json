@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thehumanworks.github.io/wit/benchmarks/codemode/report.schema.json",
+  "title": "wit Code Mode comparative benchmark report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "corpus_id", "corpus_sha256", "benchmark_kind", "thresholds_sha256", "implementations", "run_count", "policy", "aggregates", "comparison", "promotion"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "corpus_id": {"type": "string"},
+    "corpus_sha256": {"type": "string"},
+    "benchmark_kind": {"type": "string"},
+    "thresholds_sha256": {"type": "string"},
+    "implementations": {"type": "array", "items": {"type": "object"}},
+    "run_count": {"type": "integer"},
+    "policy": {"type": "object"},
+    "aggregates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modes", "tasks", "composition_heavy"],
+      "properties": {
+        "modes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/aggregate"}},
+        "tasks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": {"$ref": "#/$defs/aggregate"}
+          }
+        },
+        "composition_heavy": {"type": "object", "additionalProperties": {"$ref": "#/$defs/aggregate"}}
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "required": ["composition_reductions"],
+      "properties": {
+        "composition_reductions": {
+          "type": ["object", "null"],
+          "properties": {"outer_calls": {"type": "number"}, "model_visible_bytes": {"type": "number"}}
+        }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "required": ["eligible", "passed", "code_mode_status", "recommendation", "gates"],
+      "properties": {
+        "eligible": {"type": "boolean"}, "passed": {"type": "boolean"},
+        "code_mode_status": {"type": "string"}, "recommendation": {"type": "string"},
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "passed"],
+            "properties": {"name": {"type": "string"}, "passed": {"type": "boolean"}}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runs", "tool_description_bytes_p50", "tool_description_tokens_p50",
+        "model_visible_input_bytes_total", "model_visible_result_bytes_total",
+        "model_cached_input_tokens_total",
+        "model_visible_bytes_total", "outer_mcp_calls_total", "inner_host_calls_total",
+        "invalid_calls_total", "invalid_call_rate", "wall_time_ms_p50", "wall_time_ms_p95",
+        "worker_startup_ms_p50", "worker_startup_ms_p95", "peak_rss_bytes",
+        "peak_cpu_percent", "peak_process_count", "correctness",
+        "provenance_precision", "provenance_recall", "expected_outcome_rate"
+      ],
+      "properties": {
+        "runs": {"type": "integer"},
+        "tool_description_bytes_p50": {"type": "number"},
+        "tool_description_tokens_p50": {"type": "number"},
+        "model_visible_input_bytes_total": {"type": "integer"},
+        "model_visible_result_bytes_total": {"type": "integer"},
+        "model_cached_input_tokens_total": {"type": "integer"},
+        "model_visible_bytes_total": {"type": "integer"},
+        "outer_mcp_calls_total": {"type": "integer"},
+        "inner_host_calls_total": {"type": "integer"},
+        "invalid_calls_total": {"type": "integer"},
+        "invalid_call_rate": {"type": "number"},
+        "wall_time_ms_p50": {"type": "number"},
+        "wall_time_ms_p95": {"type": "number"},
+        "worker_startup_ms_p50": {"type": ["number", "null"]},
+        "worker_startup_ms_p95": {"type": ["number", "null"]},
+        "peak_rss_bytes": {"type": "integer"},
+        "peak_cpu_percent": {"type": "number"},
+        "peak_process_count": {"type": "integer"},
+        "correctness": {"type": "number"},
+        "provenance_precision": {"type": "number"},
+        "provenance_recall": {"type": "number"},
+        "expected_outcome_rate": {"type": "number"}
+      }
+    }
+  }
+}

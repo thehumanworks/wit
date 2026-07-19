@@ -1,3 +1,4 @@
+use crate::operation_context::{OperationContext, command_output};
 use anyhow::Context;
 use fs2::FileExt;
 use gix::{Repository, bstr::ByteSlice};
@@ -26,6 +27,8 @@ const CACHE_METADATA_TEMP_FILE: &str = "metadata.json.tmp";
 const DEFAULT_BRANCH_METADATA_FILE: &str = "default_branch.json";
 const CACHE_LOCK_FILE: &str = ".cache.lock";
 const CACHE_REVALIDATION_LOCK_FILE: &str = ".revalidation.lock";
+#[cfg(not(test))]
+const OPERATION_REVALIDATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 static CACHE_PROCESS_LOCKS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 struct CacheLock {
@@ -720,6 +723,28 @@ fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
     parse_default_branch_ls_remote(&stdout)
 }
 
+fn resolve_default_branch_with_context(
+    context: &OperationContext,
+    remote_url: &str,
+) -> anyhow::Result<ResolvedBranch> {
+    let mut command = Command::new("git");
+    command
+        .arg("ls-remote")
+        .arg("--symref")
+        .arg(remote_url)
+        .arg("HEAD");
+    let output = command_output(context, &mut command, "resolve default branch")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git ls-remote failed (status: {}) stderr: '{}' stdout: '{}'",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    parse_default_branch_ls_remote(&String::from_utf8_lossy(&output.stdout))
+}
+
 fn resolve_branch_sha(remote_url: &str, branch: &str) -> anyhow::Result<String> {
     let branch_ref = format!("refs/heads/{branch}");
     let output = Command::new("git")
@@ -743,6 +768,27 @@ fn resolve_branch_sha(remote_url: &str, branch: &str) -> anyhow::Result<String> 
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_branch_sha_ls_remote(&stdout, branch)
+}
+
+fn resolve_branch_sha_with_context(
+    context: &OperationContext,
+    remote_url: &str,
+    branch: &str,
+) -> anyhow::Result<String> {
+    let branch_ref = format!("refs/heads/{branch}");
+    let mut command = Command::new("git");
+    command.arg("ls-remote").arg(remote_url).arg(&branch_ref);
+    let output = command_output(context, &mut command, "resolve cache branch")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git ls-remote failed for branch '{}' (status: {}) stderr: '{}' stdout: '{}'",
+            branch,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    parse_branch_sha_ls_remote(&String::from_utf8_lossy(&output.stdout), branch)
 }
 
 fn parse_branch_sha_ls_remote(output: &str, branch: &str) -> anyhow::Result<String> {
@@ -1220,6 +1266,239 @@ pub async fn cache_github_repo(
     cache_github_repo_from_remote(owner_repo, &remote_url, &cache_dir, branch, mode)
 }
 
+/// Operation-service cache acquisition. Unlike the human CLI path, every network process and
+/// lock wait observes the parent request and cache publication is staged before atomic rename.
+pub async fn cache_github_repo_with_context(
+    context: &OperationContext,
+    owner_repo: &str,
+    branch: CacheBranchSelection,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<Repository> {
+    context.check().map_err(anyhow::Error::msg)?;
+    split_owner_repo(owner_repo)?;
+    let remote_url = github_remote_url(owner_repo);
+    let cache_dir = wit_cache_dir();
+    remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
+    let resolved = cache_target_for_cache_with_context(
+        context,
+        owner_repo,
+        &remote_url,
+        &cache_dir,
+        &branch,
+        mode,
+    )?;
+    let _cache_lock =
+        acquire_cache_lock_with_context(context, &resolved.target.lock_path(&cache_dir))?;
+    cache_github_repo_target_with_context(context, &resolved, &cache_dir, mode)
+}
+
+fn cache_target_for_cache_with_context(
+    context: &OperationContext,
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    branch: &CacheBranchSelection,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<ResolvedCacheTarget> {
+    if !mode.is_force_invalidate() {
+        let cached = match branch {
+            CacheBranchSelection::Default => {
+                cached_default_cache_target(owner_repo, remote_url, cache_dir)?
+            }
+            CacheBranchSelection::Named(branch) => {
+                let target = CacheTarget::new(owner_repo, branch)?;
+                let metadata_path = target.metadata_path(cache_dir);
+                cached_named_cache_target(target, remote_url, &metadata_path)?
+            }
+        };
+        if let Some(cached) = cached {
+            return Ok(cached);
+        }
+    }
+
+    let resolved_branch = match branch {
+        CacheBranchSelection::Default => resolve_default_branch_with_context(context, remote_url)?,
+        CacheBranchSelection::Named(branch) => ResolvedBranch {
+            name: branch.clone(),
+            current_sha: resolve_branch_sha_with_context(context, remote_url, branch)?,
+        },
+    };
+    let target = CacheTarget::new(owner_repo, &resolved_branch.name)?;
+    if matches!(branch, CacheBranchSelection::Default) {
+        let resolved = ResolvedCacheTarget {
+            target: target.clone(),
+            remote_url: remote_url.to_string(),
+            branch: resolved_branch.clone(),
+        };
+        context.check().map_err(anyhow::Error::msg)?;
+        write_default_branch_metadata(cache_dir, &resolved)?;
+    }
+    Ok(ResolvedCacheTarget {
+        target,
+        remote_url: remote_url.to_string(),
+        branch: resolved_branch,
+    })
+}
+
+fn cache_github_repo_target_with_context(
+    context: &OperationContext,
+    resolved: &ResolvedCacheTarget,
+    cache_dir: &Path,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<Repository> {
+    context.check().map_err(anyhow::Error::msg)?;
+    let cache_path = resolved.target.repo_path(cache_dir);
+    let metadata_path = resolved.target.metadata_path(cache_dir);
+    if cache_path.exists()
+        && !mode.is_force_invalidate()
+        && let Ok(repo) = gix::open(&cache_path)
+        && cache_has_head_commit(&repo)
+        && cache_metadata_is_usable(&metadata_path, resolved)
+    {
+        if mode == CacheAcquisitionMode::ServeStaleAndRevalidate {
+            spawn_operation_cache_revalidation(context, resolved, cache_dir);
+        }
+        return Ok(repo);
+    }
+
+    // Invalidate the publication marker before replacing repository bytes. Readers also take the
+    // mutation lock, so they can observe either the old complete cache or the new repo+metadata,
+    // never a repository paired with stale provenance after cancellation.
+    remove_cache_metadata(&metadata_path)?;
+    let repository = refresh_repo_with_context(
+        context,
+        &resolved.remote_url,
+        &resolved.branch.name,
+        &cache_path,
+    )?;
+    context.check().map_err(anyhow::Error::msg)?;
+    let now = current_unix_timestamp()?;
+    let metadata = CacheMetadata::new(resolved, now, now);
+    write_cache_metadata(&metadata_path, &metadata)?;
+    context.check().map_err(anyhow::Error::msg)?;
+    Ok(repository)
+}
+
+#[cfg(not(test))]
+fn spawn_operation_cache_revalidation(
+    context: &OperationContext,
+    resolved: &ResolvedCacheTarget,
+    cache_dir: &Path,
+) {
+    let context = context.bounded(OPERATION_REVALIDATION_TIMEOUT);
+    let resolved = resolved.clone();
+    let cache_dir = cache_dir.to_path_buf();
+    thread::spawn(move || {
+        let _ = revalidate_cache_target_with_context(&context, &resolved, &cache_dir);
+    });
+}
+
+#[cfg(test)]
+fn spawn_operation_cache_revalidation(
+    _context: &OperationContext,
+    _resolved: &ResolvedCacheTarget,
+    _cache_dir: &Path,
+) {
+}
+
+#[cfg(not(test))]
+fn revalidate_cache_target_with_context(
+    context: &OperationContext,
+    resolved: &ResolvedCacheTarget,
+    cache_dir: &Path,
+) -> anyhow::Result<()> {
+    context.check().map_err(anyhow::Error::msg)?;
+    let Some(_revalidation_lock) =
+        try_acquire_cache_lock(&resolved.target.revalidation_lock_path(cache_dir))?
+    else {
+        return Ok(());
+    };
+    let remote_sha =
+        resolve_branch_sha_with_context(context, &resolved.remote_url, &resolved.branch.name)?;
+    let _cache_lock =
+        acquire_cache_lock_with_context(context, &resolved.target.lock_path(cache_dir))?;
+    let metadata_path = resolved.target.metadata_path(cache_dir);
+    let metadata = read_cache_metadata(&metadata_path)?;
+    if metadata.current_sha != resolved.branch.current_sha {
+        return Ok(());
+    }
+    let now = current_unix_timestamp()?;
+    if remote_sha == metadata.current_sha {
+        let mut checked = metadata;
+        checked.last_checked_at = now;
+        checked.last_error = None;
+        context.check().map_err(anyhow::Error::msg)?;
+        return write_cache_metadata(&metadata_path, &checked);
+    }
+    let refreshed = ResolvedCacheTarget {
+        target: resolved.target.clone(),
+        remote_url: resolved.remote_url.clone(),
+        branch: ResolvedBranch {
+            name: metadata.branch,
+            current_sha: remote_sha,
+        },
+    };
+    refresh_repo_with_context(
+        context,
+        &refreshed.remote_url,
+        &refreshed.branch.name,
+        &refreshed.target.repo_path(cache_dir),
+    )?;
+    context.check().map_err(anyhow::Error::msg)?;
+    write_cache_metadata(&metadata_path, &CacheMetadata::new(&refreshed, now, now))
+}
+
+fn refresh_repo_with_context(
+    context: &OperationContext,
+    repo_url: &str,
+    branch: &str,
+    cache_path: &Path,
+) -> anyhow::Result<Repository> {
+    let parent = cache_path
+        .parent()
+        .with_context(|| format!("cache path '{}' has no parent", cache_path.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let staging_path = parent.join(format!("repo.git.{}.tmp", std::process::id()));
+    remove_cache_dir(&staging_path)?;
+    let result = (|| {
+        let mut command = Command::new("git");
+        command
+            .arg("clone")
+            .arg("--bare")
+            .arg("--depth")
+            .arg("1")
+            .arg("--branch")
+            .arg(branch)
+            .arg("--single-branch")
+            .arg(repo_url)
+            .arg(&staging_path);
+        let output = command_output(context, &mut command, "clone repository cache")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git clone failed (status: {}) stderr: '{}' stdout: '{}'",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            );
+        }
+        context.check().map_err(anyhow::Error::msg)?;
+        remove_cache_dir(cache_path)?;
+        std::fs::rename(&staging_path, cache_path).with_context(|| {
+            format!(
+                "failed to promote refreshed cache '{}' to '{}'",
+                staging_path.display(),
+                cache_path.display()
+            )
+        })?;
+        gix::open(cache_path)
+            .with_context(|| format!("failed to open refreshed cache '{}'", cache_path.display()))
+    })();
+    if result.is_err() {
+        let _ = remove_cache_dir(&staging_path);
+    }
+    result
+}
+
 fn cache_github_repo_from_remote(
     owner_repo: &str,
     remote_url: &str,
@@ -1412,6 +1691,56 @@ fn acquire_cache_lock(lock_path: &Path) -> anyhow::Result<CacheLock> {
         path: lock_path.to_path_buf(),
         _file_lock: lock_file,
     })
+}
+
+fn acquire_cache_lock_with_context(
+    context: &OperationContext,
+    lock_path: &Path,
+) -> anyhow::Result<CacheLock> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create cache lock parent '{}'", parent.display())
+        })?;
+    }
+    loop {
+        context.check().map_err(anyhow::Error::msg)?;
+        if !try_acquire_process_cache_lock(lock_path) {
+            thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+        let lock_file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                release_process_cache_lock(lock_path);
+                return Err(error).with_context(|| {
+                    format!("failed to open cache lock '{}'", lock_path.display())
+                });
+            }
+        };
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                return Ok(CacheLock {
+                    path: lock_path.to_path_buf(),
+                    _file_lock: lock_file,
+                });
+            }
+            Err(error) if is_lock_contended(&error) => {
+                release_process_cache_lock(lock_path);
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                release_process_cache_lock(lock_path);
+                return Err(error)
+                    .with_context(|| format!("failed to lock cache '{}'", lock_path.display()));
+            }
+        }
+    }
 }
 
 fn try_acquire_cache_lock(lock_path: &Path) -> anyhow::Result<Option<CacheLock>> {
@@ -3674,6 +4003,55 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("worker thread did not acquire lock after release");
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn operation_cache_lock_wait_stops_at_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = CacheTarget::new("owner/repo", "main").unwrap();
+        let lock_path = target.lock_path(temp.path());
+        let _held = acquire_cache_lock(&lock_path).unwrap();
+        let context = OperationContext::with_deadline(
+            std::time::Instant::now() + std::time::Duration::from_millis(50),
+        );
+        let started = std::time::Instant::now();
+        let error = match acquire_cache_lock_with_context(&context, &lock_path) {
+            Ok(_) => panic!("contended operation lock should not be acquired"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "operation deadline exceeded");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cancelled_cache_clone_removes_staging_and_preserves_published_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_path = temp.path().join("repo.git");
+        create_bare_repo_with_commit(&temp, &cache_path);
+        let original_head = git_stdout(&["rev-parse", "HEAD"], Some(&cache_path));
+        let context = OperationContext::with_deadline(
+            std::time::Instant::now() - std::time::Duration::from_millis(1),
+        );
+
+        let error = refresh_repo_with_context(
+            &context,
+            temp.path().join("missing.git").to_str().unwrap(),
+            "main",
+            &cache_path,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "operation deadline exceeded");
+        assert_eq!(
+            git_stdout(&["rev-parse", "HEAD"], Some(&cache_path)),
+            original_head
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!("repo.git.{}.tmp", std::process::id()))
+                .exists()
+        );
     }
 
     #[test]

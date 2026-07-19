@@ -168,19 +168,7 @@ trap cleanup EXIT INT TERM
 archive_path="${tmp_dir}/${asset}"
 
 log "Downloading ${asset}..."
-if ! download "$asset_url" "$archive_path"; then
-    if [ "$platform" = "windows" ] && [ "$arch" = "aarch64" ]; then
-        warn "No Windows arm64 artifact found. Falling back to x86_64."
-        arch="x86_64"
-        asset="${PROGRAM}-${platform}-${arch}.zip"
-        archive_ext="zip"
-        archive_path="${tmp_dir}/${asset}"
-        asset_url="${download_base}/${asset}"
-        download "$asset_url" "$archive_path" || fail "unable to download fallback asset: ${asset_url}"
-    else
-        fail "unable to download release artifact: ${asset_url}"
-    fi
-fi
+download "$asset_url" "$archive_path" || fail "unable to download release artifact: ${asset_url}"
 
 if [ "$VERIFY_CHECKSUM" -eq 1 ]; then
     checksum_path="${tmp_dir}/${checksums_file}"

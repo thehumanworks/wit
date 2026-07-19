@@ -90,23 +90,117 @@ wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude pat
 
 Every evidence item includes the repository, immutable commit, path, blob identity, and applicable line range. Collection responses are structured, use a 64 KiB default whole-response budget, and return `next_cursor` whenever `has_more` is true. A cursor is bound to the tool, snapshot, and normalized arguments; changing any of them returns an error instead of silently mixing result sets.
 
-Example MCP client config:
+Direct MCP is the default and the recommended mode for a simple operation such as one open, list,
+search, or read. It exposes seven typed tools directly, so existing client configurations continue
+to work unchanged. Code Mode is experimental and is intended for bounded composition where one
+model call can open, search, filter, and read before returning a focused result. It exposes one
+normal MCP tool named `code`; Code Mode is an optional wit workflow, not an MCP protocol
+requirement.
+
+Example MCP client configurations using both supported entrypoints:
 
 ```json
 {
   "mcpServers": {
-    "wit": {
+    "wit-direct": {
       "command": "wit",
-      "args": ["mcp", "--transport", "stdio"],
+      "args": ["mcp", "--transport", "stdio", "--mode", "direct"],
       "env": {
         "WIT_CACHE_DIR": "/tmp/wit-mcp-cache"
       }
+    },
+    "wit-code-experimental": {
+      "command": "wit-mcp",
+      "args": ["--mode", "code"]
     }
   }
 }
 ```
 
-`wit mcp --transport stdio` writes protocol frames only to stdout; diagnostics go to stderr. `wit_open` uses the branch-keyed stale-while-revalidate cache by default and reports that state explicitly. Set `freshness: "require_fresh"` to refresh a branch before pinning it. Tags and full commit SHAs are fetched directly into the immutable server-lifetime snapshot store. Pull-request head refs are not yet resolved directly; pass the PR head's full commit SHA.
+Omit `--mode` from either entrypoint to select direct mode. The equivalent explicit commands are
+`wit mcp --transport stdio --mode direct|code` and `wit-mcp --mode direct|code`. Both are native
+binaries; Code Mode starts a hidden child of the installed executable and requires no Node.js,
+npm, Wrangler, Cloudflare, or external JavaScript runtime. Both entrypoints write MCP protocol
+frames only to stdout and diagnostics to stderr.
+
+`wit_open` uses the branch-keyed stale-while-revalidate cache by default and reports that state explicitly. Set `freshness: "require_fresh"` to refresh a branch before pinning it. Tags and full commit SHAs are fetched directly into the immutable server-lifetime snapshot store. Pull-request head refs are not yet resolved directly; pass the PR head's full commit SHA.
+
+### Experimental Code Mode
+
+The `code` tool accepts an async JavaScript function body, not TypeScript and not a complete module.
+Use `await`, ordinary JavaScript control flow, and the generated `codemode.wit` methods
+`findRepositories`, `refs`, `open`, `list`, `searchCode`, `read`, and `context`. The declarations are
+generated from the Rust operation registry and checked in at
+[`crates/wit/codemode.wit.d.ts`](crates/wit/codemode.wit.d.ts).
+
+This example performs open, search, and precise read in one Code Mode invocation and returns only
+provenance-bearing evidence:
+
+```js
+const opened = await codemode.wit.open({ repo: "thehumanworks/wit" });
+const matches = await codemode.wit.searchCode({
+  snapshot_id: opened.snapshot_id,
+  queries: ["fn code_tool_description"],
+  max_results: 4,
+  max_bytes: 16_384
+});
+const match = matches.items[0];
+if (!match) return { snapshot_id: opened.snapshot_id, items: [] };
+
+const read = await codemode.wit.read({
+  snapshot_id: opened.snapshot_id,
+  path: match.path,
+  start_line: match.start_line,
+  end_line: match.end_line,
+  max_bytes: 16_384
+});
+return {
+  snapshot_id: opened.snapshot_id,
+  commit_sha: opened.commit_sha,
+  items: read.items
+};
+```
+
+Snapshots live only for the parent MCP server process; after restart, call `open` again. A snapshot
+can be reused by later `code` calls while that parent remains alive. Pagination is never implicit:
+when `has_more` is true, pass `next_cursor` as `cursor` with the same method arguments and
+`snapshot_id`. Cursors are opaque and bound to the operation, snapshot, and normalized arguments.
+Return one focused JSON-serializable value; final JSON is rejected atomically rather than truncated,
+and repository evidence should retain `repo`, `commit_sha`, `snapshot_id`, `path`, `blob_sha`, and
+line ranges from the host results.
+
+Code runs with fixed fail-closed limits: 32 KiB of source, 10 seconds wall time, 16 host calls (at
+most 4 concurrent), 8 page-producing calls, 2 snapshot opens, 64 KiB per host result, 256 KiB of
+cumulative host results, and a 48 KiB final result. The sandbox has no filesystem, network,
+environment, process, subprocess, shell, or module-loader capability. GitHub credentials, cache and
+snapshot access, and every privileged operation remain in the Rust parent; code cannot raise its
+own budgets or invoke arbitrary MCP/host APIs.
+
+Host-operation failures are catchable JavaScript `Error` objects with stable `code`, `operation`,
+and redacted `message` fields. MCP-level policy/resource failures return structured `code` and
+`message`; cancellation and timeout use `cancelled` and `deadline_exceeded`. A timed-out, cancelled,
+wedged, crashed, or malformed worker is killed and reaped; each invocation uses a fresh worker, so
+the next call can recover without reusing worker state. Worker stderr is continuously drained, but
+only its capped byte count and truncation flag are retained—content is not returned or logged.
+Generated source is held only for the invocation and is not persisted or logged. Do not
+place secrets in generated source or returned values. Parent-side diagnostics redact privileged
+operation failures, and Code Mode clears `OpenResult.cache.last_error` because it can contain paths
+or token-shaped backend text.
+
+The checked-in [benchmark status](benchmarks/codemode/results/status.json) says the external model
+evaluation has not run, promotion is ineligible, Code Mode is experimental, and direct is the
+recommendation. Therefore wit currently makes no token, call-count, or latency improvement claim.
+Code Mode can leave experimental status only after a complete report passes every predeclared gate
+in the [benchmark contract](benchmarks/codemode/README.md), including correctness and provenance
+with no regression from direct mode, the composition-heavy reduction threshold, latency/startup
+ceilings, and the invalid-call ceiling. Missing, incomplete, or failed evidence keeps the status
+experimental, and the fail-closed recommendation remains direct mode.
+
+See the [Code Mode security boundary](docs/codemode-security.md) for the complete limits and error
+contract and the [native release contract](docs/codemode-release.md) for packaging, target, license,
+SBOM, and size evidence.
+
+The implementation status and remaining verification work for the snapshot, pagination, and semantic-tool foundations are recorded in [Direct MCP foundation status](docs/direct-mcp-foundation-status.md).
 
 ## Global Options
 

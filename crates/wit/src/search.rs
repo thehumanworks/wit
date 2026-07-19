@@ -1,7 +1,7 @@
 use anyhow::{Context, ensure};
 use octocrab::{Octocrab, models::Repository};
 
-use crate::ensure_rustls_provider;
+use crate::{ensure_rustls_provider, operation_context::OperationContext};
 
 const DEFAULT_SORT: &str = "stars";
 const DEFAULT_ORDER: &str = "desc";
@@ -66,6 +66,16 @@ impl GitHubSearchClient {
         query: &str,
         limit: usize,
     ) -> anyhow::Result<RepositorySearchResults> {
+        self.search_with_context(&OperationContext::default(), query, limit)
+            .await
+    }
+
+    pub async fn search_with_context(
+        &self,
+        context: &OperationContext,
+        query: &str,
+        limit: usize,
+    ) -> anyhow::Result<RepositorySearchResults> {
         let query = query.trim();
         ensure!(!query.is_empty(), "github search query cannot be empty");
         ensure!(limit > 0, "github search limit must be greater than zero");
@@ -73,15 +83,18 @@ impl GitHubSearchClient {
         let limit = limit.min(MAX_GITHUB_REPOS);
         let per_page = limit.min(usize::from(DEFAULT_PER_PAGE)) as u8;
 
-        let mut page = self
+        let request = self
             .octocrab
             .search()
             .repositories(query)
             .sort(DEFAULT_SORT)
             .order(DEFAULT_ORDER)
             .per_page(per_page)
-            .send()
+            .send();
+        let mut page = context
+            .wait(request)
             .await
+            .map_err(anyhow::Error::msg)?
             .with_context(|| format!("failed to search GitHub repositories for `{query}`"))?;
 
         let total_count = page.total_count.unwrap_or(page.items.len() as u64);
@@ -94,10 +107,10 @@ impl GitHubSearchClient {
         let mut next_page = page.next.clone();
 
         while repositories.len() < limit {
-            let Some(mut page) = self
-                .octocrab
-                .get_page::<Repository>(&next_page)
+            let Some(mut page) = context
+                .wait(self.octocrab.get_page::<Repository>(&next_page))
                 .await
+                .map_err(anyhow::Error::msg)?
                 .context("failed to fetch additional GitHub repository search pages")?
             else {
                 break;
@@ -127,6 +140,18 @@ impl GitHubSearchClient {
     ) -> anyhow::Result<RepositorySearchResults> {
         let query = build_repository_query(pattern, language, query)?;
         self.search(&query, limit).await
+    }
+
+    pub async fn search_repositories_with_context(
+        &self,
+        context: &OperationContext,
+        pattern: Option<&str>,
+        language: Option<&str>,
+        query: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<RepositorySearchResults> {
+        let query = build_repository_query(pattern, language, query)?;
+        self.search_with_context(context, &query, limit).await
     }
 }
 
@@ -199,7 +224,10 @@ impl From<Repository> for RepositorySummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ensure_rustls_provider;
+    use crate::{
+        ensure_rustls_provider,
+        operation_context::{OPERATION_CANCELLED, OperationCancellation},
+    };
     use octocrab::Octocrab;
     use serde_json::json;
     use wiremock::{
@@ -299,6 +327,41 @@ mod tests {
             msg.contains("failed to search") && msg.contains("github"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn search_repositories_stops_waiting_when_cancelled() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search/repositories"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(30))
+                    .set_body_json(json!({
+                        "total_count": 0,
+                        "incomplete_results": false,
+                        "items": []
+                    })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let cancellation = OperationCancellation::default();
+        let context = OperationContext::new(None, cancellation.clone());
+        let client = search_client(&mock_server.uri());
+        let task = tokio::spawn(async move {
+            client
+                .search_repositories_with_context(&context, Some("slow"), None, None, 10)
+                .await
+        });
+        tokio::task::yield_now().await;
+        cancellation.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("HTTP cancellation should be bounded")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), OPERATION_CANCELLED);
     }
 
     #[tokio::test]

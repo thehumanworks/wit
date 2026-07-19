@@ -1,5 +1,10 @@
+pub mod codemode;
+pub mod codemode_policy;
 pub mod gitops;
 pub mod mcp;
+pub mod operation_context;
+pub mod operation_registry;
+pub mod operations;
 pub mod search;
 pub mod search_run;
 pub mod sed;
@@ -215,6 +220,41 @@ mod tests {
                 text.contains("`--branch BRANCH`"),
                 "{name} should preserve existing branch-read docs"
             );
+        }
+    }
+
+    #[test]
+    fn code_mode_readme_and_skill_contract_stays_synchronized() {
+        for (name, text) in [
+            ("README.md", include_str!("../../../README.md")),
+            (
+                "crates/wit/src/skill/SKILL.md",
+                include_str!("skill/SKILL.md"),
+            ),
+        ] {
+            for required in [
+                "direct mode",
+                "Code Mode",
+                "experimental",
+                "codemode.wit.open",
+                "snapshot_id",
+                "next_cursor",
+                "JSON-serializable",
+                "no filesystem",
+                "Rust parent",
+                "cancel",
+                "killed and reaped",
+                "not persisted or logged",
+                "fail-closed recommendation",
+            ] {
+                assert!(
+                    text.to_ascii_lowercase()
+                        .contains(&required.to_ascii_lowercase()),
+                    "{name} omits {required}"
+                );
+            }
+            assert!(!text.to_ascii_lowercase().contains("compat-v1"));
+            assert!(!text.to_ascii_lowercase().contains("mcp v1"));
         }
     }
 }

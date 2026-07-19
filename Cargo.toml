@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/wit", "crates/wits"]
+members = ["crates/wit", "crates/wit-quickjs-spike", "crates/wits"]
 resolver = "3"
 
 [workspace.dependencies]
