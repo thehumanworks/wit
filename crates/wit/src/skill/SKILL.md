@@ -42,13 +42,16 @@ Evidence items carry repository, commit SHA, path, blob identity, and line prove
 
 ### Experimental Code Mode workflow
 
-The `code` input is an async JavaScript function body. Use `await` and the generated `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.read`, and `codemode.wit.context` methods; no TypeScript syntax or module imports are available. Open once, reuse the parent-server-lifetime `snapshot_id`, and follow explicit `next_cursor` values with otherwise unchanged arguments. Return one focused JSON-serializable value, retaining `repo`, `commit_sha`, `snapshot_id`, `path`, `blob_sha`, and exact line ranges for evidence.
+The `code` input is an async JavaScript function body. Start with `codemode.wit.help()` for all signatures and examples or `codemode.wit.help("read")` for one method. Use `await` and the generated `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.read`, and `codemode.wit.context` methods; no TypeScript syntax or module imports are available. Unknown method errors suggest the nearest method. Open once, reuse the parent-server-lifetime `snapshot_id`, and follow explicit `next_cursor` values with otherwise unchanged arguments. Return one focused JSON-serializable value, retaining `repo`, `commit_sha`, `snapshot_id`, `path`, `blob_sha`, and exact line ranges for evidence.
 
 ```js
 const opened = await codemode.wit.open({ repo: "owner/repo" });
 const found = await codemode.wit.searchCode({
   snapshot_id: opened.snapshot_id,
   queries: ["TargetSymbol"],
+  path_prefix: "src",
+  glob: "**/*.rs",
+  exclude: ["**/tests/**"],
   max_results: 4,
   max_bytes: 16_384
 });
@@ -63,7 +66,9 @@ return await codemode.wit.read({
 });
 ```
 
-The fixed defaults bound source, wall time, host calls/concurrency, pages, snapshots, host-result bytes, cumulative bytes, and final JSON. The sandbox has no filesystem, network, environment, process, subprocess, shell, or module-loader capability; credentials, snapshots, cache access, and privileged operations remain in the Rust parent. Host errors are catchable with stable `code`, `operation`, and redacted `message` fields. Cancellation, timeout, resource exhaustion, invalid final JSON, worker exit, and protocol errors fail explicitly. A failed worker is killed and reaped, and the next invocation starts fresh.
+If `owner/repo` is unknown, use `await codemode.wit.findRepositories({ pattern: "ratatuizilla", max_items: 5 })` before `open`. Code Mode `read` defaults to compact `format: "text"` with provenance once at the top level; use `format: "lines"` for numbered line pairs or `format: "structured"` for full per-line objects. Use `list({ ..., format: "paths" })` for paths only. Direct MCP retains structured defaults.
+
+The fixed defaults bound source, wall time, host calls/concurrency, pages, snapshots, host-result bytes, cumulative bytes, and final JSON. Page budgets expose serialized and remaining bytes plus a near-limit warning; oversized final results fail with guidance to return fewer fields or use compact read/list formats. The sandbox has no filesystem, network, environment, process, subprocess, shell, or module-loader capability; credentials, snapshots, cache access, and privileged operations remain in the Rust parent. Host errors are catchable with stable `code`, `operation`, and redacted `message` fields. Cancellation, timeout, resource exhaustion, invalid final JSON, worker exit, and protocol errors fail explicitly. A failed worker is killed and reaped, and the next invocation starts fresh.
 
 Generated source is not persisted or logged. Worker diagnostic content is drained but neither returned nor logged; only capped byte counts and a truncation flag are retained. Never put secrets in source or results. Snapshots do not survive a parent server restart, so call `open` again after reconnecting.
 

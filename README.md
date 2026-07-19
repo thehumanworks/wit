@@ -110,8 +110,8 @@ Example MCP client configurations using both supported entrypoints:
       }
     },
     "wit-code-experimental": {
-      "command": "wit-mcp",
-      "args": ["--mode", "code"]
+      "command": "wit",
+      "args": ["mcp", "--transport", "stdio", "--mode", "code"]
     }
   }
 }
@@ -128,10 +128,22 @@ frames only to stdout and diagnostics to stderr.
 ### Experimental Code Mode
 
 The `code` tool accepts an async JavaScript function body, not TypeScript and not a complete module.
-Use `await`, ordinary JavaScript control flow, and the generated `codemode.wit` methods
-`findRepositories`, `refs`, `open`, `list`, `searchCode`, `read`, and `context`. The declarations are
+Call `codemode.wit.help()` for the method list, signatures, examples, and result limits, or
+`codemode.wit.help("read")` for one method. Use `await`, ordinary JavaScript control flow, and the
+generated `codemode.wit` methods `findRepositories`, `refs`, `open`, `list`, `searchCode`, `read`,
+and `context`. Unknown method errors include a nearest-name suggestion. The declarations are
 generated from the Rust operation registry and checked in at
 [`crates/wit/codemode.wit.d.ts`](crates/wit/codemode.wit.d.ts).
+
+When the repository name is fuzzy, discovery stays in Code Mode:
+
+```js
+const repositories = await codemode.wit.findRepositories({
+  pattern: "ratatuizilla",
+  max_items: 5
+});
+return repositories.items.map(repo => repo.full_name);
+```
 
 This example performs open, search, and precise read in one Code Mode invocation and returns only
 provenance-bearing evidence:
@@ -141,6 +153,9 @@ const opened = await codemode.wit.open({ repo: "thehumanworks/wit" });
 const matches = await codemode.wit.searchCode({
   snapshot_id: opened.snapshot_id,
   queries: ["fn code_tool_description"],
+  path_prefix: "crates/wit/src",
+  glob: "**/*.rs",
+  exclude: ["**/tests/**"],
   max_results: 4,
   max_bytes: 16_384
 });
@@ -154,20 +169,25 @@ const read = await codemode.wit.read({
   end_line: match.end_line,
   max_bytes: 16_384
 });
-return {
-  snapshot_id: opened.snapshot_id,
-  commit_sha: opened.commit_sha,
-  items: read.items
-};
+return read;
 ```
+
+In Code Mode, `read` defaults to `format: "text"`, which returns `text` plus one top-level
+provenance envelope instead of repeating it for every line. Use `format: "lines"` for
+`{ line_number, text }` pairs or `format: "structured"` for the full per-line shape. Use
+`list({ ..., format: "paths" })` for a compact paths-only listing. `searchCode` accepts
+`path_prefix`, one `glob` or several `globs`, and `exclude` globs so broad matches do not flood
+changelogs, examples, or generated paths. Direct MCP keeps its structured list/read defaults.
 
 Snapshots live only for the parent MCP server process; after restart, call `open` again. A snapshot
 can be reused by later `code` calls while that parent remains alive. Pagination is never implicit:
 when `has_more` is true, pass `next_cursor` as `cursor` with the same method arguments and
 `snapshot_id`. Cursors are opaque and bound to the operation, snapshot, and normalized arguments.
-Return one focused JSON-serializable value; final JSON is rejected atomically rather than truncated,
-and repository evidence should retain `repo`, `commit_sha`, `snapshot_id`, `path`, `blob_sha`, and
-line ranges from the host results.
+Return one focused JSON-serializable value. Page budgets report `serialized_bytes`,
+`remaining_bytes`, and a `warning` near `max_bytes`. Final JSON is rejected atomically rather than
+truncated; an oversized-result error reports the actual limit and points to the compact read/list
+formats. Repository evidence should retain `repo`, `commit_sha`, `snapshot_id`, `path`, `blob_sha`,
+and line ranges from the host results.
 
 Code runs with fixed fail-closed limits: 32 KiB of source, 10 seconds wall time, 16 host calls (at
 most 4 concurrent), 8 page-producing calls, 2 snapshot opens, 64 KiB per host result, 256 KiB of

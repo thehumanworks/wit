@@ -1,6 +1,6 @@
 use crate::operations::{
-    ContextArgs, ContextItem, FindRepositoriesArgs, ListArgs, ListItem, OpenArgs, OpenResponse,
-    OperationContext, Page, ReadArgs, ReadLineItem, RefItem, RefsArgs, RepositoryItem,
+    ContextArgs, ContextItem, FindRepositoriesArgs, ListArgs, ListResponse, OpenArgs, OpenResponse,
+    OperationContext, Page, ReadArgs, ReadResponse, RefItem, RefsArgs, RepositoryItem,
     SearchCodeArgs, SearchItem, WitOperations,
 };
 use schemars::{JsonSchema, schema_for};
@@ -117,7 +117,7 @@ declare_operations! {
     FindRepositories {
         name: "wit_find_repositories",
         code_method: "findRepositories",
-        description: "Discover GitHub repositories; use this only when owner/repo is unknown, then call wit_open",
+        description: "Discover GitHub repositories when owner/repo is unknown; for fuzzy names use pattern plus a small max_items (for example { pattern: 'ratatuizilla', max_items: 5 }), then call open",
         classification: Discovery,
         handler: find_repositories,
         input: FindRepositoriesArgs,
@@ -144,16 +144,16 @@ declare_operations! {
     List {
         name: "wit_list",
         code_method: "list",
-        description: "List bounded repository structure from a snapshot with explicit depth; use before code search when paths are unknown",
+        description: "List bounded repository structure from a snapshot with explicit depth; use format: 'paths' for a compact paths-only result",
         classification: Read,
         handler: list,
         input: ListArgs,
-        output: Page<ListItem>,
+        output: ListResponse,
     },
     SearchCode {
         name: "wit_search_code",
         code_method: "searchCode",
-        description: "Search one immutable snapshot with one or more regex queries and return bounded atomic context groups with provenance",
+        description: "Search one immutable snapshot with regex queries; narrow results with path_prefix, glob/globs, and exclude filters",
         classification: Search,
         handler: search_code,
         input: SearchCodeArgs,
@@ -162,11 +162,11 @@ declare_operations! {
     Read {
         name: "wit_read",
         code_method: "read",
-        description: "Read an explicit one-based inclusive line range from a snapshot; use after list or search identifies a file",
+        description: "Read an explicit one-based inclusive line range; Code Mode defaults to compact text and supports lines or structured formats",
         classification: Read,
         handler: read,
         input: ReadArgs,
-        output: Page<ReadLineItem>,
+        output: ReadResponse,
     },
     Context {
         name: "wit_context",
@@ -283,12 +283,33 @@ pub fn render_typescript_declarations() -> String {
             ts_type(output_schema)
         ));
     }
+    rendered.push_str(
+        "export type WitCodeModeMethod = \"findRepositories\" | \"refs\" | \"open\" | \"list\" | \"searchCode\" | \"read\" | \"context\";\n\n",
+    );
+    rendered.push_str(
+        "export type WitCodeModeHelpEntry = { name: WitCodeModeMethod; signature: string; description: string; example: string };\n\n",
+    );
+    rendered.push_str(
+        "export type WitCodeModeHelp = { namespace: \"codemode.wit\"; methods: Array<WitCodeModeHelpEntry>; limits: { final_result_bytes: number; host_result_bytes: number }; guidance: string };\n\n",
+    );
     rendered.push_str("export interface WitCodeModeApi {\n");
+    rendered.push_str(
+        "  /** List all methods and signatures, or describe one method without a host call. */\n  help(): WitCodeModeHelp;\n  help(method: WitCodeModeMethod): WitCodeModeHelpEntry;\n",
+    );
     for (operation, input_name, _, output_name, _) in &roots {
-        rendered.push_str(&format!(
-            "  /** {} */\n  {}(arguments: {}): Promise<{}>;\n",
-            operation.description, operation.code_method, input_name, output_name
-        ));
+        rendered.push_str(&format!("  /** {} */\n", operation.description));
+        match operation.code_method {
+            "list" => rendered.push_str(
+                "  list(arguments: ListInput & { format: \"paths\" }): Promise<CompactListPage>;\n  list(arguments: ListInput & { format?: \"structured\" }): Promise<StructuredListPage>;\n",
+            ),
+            "read" => rendered.push_str(
+                "  read(arguments: ReadInput & { format: \"structured\" }): Promise<StructuredReadPage>;\n  read(arguments: ReadInput & { format: \"lines\" }): Promise<CompactReadLinesPage>;\n  read(arguments: ReadInput & { format?: \"text\" }): Promise<CompactReadTextPage>;\n",
+            ),
+            _ => rendered.push_str(&format!(
+                "  {}(arguments: {}): Promise<{}>;\n",
+                operation.code_method, input_name, output_name
+            )),
+        }
     }
     rendered.push_str("}\n\n");
     rendered.push_str(

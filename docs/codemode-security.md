@@ -5,7 +5,8 @@ Model-written JavaScript and all worker output are untrusted. The MCP parent rem
 credentials, the repository cache, snapshots, and operation implementations. A fresh child runs
 one invocation through a hidden mode of the same installed executable, with an empty environment
 and an isolated temporary working directory. It receives
-only bounded stdin/stdout IPC and the seven registered `codemode.wit` methods. QuickJS has no
+only bounded stdin/stdout IPC, seven registered `codemode.wit` host methods, and a local `help()`
+method that performs no privileged call. QuickJS has no
 filesystem, network, environment, module loader, process, subprocess, cache, token, or generic host
 call API. There is no permissive fallback: an unknown operation, malformed frame, unavailable
 capacity, or invalid policy fails the invocation before privileged dispatch.
@@ -16,6 +17,10 @@ memory and stack limits plus an interrupt deadline. The parent also has a slight
 reap deadline, so a wedged or crashed worker is discarded and the next invocation starts a new
 process. Host-operation cancellation/deadline semantics remain owned by `OperationContext`; these
 budgets do not bypass or replace them.
+
+Structured page budgets expose serialized and remaining bytes and add a warning near the requested
+limit. Code Mode also offers compact text/lines reads and paths-only listings; these reshape the
+same bounded operation results and do not widen snapshot, repository, or host capabilities.
 
 ## Budgets
 
@@ -45,7 +50,8 @@ The absolute maximum is a code invariant checked by `CodeModePolicy::validate` a
 Page and snapshot units are reserved before dispatch and remain consumed after a failed operation.
 This keeps repeated pagination, fan-out, and capability probing bounded. Host-result byte accounting
 uses serialized JSON bytes; a result which exceeds a byte budget becomes a catchable JavaScript
-error and its value never enters the worker. Final JSON is rejected atomically, never truncated.
+error and its value never enters the worker. Final JSON is rejected atomically, never truncated;
+the stable error reports the measured size and recommends fewer fields or compact read/list formats.
 
 Worker stderr is continuously drained so pipe backpressure cannot wedge the parent. Only capped
 byte counts and a truncation bit are retained; diagnostic content is never copied into MCP results,

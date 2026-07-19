@@ -661,11 +661,21 @@ fn compile_globs(globs: &[String]) -> Result<Option<GlobSet>, String> {
         .map_err(|err| format!("failed to compile globs: {err}"))
 }
 
+fn path_has_prefix(path: &str, prefix: &str) -> bool {
+    prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+struct SearchPathFilters {
+    includes: Option<GlobSet>,
+    prefix: String,
+    excludes: Option<GlobSet>,
+}
+
 fn search_snapshot_window(
     context: &OperationContext,
     snapshot: &SnapshotHandle,
     queries: &[(String, Regex)],
-    globs: &Option<GlobSet>,
+    filters: &SearchPathFilters,
     context_lines: usize,
     offset: usize,
     limit: usize,
@@ -673,7 +683,17 @@ fn search_snapshot_window(
     let mut seen = 0usize;
     let mut items = Vec::with_capacity(limit.min(MAX_CONTEXT_CANDIDATES));
     walk_tree(context, snapshot, |entry| {
-        if entry.kind != "blob" || globs.as_ref().is_some_and(|set| !set.is_match(&entry.path)) {
+        if entry.kind != "blob"
+            || !path_has_prefix(&entry.path, &filters.prefix)
+            || filters
+                .includes
+                .as_ref()
+                .is_some_and(|set| !set.is_match(&entry.path))
+            || filters
+                .excludes
+                .as_ref()
+                .is_some_and(|set| set.is_match(&entry.path))
+        {
             return Ok(true);
         }
         let Some(size) = entry.size else {
@@ -1062,6 +1082,8 @@ where
             budget: BudgetInfo {
                 requested_bytes: max_bytes,
                 serialized_bytes: 0,
+                remaining_bytes: max_bytes,
+                warning: None,
             },
             rendered_text,
         };
@@ -1091,9 +1113,126 @@ fn stabilize_serialized_size<T: Serialize>(page: &mut Page<T>) -> Result<(), Str
         if page.budget.serialized_bytes == size {
             return Ok(());
         }
-        page.budget.serialized_bytes = size;
+        update_budget(&mut page.budget, size);
     }
     Err("MCP response size metadata did not stabilize".to_string())
+}
+
+fn stabilize_compact_size<T: Serialize>(
+    response: &mut T,
+    mut budget: impl FnMut(&mut T) -> &mut BudgetInfo,
+) -> Result<(), String> {
+    for _ in 0..8 {
+        let size = serde_json::to_vec(response)
+            .map_err(|err| format!("failed to serialize MCP response: {err}"))?
+            .len();
+        if budget(response).serialized_bytes == size {
+            return Ok(());
+        }
+        update_budget(budget(response), size);
+    }
+    Err("MCP response size metadata did not stabilize".to_string())
+}
+
+fn update_budget(budget: &mut BudgetInfo, serialized_bytes: usize) {
+    budget.serialized_bytes = serialized_bytes;
+    budget.remaining_bytes = budget.requested_bytes.saturating_sub(serialized_bytes);
+    budget.warning = (serialized_bytes.saturating_mul(5)
+        >= budget.requested_bytes.saturating_mul(4))
+    .then(|| {
+        "response is near max_bytes; return fewer fields or continue with next_cursor".to_string()
+    });
+}
+
+fn reset_budget(mut budget: BudgetInfo) -> BudgetInfo {
+    budget.serialized_bytes = 0;
+    budget.remaining_bytes = budget.requested_bytes;
+    budget.warning = None;
+    budget
+}
+
+fn compact_list_page(
+    page: Page<ListItem>,
+    snapshot: &SnapshotHandle,
+) -> Result<CompactListPage, String> {
+    let mut response = CompactListPage {
+        api_version: page.api_version,
+        format: CompactListFormat::Paths,
+        snapshot_id: snapshot.snapshot_id.clone(),
+        repo: snapshot.repo.clone(),
+        commit_sha: snapshot.commit_sha.clone(),
+        paths: page.items.into_iter().map(|item| item.path).collect(),
+        returned_items: page.returned_items,
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        budget: reset_budget(page.budget),
+    };
+    stabilize_compact_size(&mut response, |response| &mut response.budget)?;
+    Ok(response)
+}
+
+fn compact_read_text_page(
+    page: Page<ReadLineItem>,
+    snapshot: &SnapshotHandle,
+    path: &str,
+) -> Result<CompactReadTextPage, String> {
+    let first = page.items.first();
+    let mut response = CompactReadTextPage {
+        api_version: page.api_version,
+        format: CompactReadTextFormat::Text,
+        snapshot_id: snapshot.snapshot_id.clone(),
+        repo: snapshot.repo.clone(),
+        commit_sha: snapshot.commit_sha.clone(),
+        path: path.to_string(),
+        blob_sha: first.map(|item| item.blob_sha.clone()),
+        start_line: first.map(|item| item.start_line),
+        end_line: page.items.last().map(|item| item.end_line),
+        text: page
+            .items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        returned_lines: page.returned_items,
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        budget: reset_budget(page.budget),
+    };
+    stabilize_compact_size(&mut response, |response| &mut response.budget)?;
+    Ok(response)
+}
+
+fn compact_read_lines_page(
+    page: Page<ReadLineItem>,
+    snapshot: &SnapshotHandle,
+    path: &str,
+) -> Result<CompactReadLinesPage, String> {
+    let first = page.items.first();
+    let mut response = CompactReadLinesPage {
+        api_version: page.api_version,
+        format: CompactReadLinesFormat::Lines,
+        snapshot_id: snapshot.snapshot_id.clone(),
+        repo: snapshot.repo.clone(),
+        commit_sha: snapshot.commit_sha.clone(),
+        path: path.to_string(),
+        blob_sha: first.map(|item| item.blob_sha.clone()),
+        start_line: first.map(|item| item.start_line),
+        end_line: page.items.last().map(|item| item.end_line),
+        lines: page
+            .items
+            .into_iter()
+            .map(|item| SourceLine {
+                line_number: item.start_line,
+                text: item.text,
+            })
+            .collect(),
+        returned_lines: page.returned_items,
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        budget: reset_budget(page.budget),
+    };
+    stabilize_compact_size(&mut response, |response| &mut response.budget)?;
+    Ok(response)
 }
 
 fn fingerprint(value: &serde_json::Value) -> Result<String, String> {
@@ -1242,7 +1381,7 @@ mod tests {
     async fn typed_service_reads_snapshot_shared_by_clones_without_mcp() {
         let (operations, snapshot_id) = operations_with_snapshot();
         let second_adapter = operations.clone();
-        let page: Page<ListItem> = second_adapter
+        let page = second_adapter
             .list(
                 &OperationContext::default(),
                 ListArgs {
@@ -1254,11 +1393,14 @@ mod tests {
             )
             .await
             .unwrap();
+        let ListResponse::Structured(page) = page else {
+            panic!("default list format must stay structured");
+        };
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].path, "src/lib.rs");
         assert_eq!(page.items[0].snapshot_id, snapshot_id);
 
-        let read: Page<ReadLineItem> = operations
+        let read = operations
             .read(
                 &OperationContext::default(),
                 ReadArgs {
@@ -1271,6 +1413,9 @@ mod tests {
             )
             .await
             .unwrap();
+        let ReadResponse::Structured(read) = read else {
+            panic!("default read format must stay structured");
+        };
         assert_eq!(read.items.len(), 1);
         assert_eq!(read.items[0].text, "    42");
     }
@@ -1412,6 +1557,8 @@ mod tests {
         let serialized = serde_json::to_vec(&page).unwrap();
         assert_eq!(serialized.len(), page.budget.serialized_bytes);
         assert!(serialized.len() <= 2048);
+        assert_eq!(page.budget.remaining_bytes, 2048 - serialized.len());
+        assert!(page.budget.warning.is_some());
         assert!(page.has_more);
         assert!(page.next_cursor.is_some());
     }
@@ -1546,6 +1693,46 @@ pub enum Freshness {
     RequireFresh,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListFormat {
+    /// Full per-entry provenance and metadata.
+    #[default]
+    Structured,
+    /// One paths array with snapshot provenance stored once at the top level.
+    Paths,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadFormat {
+    /// Full per-line provenance; this remains the direct MCP default.
+    #[default]
+    Structured,
+    /// Joined file text with provenance stored once at the top level.
+    Text,
+    /// Line-number/text pairs with provenance stored once at the top level.
+    Lines,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactListFormat {
+    Paths,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactReadTextFormat {
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactReadLinesFormat {
+    Lines,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct OpenArgs {
     /// GitHub repository in owner/repo form.
@@ -1595,6 +1782,9 @@ pub struct ListArgs {
     /// Include sizes and line counts for returned text files.
     #[serde(default)]
     pub include_metadata: bool,
+    /// structured returns full entries; paths returns one compact paths array.
+    #[serde(default)]
+    pub format: ListFormat,
     pub cursor: Option<String>,
     pub max_items: Option<usize>,
     pub max_bytes: Option<usize>,
@@ -1610,6 +1800,13 @@ pub struct SearchCodeArgs {
     /// Optional git-style glob filters such as **/*.rs.
     #[serde(default)]
     pub globs: Vec<String>,
+    /// Optional single include glob; combined with globs when both are present.
+    pub glob: Option<String>,
+    /// Limit matches to this repository-relative file or directory prefix.
+    pub path_prefix: Option<String>,
+    /// Git-style globs to exclude after include filtering.
+    #[serde(default)]
+    pub exclude: Vec<String>,
     pub context_lines: Option<usize>,
     pub max_results: Option<usize>,
     pub cursor: Option<String>,
@@ -1629,6 +1826,9 @@ pub struct ReadArgs {
     /// Controls optional rendered_text; structured line numbers are always returned for provenance.
     #[serde(default)]
     pub number_lines: bool,
+    /// Direct MCP defaults to structured. Code Mode defaults this to text and also supports lines.
+    #[serde(default)]
+    pub format: ReadFormat,
     pub cursor: Option<String>,
     pub max_lines: Option<usize>,
     pub max_bytes: Option<usize>,
@@ -1711,6 +1911,53 @@ pub struct ListItem {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CompactListPage {
+    pub api_version: String,
+    pub format: CompactListFormat,
+    pub snapshot_id: String,
+    pub repo: String,
+    pub commit_sha: String,
+    pub paths: Vec<String>,
+    pub returned_items: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub budget: BudgetInfo,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StructuredListPage {
+    pub api_version: String,
+    pub items: Vec<ListItem>,
+    pub returned_items: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub budget: BudgetInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rendered_text: Option<String>,
+}
+
+impl From<Page<ListItem>> for StructuredListPage {
+    fn from(page: Page<ListItem>) -> Self {
+        Self {
+            api_version: page.api_version,
+            items: page.items,
+            returned_items: page.returned_items,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+            budget: page.budget,
+            rendered_text: page.rendered_text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ListResponse {
+    Structured(StructuredListPage),
+    Paths(CompactListPage),
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SourceLine {
     pub line_number: usize,
     pub text: String,
@@ -1743,6 +1990,76 @@ pub struct ReadLineItem {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CompactReadTextPage {
+    pub api_version: String,
+    pub format: CompactReadTextFormat,
+    pub snapshot_id: String,
+    pub repo: String,
+    pub commit_sha: String,
+    pub path: String,
+    pub blob_sha: Option<String>,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+    pub text: String,
+    pub returned_lines: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub budget: BudgetInfo,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CompactReadLinesPage {
+    pub api_version: String,
+    pub format: CompactReadLinesFormat,
+    pub snapshot_id: String,
+    pub repo: String,
+    pub commit_sha: String,
+    pub path: String,
+    pub blob_sha: Option<String>,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+    pub lines: Vec<SourceLine>,
+    pub returned_lines: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub budget: BudgetInfo,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StructuredReadPage {
+    pub api_version: String,
+    pub items: Vec<ReadLineItem>,
+    pub returned_items: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    pub budget: BudgetInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rendered_text: Option<String>,
+}
+
+impl From<Page<ReadLineItem>> for StructuredReadPage {
+    fn from(page: Page<ReadLineItem>) -> Self {
+        Self {
+            api_version: page.api_version,
+            items: page.items,
+            returned_items: page.returned_items,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+            budget: page.budget,
+            rendered_text: page.rendered_text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ReadResponse {
+    Structured(StructuredReadPage),
+    Text(CompactReadTextPage),
+    Lines(CompactReadLinesPage),
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ContextItem {
     pub snapshot_id: String,
     pub repo: String,
@@ -1761,6 +2078,9 @@ pub struct ContextItem {
 pub struct BudgetInfo {
     pub requested_bytes: usize,
     pub serialized_bytes: usize,
+    pub remaining_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1995,7 +2315,7 @@ impl WitOperations {
         &self,
         context: &OperationContext,
         args: ListArgs,
-    ) -> Result<Page<ListItem>, String> {
+    ) -> Result<ListResponse, String> {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
         let depth = validate_range(args.depth, DEFAULT_LIST_DEPTH, MAX_LIST_DEPTH, "depth")?;
@@ -2007,6 +2327,7 @@ impl WitOperations {
             "path": base_path,
             "depth": depth,
             "include_metadata": args.include_metadata,
+            "format": args.format,
             "include_rendered_text": args.include_rendered_text,
         }))?;
         let offset = cursor_offset(
@@ -2042,7 +2363,10 @@ impl WitOperations {
             },
         )?;
         context.check()?;
-        Ok(page)
+        match args.format {
+            ListFormat::Structured => Ok(ListResponse::Structured(page.into())),
+            ListFormat::Paths => compact_list_page(page, &snapshot).map(ListResponse::Paths),
+        }
     }
 
     pub async fn search_code(
@@ -2053,7 +2377,13 @@ impl WitOperations {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
         let queries = compile_queries(&args.queries)?;
-        let globs = compile_globs(&args.globs)?;
+        let mut include_globs = args.globs.clone();
+        if let Some(glob) = args.glob.as_deref() {
+            include_globs.push(glob.to_string());
+        }
+        let globs = compile_globs(&include_globs)?;
+        let path_prefix = normalize_repo_path(args.path_prefix.as_deref().unwrap_or(""))?;
+        let excludes = compile_globs(&args.exclude)?;
         let context_lines = validate_range(
             args.context_lines,
             DEFAULT_CONTEXT_LINES,
@@ -2070,7 +2400,9 @@ impl WitOperations {
         let fingerprint = fingerprint(&json!({
             "snapshot_id": args.snapshot_id,
             "queries": args.queries,
-            "globs": args.globs,
+            "globs": include_globs,
+            "path_prefix": path_prefix,
+            "exclude": args.exclude,
             "context_lines": context_lines,
             "max_results": max_results,
             "include_rendered_text": args.include_rendered_text,
@@ -2081,11 +2413,16 @@ impl WitOperations {
             &fingerprint,
             args.cursor.as_deref(),
         )?;
+        let filters = SearchPathFilters {
+            includes: globs,
+            prefix: path_prefix,
+            excludes,
+        };
         let items = search_snapshot_window(
             context,
             &snapshot,
             &queries,
-            &globs,
+            &filters,
             context_lines,
             offset,
             max_results + 1,
@@ -2109,7 +2446,7 @@ impl WitOperations {
         &self,
         context: &OperationContext,
         args: ReadArgs,
-    ) -> Result<Page<ReadLineItem>, String> {
+    ) -> Result<ReadResponse, String> {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
         let path = normalize_repo_path(&args.path)?;
@@ -2136,6 +2473,7 @@ impl WitOperations {
             "start_line": start_line,
             "end_line": args.end_line,
             "number_lines": args.number_lines,
+            "format": args.format,
             "max_lines": max_lines,
             "include_rendered_text": args.include_rendered_text,
         }))?;
@@ -2167,7 +2505,15 @@ impl WitOperations {
             move |items| render_read_items(items, number_lines),
         )?;
         context.check()?;
-        Ok(page)
+        match args.format {
+            ReadFormat::Structured => Ok(ReadResponse::Structured(page.into())),
+            ReadFormat::Text => {
+                compact_read_text_page(page, &snapshot, &path).map(ReadResponse::Text)
+            }
+            ReadFormat::Lines => {
+                compact_read_lines_page(page, &snapshot, &path).map(ReadResponse::Lines)
+            }
+        }
     }
 
     pub async fn context(
@@ -2206,11 +2552,16 @@ impl WitOperations {
             &fingerprint,
             args.cursor.as_deref(),
         )?;
+        let filters = SearchPathFilters {
+            includes: globs,
+            prefix: String::new(),
+            excludes: None,
+        };
         let candidates = search_snapshot_window(
             context,
             &snapshot,
             &queries,
-            &globs,
+            &filters,
             context_lines,
             0,
             MAX_CONTEXT_CANDIDATES + 1,

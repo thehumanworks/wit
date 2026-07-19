@@ -152,7 +152,14 @@ async fn production_bridge_exposes_no_generic_host_handle_or_parent_secrets() ->
         assert_eq!(value[name], "undefined", "capability {name}");
     }
     assert_eq!(value["importBlocked"], true);
-    assert_eq!(value["methods"].as_array().map(Vec::len), Some(7));
+    assert_eq!(value["methods"].as_array().map(Vec::len), Some(8));
+    assert!(
+        value["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "help")
+    );
     Ok(())
 }
 

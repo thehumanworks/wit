@@ -444,8 +444,11 @@ fn decode_execution_envelope(json: &str, max_result_bytes: usize) -> Result<Valu
             .get_mut("value")
             .map(Value::take)
             .context("successful execution omitted its value")?;
-        if serde_json::to_vec(&value)?.len() > max_result_bytes {
-            bail!("final JSON exceeds {max_result_bytes}-byte limit");
+        let serialized_bytes = serde_json::to_vec(&value)?.len();
+        if serialized_bytes > max_result_bytes {
+            bail!(
+                "final JSON is {serialized_bytes} bytes and exceeds the {max_result_bytes}-byte limit; return fewer fields or items, or use compact read/list formats"
+            );
         }
         return Ok(value);
     }
@@ -494,14 +497,109 @@ const __hostOperation = async (operation, input) => {
   }
 };
 /* TEST_HOST_CALL */
-const __wit = Object.freeze({
+const __helpEntries = Object.freeze([
+  Object.freeze({
+    name: "findRepositories",
+    signature: "findRepositories({ pattern?, lang?, query?, cursor?, max_items?, max_bytes? })",
+    description: "Find GitHub repositories when owner/repo is unknown.",
+    example: "await codemode.wit.findRepositories({ pattern: 'ratatuizilla', max_items: 5 })"
+  }),
+  Object.freeze({
+    name: "refs",
+    signature: "refs({ repo, ref?, cursor?, max_items?, max_bytes? })",
+    description: "List or resolve repository branches, tags, and commits before open().",
+    example: "await codemode.wit.refs({ repo: 'owner/repo', max_items: 20 })"
+  }),
+  Object.freeze({
+    name: "open",
+    signature: "open({ repo, ref?, freshness? })",
+    description: "Open an immutable snapshot and reuse its snapshot_id.",
+    example: "await codemode.wit.open({ repo: 'owner/repo' })"
+  }),
+  Object.freeze({
+    name: "list",
+    signature: "list({ snapshot_id, path?, depth?, format?: 'structured' | 'paths', cursor?, max_items?, max_bytes? })",
+    description: "List bounded repository structure; format: 'paths' removes repeated entry metadata.",
+    example: "await codemode.wit.list({ snapshot_id, path: 'src', depth: 2, format: 'paths' })"
+  }),
+  Object.freeze({
+    name: "searchCode",
+    signature: "searchCode({ snapshot_id, queries, path_prefix?, glob?, globs?, exclude?, context_lines?, cursor?, max_results?, max_bytes? })",
+    description: "Regex-search one snapshot with optional include, prefix, and exclude path filters.",
+    example: "await codemode.wit.searchCode({ snapshot_id, queries: ['pub struct'], path_prefix: 'src', exclude: ['**/tests/**'] })"
+  }),
+  Object.freeze({
+    name: "read",
+    signature: "read({ snapshot_id, path, start_line?, end_line?, format?: 'text' | 'lines' | 'structured', cursor?, max_lines?, max_bytes? })",
+    description: "Read a line range. Code Mode defaults to compact text; use lines for numbered pairs or structured for per-line provenance.",
+    example: "await codemode.wit.read({ snapshot_id, path: 'README.md', start_line: 1, end_line: 80 })"
+  }),
+  Object.freeze({
+    name: "context",
+    signature: "context({ snapshot_id, queries, globs?, context_lines?, cursor?, max_results?, max_bytes? })",
+    description: "Gather deterministic ranked multi-file evidence.",
+    example: "await codemode.wit.context({ snapshot_id, queries: ['backend'], max_results: 10 })"
+  })
+]);
+const __methodNames = __helpEntries.map(entry => entry.name).concat(["help"]);
+const __levenshtein = (left, right) => {
+  const row = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    let diagonal = row[0];
+    row[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const above = row[rightIndex];
+      row[rightIndex] = Math.min(
+        row[rightIndex] + 1,
+        row[rightIndex - 1] + 1,
+        diagonal + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      );
+      diagonal = above;
+    }
+  }
+  return row[right.length];
+};
+const __unknownMethod = method => {
+  const suggestion = __methodNames
+    .map(name => ({ name, distance: __levenshtein(method.toLowerCase(), name.toLowerCase()) }))
+    .sort((left, right) => left.distance - right.distance || left.name.localeCompare(right.name))[0].name;
+  const error = new Error(`Unknown codemode.wit method '${method}'. Did you mean '${suggestion}'? Call codemode.wit.help() for signatures.`);
+  Object.defineProperties(error, {
+    code: { value: "unknown_method", enumerable: true },
+    operation: { value: `codemode.wit.${method}`, enumerable: true }
+  });
+  return error;
+};
+const __help = method => {
+  if (method === undefined) {
+    return {
+      namespace: "codemode.wit",
+      methods: __helpEntries,
+      limits: { final_result_bytes: 49152, host_result_bytes: 65536 },
+      guidance: "Return only needed fields. Prefer read text/lines and list paths formats for compact results."
+    };
+  }
+  const entry = __helpEntries.find(candidate => candidate.name === method);
+  if (!entry) throw __unknownMethod(String(method));
+  return entry;
+};
+const __witTarget = Object.freeze({
+  help: __help,
   findRepositories: input => __hostOperation("wit_find_repositories", input),
   refs: input => __hostOperation("wit_refs", input),
   open: input => __hostOperation("wit_open", input),
   list: input => __hostOperation("wit_list", input),
   searchCode: input => __hostOperation("wit_search_code", input),
-  read: input => __hostOperation("wit_read", input),
+  read: input => __hostOperation("wit_read", { ...input, format: input && input.format || "text" }),
   context: input => __hostOperation("wit_context", input)
+});
+const __wit = new Proxy(__witTarget, {
+  get: (target, property) => {
+    if (typeof property !== "string" || Object.prototype.hasOwnProperty.call(target, property)) {
+      return target[property];
+    }
+    throw __unknownMethod(property);
+  }
 });
 Object.defineProperty(globalThis, "codemode", {
   value: Object.freeze({ wit: __wit }),

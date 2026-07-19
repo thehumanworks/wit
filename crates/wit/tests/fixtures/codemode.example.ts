@@ -1,8 +1,9 @@
 /// <reference path="../../codemode.wit.d.ts" />
 
 async function inspectRepository(): Promise<string> {
+  const readHelp = codemode.wit.help("read");
   const repositories = await codemode.wit.findRepositories({
-    pattern: "wit",
+    pattern: "ratatuizilla",
     lang: "Rust",
     max_items: 5,
   });
@@ -27,7 +28,9 @@ async function inspectRepository(): Promise<string> {
   const search = await codemode.wit.searchCode({
     snapshot_id: opened.snapshot_id,
     queries: ["OperationDescriptor"],
-    globs: ["**/*.rs"],
+    path_prefix: "crates/wit/src",
+    glob: "**/*.rs",
+    exclude: ["**/tests/**"],
   });
 
   const firstPath: string | undefined = listing.items[0]?.path;
@@ -48,9 +51,9 @@ async function inspectRepository(): Promise<string> {
 
   const repositoryName: string | undefined = repositories.items[0]?.full_name;
   const resolvedRef: string | undefined = refs.items[0]?.resolved_ref;
-  const readText: string | undefined = read.items[0]?.text;
+  const readText: string = read.text;
   const contextScore: number | undefined = context.items[0]?.score;
-  return `${repositoryName ?? "none"}:${resolvedRef ?? "none"}:${firstPath ?? "none"}:${firstLine ?? 0}:${readText?.length ?? 0}:${contextScore ?? 0}`;
+  return `${readHelp.name}:${repositoryName ?? "none"}:${resolvedRef ?? "none"}:${firstPath ?? "none"}:${firstLine ?? 0}:${readText.length}:${contextScore ?? 0}`;
 }
 
 void inspectRepository();

@@ -28,6 +28,7 @@ async fn shipped_code_mode_lists_deterministic_typed_contract() -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!("code tool should have a description"))?;
     let declarations = include_str!("../codemode.wit.d.ts");
     assert!(description.ends_with(declarations));
+    assert!(description.contains("help():"));
     for method in [
         "findRepositories",
         "refs",
@@ -42,6 +43,193 @@ async fn shipped_code_mode_lists_deterministic_typed_contract() -> anyhow::Resul
     assert_eq!(
         serde_json::to_vec(&tools)?,
         serde_json::to_vec(&client.list_all_tools().await?)?
+    );
+
+    client.cancel().await?;
+    wait_for_empty_directory(temp.path()).await
+}
+
+#[tokio::test]
+async fn shipped_code_mode_supports_progressive_help_and_method_suggestions() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let client = start_code_client(temp.path(), None).await?;
+
+    let result = call_code_success(
+        &client,
+        r#"
+        const overview = codemode.wit.help();
+        const read = codemode.wit.help("read");
+        let unknown;
+        try {
+          await codemode.wit.searchRepositories({ pattern: "ratzilla", max_items: 5 });
+        } catch (error) {
+          unknown = { code: error.code, operation: error.operation, message: error.message };
+        }
+        return { methods: Object.keys(codemode.wit), overview, read, unknown };
+        "#,
+    )
+    .await?;
+
+    assert_eq!(
+        result["methods"],
+        json!([
+            "help",
+            "findRepositories",
+            "refs",
+            "open",
+            "list",
+            "searchCode",
+            "read",
+            "context"
+        ])
+    );
+    assert_eq!(
+        result["overview"]["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|method| method["name"].clone())
+            .collect::<Vec<_>>(),
+        json!([
+            "findRepositories",
+            "refs",
+            "open",
+            "list",
+            "searchCode",
+            "read",
+            "context"
+        ])
+        .as_array()
+        .unwrap()
+        .clone()
+    );
+    assert_eq!(result["read"]["name"], "read");
+    assert!(
+        result["read"]["signature"]
+            .as_str()
+            .unwrap()
+            .contains("format")
+    );
+    assert_eq!(result["unknown"]["code"], "unknown_method");
+    assert_eq!(
+        result["unknown"]["operation"],
+        "codemode.wit.searchRepositories"
+    );
+    assert!(
+        result["unknown"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("findRepositories")
+    );
+
+    client.cancel().await?;
+    wait_for_empty_directory(temp.path()).await
+}
+
+#[tokio::test]
+async fn shipped_code_mode_compacts_reads_and_lists_and_filters_search_paths() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let cache = temp.path().join("cache");
+    std::fs::create_dir(&cache)?;
+    let fixture = seed_cached_repo(&cache)?;
+    let client = start_code_client(temp.path(), Some((&cache, &fixture.git_config))).await?;
+
+    let result = call_code_success(
+        &client,
+        r#"
+        const opened = await codemode.wit.open({ repo: "owner/repo" });
+        const text = await codemode.wit.read({
+          snapshot_id: opened.snapshot_id, path: "README.md", start_line: 1, end_line: 2
+        });
+        const lines = await codemode.wit.read({
+          snapshot_id: opened.snapshot_id, path: "README.md", start_line: 2, end_line: 3,
+          format: "lines"
+        });
+        const structured = await codemode.wit.read({
+          snapshot_id: opened.snapshot_id, path: "README.md", start_line: 1, end_line: 1,
+          format: "structured"
+        });
+        const listed = await codemode.wit.list({
+          snapshot_id: opened.snapshot_id, path: "src", depth: 1, format: "paths"
+        });
+        const prefixed = await codemode.wit.searchCode({
+          snapshot_id: opened.snapshot_id, queries: ["pub fn"], path_prefix: "src"
+        });
+        const excluded = await codemode.wit.searchCode({
+          snapshot_id: opened.snapshot_id, queries: ["alpha"], exclude: ["README.md"]
+        });
+        const globbed = await codemode.wit.searchCode({
+          snapshot_id: opened.snapshot_id, queries: ["alpha"], glob: "README.md"
+        });
+        const nearLimit = await codemode.wit.read({
+          snapshot_id: opened.snapshot_id, path: "medium.txt", max_bytes: 2048
+        });
+        return { opened, text, lines, structured, listed, prefixed, excluded, globbed, nearLimit };
+        "#,
+    )
+    .await?;
+
+    assert_eq!(result["text"]["format"], "text");
+    assert_eq!(result["text"]["text"], "alpha\nbeta");
+    assert!(result["text"].get("items").is_none());
+    assert_eq!(result["text"]["path"], "README.md");
+    assert_eq!(result["text"]["start_line"], 1);
+    assert_eq!(result["text"]["end_line"], 2);
+    assert_eq!(result["lines"]["format"], "lines");
+    assert_eq!(
+        result["lines"]["lines"],
+        json!([
+            { "line_number": 2, "text": "beta" },
+            { "line_number": 3, "text": "gamma" }
+        ])
+    );
+    assert_eq!(result["structured"]["items"][0]["text"], "alpha");
+    assert_eq!(result["listed"]["format"], "paths");
+    assert_eq!(result["listed"]["paths"], json!(["src/lib.rs"]));
+    assert!(result["listed"].get("items").is_none());
+    assert_eq!(result["prefixed"]["items"][0]["path"], "src/lib.rs");
+    assert!(result["excluded"]["items"].as_array().unwrap().is_empty());
+    assert_eq!(result["globbed"]["items"][0]["path"], "README.md");
+    assert!(result["nearLimit"]["budget"]["remaining_bytes"].is_number());
+    assert!(
+        result["nearLimit"]["budget"]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("near max_bytes")
+    );
+
+    for key in ["text", "lines", "listed"] {
+        assert_eq!(result[key]["repo"], result["opened"]["repo"]);
+        assert_eq!(result[key]["commit_sha"], result["opened"]["commit_sha"]);
+        assert_eq!(result[key]["snapshot_id"], result["opened"]["snapshot_id"]);
+    }
+
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn main_wit_binary_serves_code_mode() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_wit")).configure(|command| {
+            command
+                .args(["mcp", "--transport", "stdio", "--mode", "code"])
+                .env("TMPDIR", temp.path())
+                .env("TMP", temp.path())
+                .env("TEMP", temp.path());
+        }),
+    )?;
+    let client = ().serve(transport).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, CODE_TOOL);
+    assert_eq!(
+        call_code_success(&client, "return codemode.wit.help('open').name;").await?,
+        "open"
     );
 
     client.cancel().await?;
@@ -87,7 +275,7 @@ async fn shipped_code_mode_composes_snapshot_operations_and_pins_branch() -> any
         const read = await codemode.wit.read({
           snapshot_id: opened.snapshot_id, path: firstSearch.items[0].path,
           start_line: firstSearch.items[0].match_line,
-          end_line: firstSearch.items[0].match_line, max_bytes: 4096
+          end_line: firstSearch.items[0].match_line, format: "structured", max_bytes: 4096
         });
         const context = await codemode.wit.context({
           snapshot_id: opened.snapshot_id, queries: ["demo"], max_results: 2, max_bytes: 4096
@@ -150,13 +338,10 @@ async fn shipped_code_mode_composes_snapshot_operations_and_pins_branch() -> any
         ),
     )
     .await?;
-    assert_eq!(replay["oldRead"]["items"][0]["text"], "alpha");
-    assert_eq!(replay["oldRead"]["items"][0]["commit_sha"], original_sha);
+    assert_eq!(replay["oldRead"]["text"], "alpha");
+    assert_eq!(replay["oldRead"]["commit_sha"], original_sha);
     assert_eq!(replay["fresh"]["commit_sha"], moved_sha);
-    assert_eq!(
-        replay["freshRead"]["items"][0]["text"],
-        "changed after snapshot"
-    );
+    assert_eq!(replay["freshRead"]["text"], "changed after snapshot");
 
     client.cancel().await?;
     Ok(())
@@ -337,6 +522,13 @@ async fn shipped_code_mode_contains_failures_and_recovers_without_temp_leaks() -
             "unexpected failure for {source}: {:?}",
             result.structured_content
         );
+        if code == Some("final_result_bytes_limit") {
+            let message = result.structured_content.as_ref().unwrap()["message"]
+                .as_str()
+                .unwrap();
+            assert!(message.contains("bytes"));
+            assert!(message.contains("compact read/list formats"));
+        }
         assert_eq!(
             call_code_success(&client, "return 'recovered';").await?,
             "recovered"

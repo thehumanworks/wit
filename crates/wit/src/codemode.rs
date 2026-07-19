@@ -170,7 +170,7 @@ impl CodeModeMcpServer {
                     "host_calls_limit"
                 } else if message.contains("execution deadline exceeded") {
                     "deadline_exceeded"
-                } else if message.contains("final JSON exceeds") {
+                } else if message.contains("final JSON") && message.contains("exceeds") {
                     "final_result_bytes_limit"
                 } else {
                     "code_rejected"
@@ -261,7 +261,7 @@ fn sanitize_host_result(operation: &str, mut value: Value) -> Value {
 
 fn code_tool_description() -> String {
     format!(
-        "Execute one bounded async JavaScript function body and return its JSON value. No filesystem, network, environment, module, shell, subprocess, or arbitrary MCP APIs are available. Host-operation errors are catchable Error objects with stable code, operation, and message fields. Explicit cursors remain visible.\n\nExample:\nconst opened = await codemode.wit.open({{ repo: 'owner/repo' }});\nreturn await codemode.wit.searchCode({{ snapshot_id: opened.snapshot_id, queries: ['symbol'] }});\n\n{}",
+        "Execute one bounded async JavaScript function body and return its JSON value. No filesystem, network, environment, module, shell, subprocess, or arbitrary MCP APIs are available. Host-operation errors are catchable Error objects with stable code, operation, and message fields. Explicit cursors remain visible.\n\nStart with codemode.wit.help() for method signatures and examples. If owner/repo is fuzzy, use:\nconst repos = await codemode.wit.findRepositories({{ pattern: 'ratatuizilla', max_items: 5 }});\n\nFor a known repository:\nconst opened = await codemode.wit.open({{ repo: 'owner/repo' }});\nreturn await codemode.wit.searchCode({{ snapshot_id: opened.snapshot_id, queries: ['symbol'], path_prefix: 'src' }});\n\nPrefer read()'s default text format, read({{ format: 'lines' }}), and list({{ format: 'paths' }}) to keep results below the 48 KiB final limit.\n\n{}",
         render_typescript_declarations()
     )
 }
@@ -275,7 +275,7 @@ impl ServerHandler for CodeModeMcpServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Call the single code tool with one bounded async JavaScript function body. Return only focused JSON evidence.",
+                "Call the single code tool with one bounded async JavaScript function body. Use codemode.wit.help() for signatures, compact read/list formats and search path filters to control result size, and return only focused JSON evidence.",
             )
     }
 }
@@ -464,14 +464,18 @@ mod tests {
             first["first"]["items"][0]["match_line"],
             first["second"]["items"][0]["match_line"]
         );
-        assert_eq!(first["read"]["items"][0]["path"], "README.md");
-        for group in ["first", "second", "read"] {
+        assert_eq!(first["read"]["path"], "README.md");
+        for group in ["first", "second"] {
             let item = &first[group]["items"][0];
             assert_eq!(item["repo"], first["opened"]["repo"]);
             assert_eq!(item["commit_sha"], first["opened"]["commit_sha"]);
             assert_eq!(item["snapshot_id"], first["opened"]["snapshot_id"]);
             assert!(item["blob_sha"].is_string());
         }
+        assert_eq!(first["read"]["repo"], first["opened"]["repo"]);
+        assert_eq!(first["read"]["commit_sha"], first["opened"]["commit_sha"]);
+        assert_eq!(first["read"]["snapshot_id"], first["opened"]["snapshot_id"]);
+        assert!(first["read"]["blob_sha"].is_string());
 
         let snapshot_id = serde_json::to_string(&first["opened"]["snapshot_id"])?;
         let later = successful_value(
@@ -483,11 +487,8 @@ mod tests {
             )
             .await?,
         )?;
-        assert_eq!(later["items"][0]["text"], "beta");
-        assert_eq!(
-            later["items"][0]["snapshot_id"],
-            first["opened"]["snapshot_id"]
-        );
+        assert_eq!(later["text"], "beta");
+        assert_eq!(later["snapshot_id"], first["opened"]["snapshot_id"]);
         client.cancel().await?;
         server_task.await??;
         Ok(())
