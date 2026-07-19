@@ -1,0 +1,72 @@
+FEEDBACK WIT CODE MODE
+"""
+Here’s how wit code mode felt in that ratzilla exploration, from the agent side.
+
+What worked well
+
+One tool, multi-step scripts  
+I could open → list → read → searchCode in a single call and return a shaped JSON blob. That beats a pile of wit tree / wit cat / wit rg shell hops when the goal is “orient + answer.”
+
+Good for structured answers  
+For “what is this repo and when would I use it?”, code mode was a natural fit: open snapshot, skim README/Cargo.toml/src, pull backend comparison docs, list examples. Evidence came back as data I could summarize cleanly.
+
+API surface is small enough to learn  
+Once I introspected Object.keys(codemode.wit), the model was clear: findRepositories, refs, open, list, searchCode, read, context. No sprawling tool menu.
+
+What felt rough
+
+Cold start / discovery  
+First call failed with not a function because I guessed searchRepositories instead of findRepositories. The tool description shows a short example (open + searchCode) but not the full method list or argument shapes. I had to probe with Object.keys (and almost fell back to CLI search).
+
+Return shape is noisy for agents  
+read came back as one object per line with full provenance (blob_sha, commit_sha, snapshot_id, …) repeated every line. Fine for faithfulness; expensive for “give me the README.” I constantly did (items || []).map(l => l.text).join('\n'). A compact mode (text, lines, or “strip metadata”) would help a lot.
+
+Payload / truncation  
+One combined call blew past the MCP response budget (~49KB, truncated to disk). I had to split work (README head, then rest, then lib/backends). Parallelism is nice until the response envelope isn’t.
+
+Search hit quality  
+searchCode with broad queries (pub fn, pub struct) flooded CHANGELOG.md and examples. Useful eventually, but I wanted repo-scoped ranking like “prefer src/, demote changelog” or path filters in the call.
+
+Repo discovery path  
+For “find ratatuizilla,” I ended up using the CLI wit search because code-mode discovery wasn’t obvious and naming was fuzzy. Code mode shone after I knew ratatui/ratzilla; discovery still felt CLI-native.
+
+No progressive disclosure of schemas  
+Unlike normal MCP tools with JSON Schema per call, code mode is “write JS against an opaque host.” That’s powerful, but errors like not a function don’t suggest the right name. A codemode.wit.help() / typed stubs in the tool description would cut a turn.
+
+How it compared to shell wit
+
+┌──────────────────────┬───────────────────────┬───────────────────────┐
+│                      │ Code mode             │ Shell wit             │
+├──────────────────────┼───────────────────────┼───────────────────────┤
+│ Multi-file synthesis │ Better                │ Many round trips      │
+├──────────────────────┼───────────────────────┼───────────────────────┤
+│ Human-readable skim  │ Weaker (line objects) │ Better (wit head/cat) │
+├──────────────────────┼───────────────────────┼───────────────────────┤
+│ Fuzzy repo find      │ Weak in session       │ Natural               │
+├──────────────────────┼───────────────────────┼───────────────────────┤
+│ Failures             │ JS/host errors        │ Familiar CLI errors   │
+├──────────────────────┼───────────────────────┼───────────────────────┤
+│ Agent cognitive load │ Write a mini program  │ Compose flags         │
+└──────────────────────┴───────────────────────┴───────────────────────┘
+
+I still used CLI once for search; code mode for everything after open.
+
+What would make it feel great
+
+1. Documented method signatures in the tool description (or a help op that returns them).  
+2. read modes: format: "text" | "lines" and optional line ranges without full provenance by default.  
+3. Response budgets: warn or auto-summarize when serialized size is huge; support “paths only” list.  
+4. searchCode filters: path_prefix, glob, exclude.  
+5. findRepositories examples for the fuzzy-name case (pattern + limit).  
+6. Stable error codes that include “did you mean findRepositories?” style hints.
+
+Bottom line
+
+Code mode felt like a sharp research kernel once the repo was known: open a snapshot, pull several surfaces, return one JSON evidence pack. The friction was onboarding (API names), verbosity (per-line metadata), and envelope size—not the core idea.
+
+For “explore this named repo and explain it,” I’d use code mode again. For “what’s the thing called ratatuizilla?” I’d still start with search CLI (or a first-class findRepositories example in the tool docs).
+"""
+
+TASKS
+- Improve the code mode surface so it's easier to use: read more on Code Mode first (https://developers.cloudflare.com/agents/tools/codemode/; https://blog.cloudflare.com/code-mode/) before tackling this problem.
+- include `--mode code` in the main `wit` binary so I can use `wit mcp --mode code` instead of needing `wit-mcp`

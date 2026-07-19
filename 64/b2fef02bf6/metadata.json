@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "64b2fef02bf6",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "crates/wit-quickjs-spike/src/bin/worker.rs",
+    "crates/wit-quickjs-spike/tests/containment.rs",
+    "crates/wit/codemode.wit.d.ts",
+    "crates/wit/src/codemode.rs",
+    "crates/wit/src/lib.rs",
+    "crates/wit/src/mcp.rs",
+    "crates/wit/src/operation_registry.rs",
+    "crates/wit/src/operations.rs",
+    "crates/wit/src/skill/SKILL.md",
+    "crates/wit/tests/codemode_stdio.rs",
+    "crates/wit/tests/docs_contract.rs",
+    "crates/wit/tests/fixtures/codemode.example.ts",
+    "docs/codemode-security.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/64/b2fef02bf6/0/metadata.json",
+      "transcript": "/64/b2fef02bf6/0/full.jsonl",
+      "compact_transcript": "/64/b2fef02bf6/0/transcript.jsonl",
+      "content_hash": "/64/b2fef02bf6/0/content_hash.txt",
+      "prompt": "/64/b2fef02bf6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 289081,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 18041344,
+    "output_tokens": 42722,
+    "api_call_count": 119
+  }
+}

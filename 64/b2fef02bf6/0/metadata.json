@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "64b2fef02bf6",
+  "session_id": "019f7ba9-8222-7c90-b7d9-52e4fe854741",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-19T21:31:05.513782Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "README.md",
+    "crates/wit-quickjs-spike/src/bin/worker.rs",
+    "crates/wit-quickjs-spike/tests/containment.rs",
+    "crates/wit/codemode.wit.d.ts",
+    "crates/wit/src/codemode.rs",
+    "crates/wit/src/lib.rs",
+    "crates/wit/src/mcp.rs",
+    "crates/wit/src/operation_registry.rs",
+    "crates/wit/src/operations.rs",
+    "crates/wit/src/skill/SKILL.md",
+    "crates/wit/tests/codemode_stdio.rs",
+    "crates/wit/tests/docs_contract.rs",
+    "crates/wit/tests/fixtures/codemode.example.ts",
+    "docs/codemode-security.md"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "67ab939b26ac",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 289081,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 18041344,
+    "output_tokens": 42722,
+    "api_call_count": 119
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-19T21:31:05.458874Z",
+    "agent_lines": 837,
+    "agent_removed": 82,
+    "human_added": 1,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 838,
+    "total_lines_changed": 920,
+    "agent_percentage": 99.89130434782608,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 7,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".grok/config.toml": 7
+      }
+    }
+  ]
+}
