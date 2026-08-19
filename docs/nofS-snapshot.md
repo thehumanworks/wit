@@ -1,6 +1,6 @@
 # No-filesystem repository snapshots
 
-Status: shipped for the open/list/read (tree/ls/cat) slice.
+Status: shipped for the open/list/read (CLI tree/ls/cat + MCP wit_open/wit_list/wit_read) slice.
 
 ## What changed
 
@@ -9,10 +9,10 @@ serialized with `fs2`). That path cannot move onto Cloudflare Workers / WASM as-
 
 This slice adds a second backend:
 
-| Backend | Mechanism | Disk cache writes | Commands |
+| Backend | Mechanism | Disk cache writes | Surfaces |
 |---------|-----------|-------------------|----------|
-| `disk` (default) | existing bare-repo cache | yes | all CLI reads |
-| `memory` | GitHub REST trees/blobs into RAM | **none** | `tree`, `ls`, `cat` |
+| `disk` (default) | existing bare-repo cache | yes | all CLI reads; MCP open/list/read/search/context |
+| `memory` | GitHub REST trees/blobs into RAM | **none** | CLI `tree`/`ls`/`cat`; MCP `wit_open`/`wit_list`/`wit_read` |
 
 Shared contract: `wit_snapshot::{SnapshotBackend, RepoSnapshot}` with provenance
 (`repo`, resolved ref, `commit_sha`, `tree_sha`, backend label, cache state).
@@ -24,10 +24,26 @@ Evidence from the disk path in `crates/wit/src/gitops/ops.rs`:
 - `cache_github_repo` writes bare clones under `WIT_CACHE_DIR` / `.wit/cache`
 - `fs2::FileExt` advisory locks (`.cache.lock`) require a real filesystem
 - `gix` repository handles are filesystem-backed object stores
-- MCP/`operations.rs` pins snapshots with `tempfile::TempDir` + `git clone --bare`
+- Disk MCP snapshots still use `tempfile::TempDir` + `git clone --bare` when `WIT_SNAPSHOT_BACKEND` is unset/`disk`
 - `rg` / grep uses local object walks and is out of scope for memory
 
 Lifting that stack into Workers/WASM would fake a filesystem, not remove the dependency.
+
+## MCP memory path (SLT ship gate)
+
+Set `WIT_SNAPSHOT_BACKEND=memory` before starting `wit mcp` (or `wit-mcp`). Then:
+
+- `wit_open` loads via `MemoryBackend` (GitHub REST trees/blobs into RAM)
+- `wit_list` / `wit_read` serve that in-memory snapshot
+- `cache.state` in the open response is **`memory`** (Architect lock)
+- No `PathBuf` / `TempDir` / `gix` / git CLI / `fs2` / `WIT_CACHE_DIR` on that path
+
+MCP request/response types are unchanged. Disk remains the default.
+`wit_search_code` and `wit_context` still require the disk backend for this slice.
+
+```bash
+WIT_SNAPSHOT_BACKEND=memory wit mcp --transport stdio --mode direct
+```
 
 ## How to run the no-FS demo
 
@@ -65,4 +81,5 @@ The memory backend returns typed errors for:
 - Memory budget pressure on the in-process blob cache
 
 Unit/integration coverage lives in `crates/wit-snapshot/tests/memory_backend.rs`
-(wiremock + in-memory HTTP doubles; no live GitHub flakiness).
+(wiremock + in-memory HTTP doubles; no live GitHub flakiness) plus
+`operations::tests::memory_snapshot_list_and_read_without_disk`.

@@ -58,15 +58,6 @@ pub struct ReqwestGitHubClient {
 
 #[cfg(feature = "http")]
 impl ReqwestGitHubClient {
-    pub fn from_env() -> SnapshotResult<Self> {
-        crate_tls_note();
-        let token = std::env::var("GITHUB_TOKEN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        Self::new("https://api.github.com", token)
-    }
-
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> SnapshotResult<Self> {
         let client = reqwest::Client::builder()
             .user_agent("wit-snapshot/0.1 (+https://github.com/thehumanworks/wit)")
@@ -77,6 +68,20 @@ impl ReqwestGitHubClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token,
         })
+    }
+
+    pub fn from_env() -> SnapshotResult<Self> {
+        crate_tls_note();
+        let token = std::env::var("GITHUB_TOKEN")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let base = std::env::var("WIT_GITHUB_API_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://api.github.com".to_string());
+        Self::new(base, token)
     }
 }
 
@@ -144,6 +149,15 @@ struct TreeNode {
     kind: EntryKind,
     sha: String,
     size: Option<u64>,
+}
+
+/// One path from an in-memory recursive tree (files and directories).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkEntry {
+    pub path: String,
+    pub kind: EntryKind,
+    pub sha: String,
+    pub size: Option<u64>,
 }
 
 struct BlobCache {
@@ -235,6 +249,125 @@ impl<C> MemorySnapshot<C> {
             return Ok(());
         }
         Err(SnapshotError::MissingPath(path.to_string()))
+    }
+
+    /// Sorted walk of every file and directory node in the pinned tree.
+    pub fn walk_entries(&self) -> Vec<WalkEntry> {
+        self.nodes
+            .iter()
+            .map(|(path, node)| WalkEntry {
+                path: path.clone(),
+                kind: node.kind,
+                sha: node.sha.clone(),
+                size: node.size,
+            })
+            .collect()
+    }
+
+    /// Look up a single path's tree metadata.
+    pub fn entry(&self, path: &str) -> Option<WalkEntry> {
+        let path = normalize_repo_path(path);
+        self.nodes.get(&path).map(|node| WalkEntry {
+            path,
+            kind: node.kind,
+            sha: node.sha.clone(),
+            size: node.size,
+        })
+    }
+
+    /// Insert decoded blob bytes into the in-process cache (tests / offline fixtures).
+    pub fn preload_blob(&self, sha: impl Into<String>, bytes: Vec<u8>) -> SnapshotResult<()> {
+        let mut cache = self
+            .blobs
+            .lock()
+            .map_err(|_| SnapshotError::Other("blob cache lock poisoned".to_string()))?;
+        cache.insert(sha.into(), Arc::new(bytes))
+    }
+}
+
+impl<C> MemorySnapshot<C>
+where
+    C: GitHubHttpClient + 'static,
+{
+    /// Fetch and decode a blob by SHA (used by MCP list metadata / read-by-oid).
+    pub async fn blob_text_by_sha(&self, sha: &str, max_bytes: u64) -> SnapshotResult<String> {
+        if let Some(size) = self
+            .nodes
+            .values()
+            .find(|node| node.sha == sha && node.kind == EntryKind::File)
+            .and_then(|node| node.size)
+            && size > max_bytes
+        {
+            return Err(SnapshotError::OversizedBlob(format!(
+                "blob {sha} is {size} bytes (max {max_bytes})"
+            )));
+        }
+
+        let bytes = {
+            let cache = self
+                .blobs
+                .lock()
+                .map_err(|_| SnapshotError::Other("blob cache lock poisoned".to_string()))?;
+            cache.get(sha)
+        };
+
+        let bytes = if let Some(hit) = bytes {
+            hit
+        } else {
+            let (status, body) = self
+                .client
+                .get_json(&format!(
+                    "/repos/{}/git/blobs/{}",
+                    self.provenance.repo, sha
+                ))
+                .await?;
+            if status != 200 {
+                return Err(SnapshotError::from_status(
+                    status,
+                    &body,
+                    &self.provenance.repo,
+                ));
+            }
+            let blob: GitBlob = serde_json::from_str(&body)
+                .map_err(|err| SnapshotError::Other(format!("decode blob: {err}")))?;
+            if blob.size > max_bytes {
+                return Err(SnapshotError::OversizedBlob(format!(
+                    "blob {sha} is {} bytes (max {max_bytes})",
+                    blob.size
+                )));
+            }
+            let decoded = match blob.encoding.as_str() {
+                "base64" => {
+                    let cleaned: String = blob
+                        .content
+                        .chars()
+                        .filter(|ch| !ch.is_whitespace())
+                        .collect();
+                    STANDARD.decode(cleaned).map_err(|err| {
+                        SnapshotError::Other(format!("base64 decode failed for {sha}: {err}"))
+                    })?
+                }
+                "utf-8" => blob.content.into_bytes(),
+                other => {
+                    return Err(SnapshotError::Other(format!(
+                        "unsupported blob encoding '{other}' for {sha}"
+                    )));
+                }
+            };
+            let arc = Arc::new(decoded);
+            let mut cache = self
+                .blobs
+                .lock()
+                .map_err(|_| SnapshotError::Other("blob cache lock poisoned".to_string()))?;
+            cache.insert(sha.to_string(), Arc::clone(&arc))?;
+            arc
+        };
+
+        if bytes.contains(&0) {
+            return Err(SnapshotError::BinaryFile(format!("blob {sha}")));
+        }
+        String::from_utf8(bytes.as_ref().clone())
+            .map_err(|_| SnapshotError::BinaryFile(format!("blob {sha} (not valid UTF-8)")))
     }
 }
 
@@ -347,7 +480,7 @@ where
             );
         }
 
-        let resolved_ref = if requested.starts_with("refs/") {
+        let resolved_ref = if is_full_sha(&requested) || requested.starts_with("refs/") {
             requested.clone()
         } else {
             format!("refs/heads/{requested}")
@@ -363,12 +496,16 @@ where
                 commit_sha,
                 tree_sha,
                 backend: "memory".to_string(),
-                cache_state: "fresh".to_string(),
+                cache_state: "memory".to_string(),
             },
             nodes,
             blobs: Mutex::new(BlobCache::new(self.limits.memory_budget_bytes)),
         })
     }
+}
+
+fn is_full_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 impl<C> RepoSnapshot for MemorySnapshot<C>
@@ -706,7 +843,7 @@ pub fn snapshot_from_tree_json<C: GitHubHttpClient + 'static>(
             commit_sha: commit_sha.to_string(),
             tree_sha: tree_sha.to_string(),
             backend: "memory".to_string(),
-            cache_state: "fresh".to_string(),
+            cache_state: "memory".to_string(),
         },
         nodes,
         limits,

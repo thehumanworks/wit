@@ -2,6 +2,7 @@ use crate::{
     gitops::ops::{CacheAcquisitionMode, CacheBranchSelection, cache_github_repo_with_context},
     operation_context::command_output,
     search::{GitHubSearchClient, MAX_GITHUB_REPOS},
+    snapshot::CliSnapshotBackend,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -17,6 +18,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tempfile::TempDir;
+use wit_snapshot::{
+    EntryKind, MemoryBackend, MemorySnapshot, RepoSnapshot, ReqwestGitHubClient, SnapshotBackend,
+    SnapshotError,
+};
+#[cfg(test)]
+use wit_snapshot::{MemoryBackendLimits, snapshot_from_tree_json};
 
 pub use crate::operation_context::{OperationCancellation, OperationContext};
 
@@ -36,12 +43,23 @@ const MAX_CONTEXT_CANDIDATES: usize = 5000;
 #[derive(Clone)]
 pub struct WitOperations {
     snapshots: Arc<Mutex<HashMap<String, SnapshotRecord>>>,
+    snapshot_backend: CliSnapshotBackend,
 }
 
 impl WitOperations {
     pub fn new() -> Self {
         Self {
             snapshots: Arc::new(Mutex::new(HashMap::new())),
+            snapshot_backend: CliSnapshotBackend::from_env_or_flag(None)
+                .unwrap_or(CliSnapshotBackend::Disk),
+        }
+    }
+
+    /// Construct with an explicit snapshot backend (disk remains the production default).
+    pub fn with_backend(snapshot_backend: CliSnapshotBackend) -> Self {
+        Self {
+            snapshots: Arc::new(Mutex::new(HashMap::new())),
+            snapshot_backend,
         }
     }
 
@@ -326,7 +344,7 @@ fn clone_snapshot(
             "snapshot changed while being pinned: expected {expected_sha}, cloned {actual}; retry wit_open"
         ));
     }
-    Ok(SnapshotRecord {
+    Ok(SnapshotRecord::Disk {
         _temp_dir: temp_dir,
         repo_path,
         repo: repo.to_string(),
@@ -382,7 +400,7 @@ fn fetch_snapshot(
         "set snapshot HEAD",
     )?;
     Ok((
-        SnapshotRecord {
+        SnapshotRecord::Disk {
             _temp_dir: temp_dir,
             repo_path,
             repo: repo.to_string(),
@@ -523,10 +541,13 @@ fn walk_tree(
     snapshot: &SnapshotHandle,
     mut visit: impl FnMut(&TreeEntry) -> Result<bool, String>,
 ) -> Result<(), String> {
+    let SnapshotHandle::Disk { repo_path, .. } = snapshot else {
+        return Err("walk_tree requires a disk snapshot".to_string());
+    };
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(&snapshot.repo_path)
+        .arg(repo_path)
         .args(["ls-tree", "-r", "-t", "-z", "-l", "HEAD"]);
     let output = command_output(context, &mut command, "list snapshot tree")
         .map_err(|err| err.to_string())?;
@@ -575,6 +596,113 @@ fn relative_depth(path: &str, base_path: &str) -> Option<usize> {
     Some(relative.split('/').count())
 }
 
+async fn list_memory_snapshot_window(
+    context: &OperationContext,
+    snapshot: &SnapshotHandle,
+    base_path: &str,
+    depth: usize,
+    include_metadata: bool,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<ListItem>, String> {
+    let memory = snapshot
+        .memory()
+        .ok_or_else(|| "list_memory_snapshot_window requires a memory snapshot".to_string())?;
+    let mut seen = 0usize;
+    let mut items = Vec::with_capacity(limit.min(MAX_PAGE_ITEMS + 1));
+    for entry in memory.walk_entries() {
+        context.check()?;
+        let Some(entry_depth) = relative_depth(&entry.path, base_path) else {
+            continue;
+        };
+        if entry_depth == 0 || entry_depth > depth {
+            continue;
+        }
+        if seen < offset {
+            seen += 1;
+            continue;
+        }
+        if items.len() >= limit {
+            break;
+        }
+        let kind = match entry.kind {
+            EntryKind::Dir => "directory",
+            EntryKind::File => "file",
+        };
+        let lines = if include_metadata && entry.kind == EntryKind::File && !entry.sha.is_empty() {
+            match memory.blob_text_by_sha(&entry.sha, 4 * 1024 * 1024).await {
+                Ok(text) => Some(text.lines().count()),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        items.push(ListItem {
+            snapshot_id: snapshot.snapshot_id().to_string(),
+            repo: snapshot.repo().to_string(),
+            commit_sha: snapshot.commit_sha().to_string(),
+            path: entry.path,
+            kind: kind.to_string(),
+            blob_sha: (entry.kind == EntryKind::File).then_some(entry.sha),
+            size_bytes: include_metadata.then_some(entry.size).flatten(),
+            lines,
+        });
+        seen += 1;
+    }
+    Ok(items)
+}
+
+async fn read_memory_snapshot_window(
+    context: &OperationContext,
+    snapshot: &SnapshotHandle,
+    path: &str,
+    requested_start: usize,
+    requested_end: Option<usize>,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<ReadLineItem>, String> {
+    let memory = snapshot
+        .memory()
+        .ok_or_else(|| "read_memory_snapshot_window requires a memory snapshot".to_string())?;
+    let entry = memory
+        .entry(path)
+        .ok_or_else(|| format!("path not found: {path}"))?;
+    if entry.kind != EntryKind::File {
+        return Err(format!("path is a directory, not a file: {path}"));
+    }
+    context.check()?;
+    let text = context
+        .wait(memory.blob_text_by_sha(&entry.sha, 16 * 1024 * 1024))
+        .await?
+        .map_err(snapshot_error)?;
+    context.check()?;
+    let lines = text.lines().collect::<Vec<_>>();
+    let end = requested_end.unwrap_or(lines.len()).min(lines.len());
+    if requested_start > lines.len().saturating_add(1) {
+        return Err(format!(
+            "start_line {requested_start} exceeds file length {}",
+            lines.len()
+        ));
+    }
+    let page_start = requested_start.saturating_add(offset);
+    if page_start > end {
+        return Ok(Vec::new());
+    }
+    Ok((page_start..=end)
+        .take(limit)
+        .map(|line_number| ReadLineItem {
+            snapshot_id: snapshot.snapshot_id().to_string(),
+            repo: snapshot.repo().to_string(),
+            commit_sha: snapshot.commit_sha().to_string(),
+            path: path.to_string(),
+            blob_sha: entry.sha.clone(),
+            start_line: line_number,
+            end_line: line_number,
+            text: lines[line_number - 1].to_string(),
+        })
+        .collect())
+}
+
 fn list_snapshot_window(
     context: &OperationContext,
     snapshot: &SnapshotHandle,
@@ -608,9 +736,9 @@ fn list_snapshot_window(
             None
         };
         items.push(ListItem {
-            snapshot_id: snapshot.snapshot_id.clone(),
-            repo: snapshot.repo.clone(),
-            commit_sha: snapshot.commit_sha.clone(),
+            snapshot_id: snapshot.snapshot_id().to_string(),
+            repo: snapshot.repo().to_string(),
+            commit_sha: snapshot.commit_sha().to_string(),
             path: entry.path.clone(),
             kind: if entry.kind == "tree" {
                 "directory".to_string()
@@ -728,9 +856,9 @@ fn search_snapshot_window(
                     })
                     .collect();
                 items.push(SearchItem {
-                    snapshot_id: snapshot.snapshot_id.clone(),
-                    repo: snapshot.repo.clone(),
-                    commit_sha: snapshot.commit_sha.clone(),
+                    snapshot_id: snapshot.snapshot_id().to_string(),
+                    repo: snapshot.repo().to_string(),
+                    commit_sha: snapshot.commit_sha().to_string(),
                     path: entry.path.clone(),
                     blob_sha: entry.oid.clone(),
                     query: query.clone(),
@@ -756,9 +884,12 @@ fn read_snapshot_window(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<ReadLineItem>, String> {
+    let SnapshotHandle::Disk { repo_path, .. } = snapshot else {
+        return Err("read_snapshot_window requires a disk snapshot".to_string());
+    };
     let oid = git_stdout_with_context(
         context,
-        &snapshot.repo_path,
+        repo_path,
         &["rev-parse", &format!("HEAD:{path}")],
         "resolve file blob",
     )?;
@@ -778,9 +909,9 @@ fn read_snapshot_window(
     Ok((page_start..=end)
         .take(limit)
         .map(|line_number| ReadLineItem {
-            snapshot_id: snapshot.snapshot_id.clone(),
-            repo: snapshot.repo.clone(),
-            commit_sha: snapshot.commit_sha.clone(),
+            snapshot_id: snapshot.snapshot_id().to_string(),
+            repo: snapshot.repo().to_string(),
+            commit_sha: snapshot.commit_sha().to_string(),
             path: path.to_string(),
             blob_sha: oid.clone(),
             start_line: line_number,
@@ -796,9 +927,12 @@ fn blob_text(
     oid: &str,
     max_bytes: usize,
 ) -> Result<String, String> {
+    let SnapshotHandle::Disk { repo_path, .. } = snapshot else {
+        return Err("blob_text requires a disk snapshot".to_string());
+    };
     let size = git_stdout_with_context(
         context,
-        &snapshot.repo_path,
+        repo_path,
         &["cat-file", "-s", oid],
         "read blob size",
     )?
@@ -812,7 +946,7 @@ fn blob_text(
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(&snapshot.repo_path)
+        .arg(repo_path)
         .args(["cat-file", "blob", oid]);
     let output = command_output(context, &mut command, "read snapshot blob")
         .map_err(|err| err.to_string())?;
@@ -1158,9 +1292,9 @@ fn compact_list_page(
     let mut response = CompactListPage {
         api_version: page.api_version,
         format: CompactListFormat::Paths,
-        snapshot_id: snapshot.snapshot_id.clone(),
-        repo: snapshot.repo.clone(),
-        commit_sha: snapshot.commit_sha.clone(),
+        snapshot_id: snapshot.snapshot_id().to_string(),
+        repo: snapshot.repo().to_string(),
+        commit_sha: snapshot.commit_sha().to_string(),
         paths: page.items.into_iter().map(|item| item.path).collect(),
         returned_items: page.returned_items,
         has_more: page.has_more,
@@ -1180,9 +1314,9 @@ fn compact_read_text_page(
     let mut response = CompactReadTextPage {
         api_version: page.api_version,
         format: CompactReadTextFormat::Text,
-        snapshot_id: snapshot.snapshot_id.clone(),
-        repo: snapshot.repo.clone(),
-        commit_sha: snapshot.commit_sha.clone(),
+        snapshot_id: snapshot.snapshot_id().to_string(),
+        repo: snapshot.repo().to_string(),
+        commit_sha: snapshot.commit_sha().to_string(),
         path: path.to_string(),
         blob_sha: first.map(|item| item.blob_sha.clone()),
         start_line: first.map(|item| item.start_line),
@@ -1211,9 +1345,9 @@ fn compact_read_lines_page(
     let mut response = CompactReadLinesPage {
         api_version: page.api_version,
         format: CompactReadLinesFormat::Lines,
-        snapshot_id: snapshot.snapshot_id.clone(),
-        repo: snapshot.repo.clone(),
-        commit_sha: snapshot.commit_sha.clone(),
+        snapshot_id: snapshot.snapshot_id().to_string(),
+        repo: snapshot.repo().to_string(),
+        commit_sha: snapshot.commit_sha().to_string(),
         path: path.to_string(),
         blob_sha: first.map(|item| item.blob_sha.clone()),
         start_line: first.map(|item| item.start_line),
@@ -1308,6 +1442,10 @@ fn anyhow_error(err: anyhow::Error) -> String {
     format!("{err:#}")
 }
 
+fn snapshot_error(err: SnapshotError) -> String {
+    err.to_string()
+}
+
 fn contextual_error(
     context: &OperationContext,
     action: &str,
@@ -1367,7 +1505,7 @@ mod tests {
         let operations = WitOperations::new();
         operations.snapshots.lock().unwrap().insert(
             id.clone(),
-            SnapshotRecord {
+            SnapshotRecord::Disk {
                 _temp_dir: temp_dir,
                 repo_path,
                 repo: "owner/repo".to_string(),
@@ -1375,6 +1513,116 @@ mod tests {
             },
         );
         (operations, id)
+    }
+
+    fn operations_with_memory_snapshot() -> (WitOperations, String) {
+        let tree = serde_json::json!({
+            "sha": "treesha",
+            "truncated": false,
+            "tree": [
+                {"path": "README.md", "mode": "100644", "type": "blob", "sha": "blob-readme", "size": 12},
+                {"path": "src", "mode": "040000", "type": "tree", "sha": "tree-src"},
+                {"path": "src/lib.rs", "mode": "100644", "type": "blob", "sha": "blob-lib", "size": 28}
+            ]
+        })
+        .to_string();
+        let client = ReqwestGitHubClient::new("http://127.0.0.1:9", None).unwrap();
+        let snap = snapshot_from_tree_json(
+            Arc::new(client),
+            "owner/repo",
+            "main",
+            "abc123memory",
+            "treesha",
+            &tree,
+            MemoryBackendLimits::default(),
+        )
+        .unwrap();
+        snap.preload_blob("blob-readme", b"hello world\n".to_vec())
+            .unwrap();
+        snap.preload_blob("blob-lib", b"pub fn answer() -> u8 {\n    42\n}\n".to_vec())
+            .unwrap();
+        let id = snapshot_id("owner/repo", "abc123memory");
+        let operations = WitOperations::with_backend(CliSnapshotBackend::Memory);
+        operations.snapshots.lock().unwrap().insert(
+            id.clone(),
+            SnapshotRecord::Memory {
+                snapshot: Arc::new(snap),
+                snapshot_id: id.clone(),
+            },
+        );
+        (operations, id)
+    }
+
+    #[tokio::test]
+    async fn memory_snapshot_list_and_read_without_disk() {
+        let probe = tempfile::tempdir().unwrap();
+        // Safety: test isolation for accidental cache writes.
+        unsafe {
+            std::env::set_var("WIT_CACHE_DIR", probe.path());
+        }
+        let (operations, snapshot_id) = operations_with_memory_snapshot();
+        let listed = operations
+            .list(
+                &OperationContext::default(),
+                ListArgs {
+                    snapshot_id: snapshot_id.clone(),
+                    path: None,
+                    depth: Some(2),
+                    include_metadata: true,
+                    format: ListFormat::Structured,
+                    cursor: None,
+                    max_items: None,
+                    max_bytes: None,
+                    include_rendered_text: false,
+                },
+            )
+            .await
+            .unwrap();
+        let ListResponse::Structured(page) = listed else {
+            panic!("expected structured list");
+        };
+        let paths: Vec<_> = page.items.iter().map(|item| item.path.as_str()).collect();
+        assert!(paths.contains(&"README.md"));
+        assert!(paths.contains(&"src"));
+        assert!(paths.contains(&"src/lib.rs"));
+
+        let read = operations
+            .read(
+                &OperationContext::default(),
+                ReadArgs {
+                    snapshot_id,
+                    path: "README.md".to_string(),
+                    start_line: Some(1),
+                    end_line: Some(1),
+                    number_lines: false,
+                    format: ReadFormat::Text,
+                    cursor: None,
+                    max_lines: None,
+                    max_bytes: None,
+                    include_rendered_text: false,
+                },
+            )
+            .await
+            .unwrap();
+        let ReadResponse::Text(page) = read else {
+            panic!("expected text read");
+        };
+        assert_eq!(page.text, "hello world");
+        assert!(
+            std::fs::read_dir(probe.path()).unwrap().next().is_none(),
+            "memory MCP path must not write WIT_CACHE_DIR"
+        );
+    }
+
+    #[test]
+    fn memory_cache_provenance_state_is_memory() {
+        let cache = CacheProvenance {
+            state: "memory".to_string(),
+            last_checked_at: None,
+            last_updated_at: None,
+            last_error: None,
+        };
+        assert_eq!(cache.state, "memory");
     }
 
     #[tokio::test]
@@ -1454,8 +1702,8 @@ mod tests {
         let error = match clone_snapshot(
             &context,
             "owner/cancelled",
-            &source.repo_path,
-            &source.commit_sha,
+            source.require_disk_path().unwrap(),
+            source.commit_sha(),
         ) {
             Ok(_) => panic!("cancelled snapshot must not be created"),
             Err(error) => error,
@@ -1486,7 +1734,7 @@ mod tests {
                 operations.publish_snapshot(
                     &context,
                     snapshot_id,
-                    SnapshotRecord {
+                    SnapshotRecord::Disk {
                         _temp_dir: temp_dir,
                         repo_path,
                         repo: "owner/repo".to_string(),
@@ -1659,30 +1907,95 @@ impl Default for WitOperations {
     }
 }
 
-struct SnapshotRecord {
-    _temp_dir: TempDir,
-    repo_path: PathBuf,
-    repo: String,
-    commit_sha: String,
+enum SnapshotRecord {
+    Disk {
+        _temp_dir: TempDir,
+        repo_path: PathBuf,
+        repo: String,
+        commit_sha: String,
+    },
+    Memory {
+        snapshot: Arc<MemorySnapshot<ReqwestGitHubClient>>,
+        snapshot_id: String,
+    },
 }
 
 impl SnapshotRecord {
     fn handle(&self) -> SnapshotHandle {
-        SnapshotHandle {
-            repo_path: self.repo_path.clone(),
-            repo: self.repo.clone(),
-            commit_sha: self.commit_sha.clone(),
-            snapshot_id: snapshot_id(&self.repo, &self.commit_sha),
+        match self {
+            Self::Disk {
+                repo_path,
+                repo,
+                commit_sha,
+                ..
+            } => SnapshotHandle::Disk {
+                repo_path: repo_path.clone(),
+                repo: repo.clone(),
+                commit_sha: commit_sha.clone(),
+                snapshot_id: snapshot_id(repo, commit_sha),
+            },
+            Self::Memory {
+                snapshot,
+                snapshot_id,
+            } => SnapshotHandle::Memory {
+                snapshot: Arc::clone(snapshot),
+                snapshot_id: snapshot_id.clone(),
+            },
         }
     }
 }
 
 #[derive(Clone)]
-struct SnapshotHandle {
-    repo_path: PathBuf,
-    repo: String,
-    commit_sha: String,
-    snapshot_id: String,
+enum SnapshotHandle {
+    Disk {
+        repo_path: PathBuf,
+        repo: String,
+        commit_sha: String,
+        snapshot_id: String,
+    },
+    Memory {
+        snapshot: Arc<MemorySnapshot<ReqwestGitHubClient>>,
+        snapshot_id: String,
+    },
+}
+
+impl SnapshotHandle {
+    fn snapshot_id(&self) -> &str {
+        match self {
+            Self::Disk { snapshot_id, .. } | Self::Memory { snapshot_id, .. } => snapshot_id,
+        }
+    }
+
+    fn repo(&self) -> &str {
+        match self {
+            Self::Disk { repo, .. } => repo,
+            Self::Memory { snapshot, .. } => snapshot.provenance().repo.as_str(),
+        }
+    }
+
+    fn commit_sha(&self) -> &str {
+        match self {
+            Self::Disk { commit_sha, .. } => commit_sha,
+            Self::Memory { snapshot, .. } => snapshot.provenance().commit_sha.as_str(),
+        }
+    }
+
+    fn require_disk_path(&self) -> Result<&Path, String> {
+        match self {
+            Self::Disk { repo_path, .. } => Ok(repo_path),
+            Self::Memory { .. } => Err(
+                "this operation requires the disk snapshot backend; reopen with WIT_SNAPSHOT_BACKEND=disk or omit the memory backend"
+                    .to_string(),
+            ),
+        }
+    }
+
+    fn memory(&self) -> Option<&MemorySnapshot<ReqwestGitHubClient>> {
+        match self {
+            Self::Memory { snapshot, .. } => Some(snapshot.as_ref()),
+            Self::Disk { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
@@ -2119,6 +2432,11 @@ impl WitOperations {
             .filter(|value| !value.is_empty())
             .unwrap_or("HEAD")
             .to_string();
+
+        if self.snapshot_backend == CliSnapshotBackend::Memory {
+            return self.open_memory(context, args.repo, requested).await;
+        }
+
         let remote = github_remote_url(&args.repo);
         let resolved = resolve_requested_ref(context, &remote, &requested)?;
         let (record, commit_sha, cache) = match &resolved.kind {
@@ -2175,6 +2493,55 @@ impl WitOperations {
             resolved_ref: resolved.resolved_ref,
             commit_sha,
             cache,
+            capabilities: SnapshotCapabilities {
+                branches: true,
+                tags: true,
+                full_commit_sha: true,
+                pull_request_heads: "not_supported; resolve the PR head to a full commit SHA"
+                    .to_string(),
+            },
+        })
+    }
+
+    async fn open_memory(
+        &self,
+        context: &OperationContext,
+        repo: String,
+        requested: String,
+    ) -> Result<OpenResponse, String> {
+        context.check()?;
+        let backend = MemoryBackend::from_env().map_err(snapshot_error)?;
+        let branch = if requested == "HEAD" {
+            None
+        } else {
+            Some(requested.as_str())
+        };
+        let snapshot = context
+            .wait(backend.open(&repo, branch))
+            .await?
+            .map_err(snapshot_error)?;
+        context.check()?;
+        let provenance = snapshot.provenance().clone();
+        let commit_sha = provenance.commit_sha.clone();
+        let id = snapshot_id(&repo, &commit_sha);
+        let record = SnapshotRecord::Memory {
+            snapshot: Arc::new(snapshot),
+            snapshot_id: id.clone(),
+        };
+        self.publish_snapshot(context, id.clone(), record)?;
+        Ok(OpenResponse {
+            api_version: "2".to_string(),
+            snapshot_id: id,
+            repo,
+            requested_ref: provenance.requested_ref,
+            resolved_ref: provenance.resolved_ref,
+            commit_sha,
+            cache: CacheProvenance {
+                state: "memory".to_string(),
+                last_checked_at: None,
+                last_updated_at: None,
+                last_error: None,
+            },
             capabilities: SnapshotCapabilities {
                 branches: true,
                 tags: true,
@@ -2332,22 +2699,35 @@ impl WitOperations {
         }))?;
         let offset = cursor_offset(
             "wit_list",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             args.cursor.as_deref(),
         )?;
-        let items = list_snapshot_window(
-            context,
-            &snapshot,
-            &base_path,
-            depth,
-            args.include_metadata,
-            offset,
-            max_items + 1,
-        )?;
+        let items = if snapshot.memory().is_some() {
+            list_memory_snapshot_window(
+                context,
+                &snapshot,
+                &base_path,
+                depth,
+                args.include_metadata,
+                offset,
+                max_items + 1,
+            )
+            .await?
+        } else {
+            list_snapshot_window(
+                context,
+                &snapshot,
+                &base_path,
+                depth,
+                args.include_metadata,
+                offset,
+                max_items + 1,
+            )?
+        };
         let page = paginate_window(
             "wit_list",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             offset,
             items,
@@ -2376,6 +2756,7 @@ impl WitOperations {
     ) -> Result<Page<SearchItem>, String> {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
+        snapshot.require_disk_path()?;
         let queries = compile_queries(&args.queries)?;
         let mut include_globs = args.globs.clone();
         if let Some(glob) = args.glob.as_deref() {
@@ -2409,7 +2790,7 @@ impl WitOperations {
         }))?;
         let offset = cursor_offset(
             "wit_search_code",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             args.cursor.as_deref(),
         )?;
@@ -2429,7 +2810,7 @@ impl WitOperations {
         )?;
         let page = paginate_window(
             "wit_search_code",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             offset,
             items,
@@ -2479,23 +2860,36 @@ impl WitOperations {
         }))?;
         let offset = cursor_offset(
             "wit_read",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             args.cursor.as_deref(),
         )?;
-        let items = read_snapshot_window(
-            context,
-            &snapshot,
-            &path,
-            start_line,
-            args.end_line,
-            offset,
-            max_lines + 1,
-        )?;
+        let items = if snapshot.memory().is_some() {
+            read_memory_snapshot_window(
+                context,
+                &snapshot,
+                &path,
+                start_line,
+                args.end_line,
+                offset,
+                max_lines + 1,
+            )
+            .await?
+        } else {
+            read_snapshot_window(
+                context,
+                &snapshot,
+                &path,
+                start_line,
+                args.end_line,
+                offset,
+                max_lines + 1,
+            )?
+        };
         let number_lines = args.number_lines;
         let page = paginate_window(
             "wit_read",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             offset,
             items,
@@ -2523,6 +2917,7 @@ impl WitOperations {
     ) -> Result<Page<ContextItem>, String> {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
+        snapshot.require_disk_path()?;
         let queries = compile_queries(&args.queries)?;
         let globs = compile_globs(&args.globs)?;
         let context_lines = validate_range(
@@ -2548,7 +2943,7 @@ impl WitOperations {
         }))?;
         let offset = cursor_offset(
             "wit_context",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             args.cursor.as_deref(),
         )?;
@@ -2579,7 +2974,7 @@ impl WitOperations {
             .collect();
         let page = paginate_window(
             "wit_context",
-            Some(&snapshot.snapshot_id),
+            Some(snapshot.snapshot_id()),
             &fingerprint,
             offset,
             items,

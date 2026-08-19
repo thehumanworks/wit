@@ -12,7 +12,7 @@ mod types;
 pub use error::{SnapshotError, SnapshotResult};
 pub use memory::{
     GitHubHttpClient, MemoryBackend, MemoryBackendLimits, MemorySnapshot, ReqwestGitHubClient,
-    snapshot_from_tree_json,
+    WalkEntry, snapshot_from_tree_json,
 };
 pub use types::{DirEntry, EntryKind, FileContent, SnapshotProvenance, TreeEntry, TreeView};
 

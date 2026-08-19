@@ -10,7 +10,7 @@ pub struct SnapshotProvenance {
     pub tree_sha: String,
     /// `memory` or `disk`.
     pub backend: String,
-    /// Cache freshness label; memory always reports `fresh` (fetched for this open).
+    /// Cache freshness label; memory reports `memory` (Architect lock for MCP CacheProvenance.state).
     pub cache_state: String,
 }
 

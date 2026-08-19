@@ -131,7 +131,7 @@ async fn memory_open_list_read_roundtrip() {
     let snap = backend.open("acme/demo", None).await.unwrap();
     assert_eq!(snap.provenance().backend, "memory");
     assert_eq!(snap.provenance().commit_sha, "abc123commit");
-    assert_eq!(snap.provenance().cache_state, "fresh");
+    assert_eq!(snap.provenance().cache_state, "memory");
 
     let root = snap.list(None).unwrap();
     let names: Vec<_> = root.iter().map(|e| e.name.as_str()).collect();

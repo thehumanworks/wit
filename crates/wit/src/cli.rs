@@ -1753,15 +1753,9 @@ mod tests {
 
     #[test]
     fn snapshot_backend_flag_parses_for_tree_ls_cat() {
-        let tree = WitCli::try_parse_from([
-            "wit",
-            "tree",
-            "-r",
-            "owner/repo",
-            "--backend",
-            "memory",
-        ])
-        .expect("tree --backend memory should parse");
+        let tree =
+            WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "--backend", "memory"])
+                .expect("tree --backend memory should parse");
         assert!(matches!(
             tree.command,
             Commands::Tree {
