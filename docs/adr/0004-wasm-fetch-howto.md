@@ -47,6 +47,33 @@ Host/fetch failures must not invent a third snapshot backend or a new error
 family — map them onto the existing typed errors (`Api`, or HTTP status →
 `RateLimited` / `PrivateRepo` once a body/status is returned).
 
+## Host cache (browser / wasm host)
+
+The host **may** cache snapshot material per `(owner/repo, resolved ref)`.
+This stays outside `wit-snapshot` Rust: still one `MemoryBackend`, still
+`get_json` → host `http_get`. Do not add a third `SnapshotBackend`.
+
+Contract used by `demo/browser`:
+
+| Rule | Detail |
+|------|--------|
+| Key | Each `(owner/repo, resolved ref)` has its own countdown |
+| Default TTL | 24 hours from first successful open (tree landed) or last refresh |
+| What to store | Slim recursive tree (`path`, `type`, `sha`, `size`) + blob bytes keyed by sha after a read — not a full GitHub JSON dump when a slimmer index is enough |
+| Lookup | Host `http_get` checks the repo cache first; fixture/network only on miss or expiry |
+| Expiry | That repo’s entries are invalid; next open/list/read refetches. Other repos keep their own clocks |
+| Persistence | Demo keeps a sync in-memory map for the wasm import (imports are sync) and hydrates/persists via IndexedDB |
+
+QA without waiting a day: `?ttl=5` (seconds) or `?ttlMs=1500`, or the TTL input
+on the demo page. The cache panel shows last **HIT** / **MISS** and remaining
+TTL per cached repo.
+
+Unit coverage (no browser): 
+
+```bash
+node --test crates/wit-snapshot/demo/browser/repo-cache.test.js
+```
+
 ## CORS
 
 `api.github.com` does not grant arbitrary browser origins. A page that
@@ -74,8 +101,10 @@ python3 -m http.server 8765
 # open http://127.0.0.1:8765/
 ```
 
-Buttons call `open` → `list` → `read` against `demo/repo` fixtures. This shows
-the three exports wired in-page; it is not a production browser product.
+Buttons call `open` → `list` → `read` against `demo/repo` (and `other/repo`)
+fixtures. Re-open within TTL should show host **HIT** without a second fixture
+fetch. This shows the three exports wired in-page; it is not a production
+browser product.
 
 ## wasmtime + fixture (CI evidence)
 
