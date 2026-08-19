@@ -195,4 +195,51 @@ describe("RepoSnapshotCache", () => {
     assert.ok(other.remainingMs > 0);
     assert.notEqual(demo.remainingMs, other.remainingMs);
   });
+
+  it("after expiry, failed refetch passes status/body through and drops entry", () => {
+    const map = fixtureMap();
+    let now = 2_000_000;
+    const cache = new RepoSnapshotCache({ ttlMs: 500, now: () => now });
+
+    openSequence(cache, (p) => map.get(p) ?? null);
+    assert.equal(cache.statusRows().length, 1);
+    assert.ok(cache.findEntry("demo/repo"));
+
+    now += 501; // expire demo/repo
+
+    const failBody = JSON.stringify({ message: "API rate limit exceeded" });
+    const result = cache.getOrFetch("/repos/demo/repo", () => ({
+      status: 403,
+      body: failBody,
+    }));
+
+    // Pass through the typed failure — do not invent a 200 / slim success body.
+    assert.equal(result.status, 403);
+    assert.equal(result.body, failBody);
+    assert.equal(result.outcome, "miss");
+    assert.doesNotMatch(result.body, /default_branch/);
+    assert.doesNotMatch(result.body, /"private"/);
+
+    // Expired entry must be gone; failure must not re-cache.
+    assert.equal(cache.findEntry("demo/repo"), null);
+    assert.equal(cache.statusRows().length, 0);
+    assert.equal(cache.dumpEntries().length, 0);
+
+    // Same for a mid-open 404 after expiry (commit path).
+    openSequence(cache, (p) => map.get(p) ?? null);
+    assert.equal(cache.statusRows().length, 1);
+    now += 501;
+
+    const notFound = JSON.stringify({ message: "Not Found" });
+    const commitFail = cache.getOrFetch("/repos/demo/repo/commits/main", () => ({
+      status: 404,
+      body: notFound,
+    }));
+    assert.equal(commitFail.status, 404);
+    assert.equal(commitFail.body, notFound);
+    assert.equal(commitFail.outcome, "miss");
+    assert.doesNotMatch(commitFail.body, /abc123commit/);
+    assert.equal(cache.findEntry("demo/repo"), null);
+    assert.equal(cache.dumpEntries().length, 0);
+  });
 });
