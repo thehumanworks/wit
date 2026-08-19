@@ -1805,8 +1805,7 @@ mod tests {
             } => {
                 assert_eq!(backend.as_deref(), Some("memory"));
                 let extracted = extract_sed_inline_flags(args).unwrap();
-                let backend =
-                    merge_optional_flags("backend", backend, extracted.backend).unwrap();
+                let backend = merge_optional_flags("backend", backend, extracted.backend).unwrap();
                 assert_eq!(backend.as_deref(), Some("memory"));
                 assert_eq!(
                     CliSnapshotBackend::from_env_or_flag(backend.as_deref()).unwrap(),
@@ -1849,8 +1848,7 @@ mod tests {
                 );
                 let extracted = extract_sed_inline_flags(args).unwrap();
                 assert_eq!(extracted.backend.as_deref(), Some("memory"));
-                let backend =
-                    merge_optional_flags("backend", backend, extracted.backend).unwrap();
+                let backend = merge_optional_flags("backend", backend, extracted.backend).unwrap();
                 assert_eq!(
                     CliSnapshotBackend::from_env_or_flag(backend.as_deref()).unwrap(),
                     CliSnapshotBackend::Memory
@@ -1886,8 +1884,7 @@ mod tests {
                 ..
             } => {
                 let extracted = extract_sed_inline_flags(args).unwrap();
-                let backend =
-                    merge_optional_flags("backend", backend, extracted.backend).unwrap();
+                let backend = merge_optional_flags("backend", backend, extracted.backend).unwrap();
                 let repo = match (repo, extracted.repo) {
                     (None, None) => None,
                     (Some(a), None) | (None, Some(a)) => Some(a),
@@ -1917,12 +1914,9 @@ mod tests {
                 assert!(refresh_cache);
                 assert_eq!(args, vec!["src".to_string()]);
                 let argv = ["wit", "tree", "-r", "owner/repo", "--refresh-cache", "src"];
-                let (repo, path) = resolve_repo_and_optional_path(
-                    Some("owner/repo".to_string()),
-                    args,
-                    &argv,
-                )
-                .unwrap();
+                let (repo, path) =
+                    resolve_repo_and_optional_path(Some("owner/repo".to_string()), args, &argv)
+                        .unwrap();
                 assert_eq!(repo, "owner/repo");
                 assert_eq!(path, Some("src".to_string()));
             }
