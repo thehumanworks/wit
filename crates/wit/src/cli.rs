@@ -95,7 +95,7 @@ enum Commands {
         name = "cache",
         visible_alias = "c",
         about = "Pin a repository snapshot (disk cache refresh, or memory open/prefetch)",
-        after_help = "Disk backend: force-refresh the bare-repo cache. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes).\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache -r octocat/Hello-World --backend memory"
+        after_help = "Disk backend: force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes).\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache -r octocat/Hello-World --backend memory"
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -299,7 +299,7 @@ enum Commands {
         name = "sed",
         about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
         override_usage = "wit sed [OPTIONS] -r <REPO> [<SCRIPT>] <PATH>",
-        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range\n  wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text\n  wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures\n  wit sed -e 's/Hello/Hi/' -r octocat/Hello-World README --backend memory"
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range\n  wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text\n  wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures\n  wit sed -e 's/Hello/Hi/' --backend memory -r octocat/Hello-World README"
     )]
     Sed {
         /// Suppress automatic printing of pattern space
@@ -688,10 +688,8 @@ async fn main() -> anyhow::Result<()> {
                     let root = snap.list(None).map_err(|err| anyhow::anyhow!(err))?;
                     let mut warmed = 0usize;
                     for entry in root.into_iter().take(8) {
-                        if entry.kind == EntryKind::File {
-                            if snap.read(&entry.path).await.is_ok() {
-                                warmed += 1;
-                            }
+                        if entry.kind == EntryKind::File && snap.read(&entry.path).await.is_ok() {
+                            warmed += 1;
                         }
                     }
                     println!(
@@ -888,6 +886,7 @@ async fn main() -> anyhow::Result<()> {
                 opts = opts.max_count(max_count);
             }
 
+            #[allow(clippy::large_enum_variant)]
             enum RgSource {
                 Disk(gix::Repository),
                 Memory(wit_snapshot::MemorySnapshot<wit_snapshot::ReqwestGitHubClient>),
@@ -1953,9 +1952,9 @@ mod tests {
             "s/a/b/",
             "-r",
             "owner/repo",
-            "README.md",
             "--backend",
             "memory",
+            "README.md",
         ])
         .expect("sed --backend memory should parse");
         assert!(matches!(

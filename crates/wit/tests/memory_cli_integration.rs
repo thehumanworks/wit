@@ -101,9 +101,9 @@ fn memory_backend_cli_commands_leave_cache_empty() -> anyhow::Result<()> {
             "s/Hello/Hi/",
             "-r",
             repo,
-            "README",
             "--backend",
             "memory",
+            "README",
         ],
     )?;
     assert_success(&sed, "sed");

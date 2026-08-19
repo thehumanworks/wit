@@ -250,10 +250,9 @@ pub async fn list_remote_branches_api(owner_repo: &str) -> anyhow::Result<Vec<Br
         let (ahead, behind, merged) = if is_default {
             (0usize, 0usize, true)
         } else {
-            match compare_ahead_behind(&client, &owner_repo, &default_branch, &name).await {
-                Ok(values) => values,
-                Err(_) => (0, 0, false),
-            }
+            compare_ahead_behind(&client, &owner_repo, &default_branch, &name)
+                .await
+                .unwrap_or_default()
         };
 
         branches.push(BranchMetadata {

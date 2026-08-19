@@ -64,7 +64,7 @@ cargo run -p wit --bin wit -- cat -r octocat/Hello-World README --backend memory
 cargo run -p wit --bin wit -- rg 'Hello' -r octocat/Hello-World --backend memory
 cargo run -p wit --bin wit -- head -n 5 -r octocat/Hello-World README --backend memory
 cargo run -p wit --bin wit -- tail -n 5 -r octocat/Hello-World README --backend memory
-cargo run -p wit --bin wit -- sed -e 's/Hello/Hi/' -r octocat/Hello-World README --backend memory
+cargo run -p wit --bin wit -- sed -e 's/Hello/Hi/' --backend memory -r octocat/Hello-World README
 cargo run -p wit --bin wit -- cache -r octocat/Hello-World --backend memory
 cargo run -p wit --bin wit -- branches -r octocat/Hello-World --backend memory
 # or: WIT_SNAPSHOT_BACKEND=memory wit tree -r octocat/Hello-World

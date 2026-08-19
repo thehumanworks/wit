@@ -1266,7 +1266,7 @@ pub fn search_blob_bytes(
     if remaining == 0 {
         return Ok(Vec::new());
     }
-    if data.iter().any(|&b| b == 0) {
+    if data.contains(&0) {
         return Ok(Vec::new());
     }
     let matcher = RegexMatcherBuilder::new()
