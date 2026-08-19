@@ -20,8 +20,8 @@ description: >
 3. Find code: `wit rg`
 4. Read files: `wit cat`, `wit head`, `wit tail`, `wit sed`
 
-All repo-scoped commands take `-r/--repo <owner/repo>` as a required flag.
-When the user asks for a non-default branch, run `wit branches -r owner/repo` first to list available branch names and metadata before choosing `--branch BRANCH`.
+All repo-scoped commands take the repository as a positional `owner/repo` or with `-r/--repo` (both forms work; if both are given they must match).
+When the user asks for a non-default branch, run `wit branches owner/repo` first to list available branch names and metadata before choosing `--branch BRANCH`.
 
 ## MCP Server
 
@@ -166,7 +166,7 @@ wit cat -b -r ratatui/ratatui README.md         # number non-blank only
 
 | Flag | Description |
 |------|-------------|
-| `-r/--repo` | Repository in `owner/repo` format (required) |
+| `-r/--repo` | Repository in `owner/repo` format (or pass `owner/repo` positionally) |
 | `-n/--number` | Number all output lines |
 | `-b/--number-nonblank` | Number non-blank lines only (overrides `-n`) |
 | `-s/--squeeze-blank` | Suppress repeated empty lines |
@@ -188,7 +188,7 @@ wit rg -l --long 'Widget' -r ratatui/ratatui         # files with line counts
 
 | Flag | Description |
 |------|-------------|
-| `-r/--repo` | Repository in `owner/repo` format (required) |
+| `-r/--repo` | Repository in `owner/repo` format (or pass `owner/repo` positionally) |
 | `-i/--ignore-case` | Case insensitive |
 | `-S/--smart-case` | Case-insensitive when pattern is all lowercase |
 | `-w/--word-regexp` | Match whole words only |
@@ -213,7 +213,7 @@ wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs             # function sig
 
 | Flag | Description |
 |------|-------------|
-| `-r/--repo` | Repository in `owner/repo` format (required) |
+| `-r/--repo` | Repository in `owner/repo` format (or pass `owner/repo` positionally) |
 | `-n/--quiet` | Suppress automatic printing of pattern space |
 | `-e/--expression` | Add script expression (repeatable) |
 | `-f/--file` | Add script from file (repeatable) |

@@ -1,4 +1,4 @@
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,7 +29,7 @@ use wit_snapshot::{
 #[command(
     about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
     long_about = None,
-    after_help = "Branch discovery: run wit branches -r owner/repo to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: repo-reading commands default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory covers tree/ls/cat/rg/sed/head/tail, maps cache to an in-memory pin/prefetch, and lists branches via the GitHub API. search always uses the GitHub REST API (no disk cache)."
+    after_help = "Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: repo-reading commands default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory covers tree/ls/cat/rg/sed/head/tail, maps cache to an in-memory pin/prefetch, and lists branches via the GitHub API. search always uses the GitHub REST API (no disk cache). Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match)."
 )]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
@@ -79,13 +79,18 @@ enum Commands {
     #[command(
         name = "branches",
         about = "List remote branches with default-branch comparison metadata",
-        override_usage = "wit branches -r <REPO>",
-        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nWith --backend memory (or WIT_SNAPSHOT_BACKEND=memory), branch listing uses the GitHub REST API and does not write WIT_CACHE_DIR.\n\nExamples:\n  wit branches -r ratatui/ratatui\n  wit branches -r octocat/Hello-World --backend memory"
+        override_usage = "wit branches [OPTIONS] [REPO]",
+        group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
+        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nWith --backend memory (or WIT_SNAPSHOT_BACKEND=memory), branch listing uses the GitHub REST API and does not write WIT_CACHE_DIR.\n\nExamples:\n  wit branches ratatui/ratatui\n  wit branches -r ratatui/ratatui\n  wit branches octocat/Hello-World --backend memory"
     )]
     Branches {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
+
+        /// Repository in "owner/repo" format (alternative to -r/--repo)
+        #[arg(value_name = "REPO")]
+        repo_positional: Option<String>,
 
         /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
         #[arg(long = "backend", value_name = "disk|memory")]
@@ -95,12 +100,18 @@ enum Commands {
         name = "cache",
         visible_alias = "c",
         about = "Pin a repository snapshot (disk cache refresh, or memory open/prefetch)",
-        after_help = "Disk backend: force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes).\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache -r octocat/Hello-World --backend memory"
+        override_usage = "wit <cache|c> [OPTIONS] [REPO]",
+        group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
+        after_help = "Disk backend: force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache octocat/Hello-World --backend memory"
     )]
     Cache {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
+
+        /// Repository in "owner/repo" format (alternative to -r/--repo)
+        #[arg(value_name = "REPO")]
+        repo_positional: Option<String>,
 
         /// Branch name under refs/heads to cache instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -114,13 +125,13 @@ enum Commands {
         name = "tree",
         visible_alias = "t",
         about = "Show the file tree of a repository (or subtree). Use -l for line counts",
-        override_usage = "wit <tree|t> [OPTIONS] -r <REPO> [PATH]",
-        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nExamples:\n  wit tree -r ratatui/ratatui                # Full repo tree\n  wit tree -r ratatui/ratatui src/widgets    # Only the widgets subtree\n  wit tree -l -r ratatui/ratatui src         # With line counts and token estimates\n  wit tree -r octocat/Hello-World --backend memory"
+        override_usage = "wit <tree|t> [OPTIONS] [REPO] [PATH]",
+        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit tree ratatui/ratatui\n  wit tree ratatui/ratatui src/widgets\n  wit tree -r ratatui/ratatui src\n  wit tree -l ratatui/ratatui src\n  wit tree octocat/Hello-World --backend memory"
     )]
     Tree {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
 
         /// Branch name under refs/heads to read instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -130,8 +141,9 @@ enum Commands {
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
         refresh_cache: bool,
 
-        /// Optional subdirectory path to display tree from
-        path: Option<String>,
+        /// Repository and optional path: `owner/repo [path]`, or just `[path]` when using -r/--repo
+        #[arg(value_name = "REPO|PATH")]
+        args: Vec<String>,
 
         /// Show file sizes: lines and approximate token count
         #[arg(short = 'l', long = "long")]
@@ -144,13 +156,13 @@ enum Commands {
     #[command(
         name = "ls",
         about = "List directory contents (non-recursive). Use -l for file sizes",
-        override_usage = "wit ls [OPTIONS] -r <REPO> [PATH]",
-        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nExamples:\n  wit ls -r ratatui/ratatui                    # List repo root\n  wit ls -r ratatui/ratatui src/widgets        # List a subdirectory\n  wit ls -l -r ratatui/ratatui src             # With file sizes\n  wit ls -r ratatui/ratatui --backend memory   # No disk cache"
+        override_usage = "wit ls [OPTIONS] [REPO] [PATH]",
+        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit ls ratatui/ratatui\n  wit ls ratatui/ratatui src/widgets\n  wit ls -r ratatui/ratatui src\n  wit ls -l ratatui/ratatui src\n  wit ls ratatui/ratatui --backend memory"
     )]
     Ls {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
 
         /// Branch name under refs/heads to read instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -160,8 +172,9 @@ enum Commands {
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
         refresh_cache: bool,
 
-        /// Directory path within the repository (default: root)
-        path: Option<String>,
+        /// Repository and optional path: `owner/repo [path]`, or just `[path]` when using -r/--repo
+        #[arg(value_name = "REPO|PATH")]
+        args: Vec<String>,
 
         /// Show file sizes: lines and approximate token count
         #[arg(short = 'l', long = "long")]
@@ -174,13 +187,13 @@ enum Commands {
     #[command(
         name = "cat",
         about = "Print a file's contents. Use -n for line numbers",
-        override_usage = "wit cat [OPTIONS] -r <REPO> <PATH>",
-        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nExamples:\n  wit cat -r ratatui/ratatui Cargo.toml             # Print file\n  wit cat -n -r ratatui/ratatui src/lib.rs           # With line numbers\n  wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only\n  wit cat -r octocat/Hello-World README --backend memory"
+        override_usage = "wit cat [OPTIONS] [REPO] <PATH>",
+        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml\n  wit cat -n -r ratatui/ratatui src/lib.rs\n  wit cat -b ratatui/ratatui README.md\n  wit cat octocat/Hello-World README --backend memory"
     )]
     Cat {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
 
         /// Branch name under refs/heads to read instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -190,8 +203,9 @@ enum Commands {
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
         refresh_cache: bool,
 
-        /// Path to the file within the repository
-        path: String,
+        /// Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
+        #[arg(value_name = "REPO|PATH", num_args = 1..=2)]
+        args: Vec<String>,
 
         /// Number all output lines
         #[arg(short = 'n', long = "number")]
@@ -224,8 +238,9 @@ enum Commands {
     #[command(
         name = "rg",
         about = "Search file contents (ripgrep-style). Use -l to find files, -g to filter by type",
-        override_usage = "wit rg [OPTIONS] <PATTERN> -r <REPO>",
-        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nExamples:\n  wit rg 'impl Widget' -r ratatui/ratatui              # Find implementations\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui          # List files containing pattern\n  wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui         # Case-insensitive in .rs files\n  wit rg -C 3 'fn render' -r ratatui/ratatui             # 3 lines of context\n  wit rg 'Hello' -r octocat/Hello-World --backend memory # No disk cache"
+        override_usage = "wit rg [OPTIONS] <PATTERN> [REPO]",
+        group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
+        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nPass the repository as a positional `owner/repo` after the pattern, or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit rg 'impl Widget' ratatui/ratatui\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui\n  wit rg -g '*.rs' -i 'todo' ratatui/ratatui\n  wit rg -C 3 'fn render' ratatui/ratatui\n  wit rg 'Hello' octocat/Hello-World --backend memory"
     )]
     Rg {
         /// Regex pattern to search for
@@ -233,7 +248,11 @@ enum Commands {
 
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
+
+        /// Repository in "owner/repo" format (alternative to -r/--repo)
+        #[arg(value_name = "REPO")]
+        repo_positional: Option<String>,
 
         /// Branch name under refs/heads to search instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -298,8 +317,8 @@ enum Commands {
     #[command(
         name = "sed",
         about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
-        override_usage = "wit sed [OPTIONS] -r <REPO> [<SCRIPT>] <PATH>",
-        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range\n  wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text\n  wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures\n  wit sed -e 's/Hello/Hi/' --backend memory -r octocat/Hello-World README"
+        override_usage = "wit sed [OPTIONS] [<SCRIPT>] [REPO] <PATH>",
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py\n  wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs\n  wit sed -n '/^pub fn/p' -r ratatui/ratatui src/lib.rs\n  wit sed -e 's/Hello/Hi/' --backend memory octocat/Hello-World README"
     )]
     Sed {
         /// Suppress automatic printing of pattern space
@@ -320,7 +339,7 @@ enum Commands {
 
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
 
         /// Branch name under refs/heads to read instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -330,20 +349,20 @@ enum Commands {
         #[arg(long = "backend", value_name = "disk|memory")]
         backend: Option<String>,
 
-        /// Sed script and file path (positional): <SCRIPT> <PATH>, or <PATH> when using -e/-f for the script
+        /// Positionals: with -r, `<SCRIPT> <PATH>` or `<PATH>` (-e/-f); without -r, `<SCRIPT> <REPO> <PATH>` or `<REPO> <PATH>` (-e/-f)
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
     },
     #[command(
         name = "head",
         about = "Print the first N lines of a file (default: 10)",
-        override_usage = "wit head [OPTIONS] -r <REPO> <PATH>",
-        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nExamples:\n  wit head -r ratatui/ratatui src/lib.rs            # First 10 lines\n  wit head -n 50 -r ratatui/ratatui Cargo.toml      # First 50 lines\n  wit head -N -r ratatui/ratatui README.md           # With line numbers\n  wit head -n 5 -r octocat/Hello-World README --backend memory"
+        override_usage = "wit head [OPTIONS] [REPO] <PATH>",
+        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit head ratatui/ratatui src/lib.rs\n  wit head -n 50 -r ratatui/ratatui Cargo.toml\n  wit head -N ratatui/ratatui README.md\n  wit head -n 5 octocat/Hello-World README --backend memory"
     )]
     Head {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
 
         /// Branch name under refs/heads to read instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -353,8 +372,9 @@ enum Commands {
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
         refresh_cache: bool,
 
-        /// Path to the file within the repository
-        path: String,
+        /// Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
+        #[arg(value_name = "REPO|PATH", num_args = 1..=2)]
+        args: Vec<String>,
 
         /// Number of lines to show (default: 10)
         #[arg(short = 'n', long = "lines", default_value_t = 10)]
@@ -371,13 +391,13 @@ enum Commands {
     #[command(
         name = "tail",
         about = "Print the last N lines of a file, or from line N onward",
-        override_usage = "wit tail [OPTIONS] -r <REPO> <PATH>",
-        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nExamples:\n  wit tail -r ratatui/ratatui src/lib.rs              # Last 10 lines\n  wit tail -n 20 -r ratatui/ratatui Cargo.toml        # Last 20 lines\n  wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end\n  wit tail -n 5 -r octocat/Hello-World README --backend memory"
+        override_usage = "wit tail [OPTIONS] [REPO] <PATH>",
+        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit tail ratatui/ratatui src/lib.rs\n  wit tail -n 20 -r ratatui/ratatui Cargo.toml\n  wit tail -p 100 ratatui/ratatui src/lib.rs\n  wit tail -n 5 octocat/Hello-World README --backend memory"
     )]
     Tail {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
-        repo: String,
+        repo: Option<String>,
 
         /// Branch name under refs/heads to read instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
@@ -387,8 +407,9 @@ enum Commands {
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
         refresh_cache: bool,
 
-        /// Path to the file within the repository
-        path: String,
+        /// Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
+        #[arg(value_name = "REPO|PATH", num_args = 1..=2)]
+        args: Vec<String>,
 
         /// Number of lines to show (default: 10)
         #[arg(short = 'n', long = "lines", default_value_t = 10)]
@@ -488,6 +509,90 @@ fn repo_cache_mode(refresh_cache: bool) -> CacheAcquisitionMode {
 
 fn cache_branch_selection(branch: Option<String>) -> CacheBranchSelection {
     branch.map_or(CacheBranchSelection::Default, CacheBranchSelection::named)
+}
+
+/// Resolve repository from optional `-r/--repo` and optional positional `owner/repo`.
+///
+/// If both are present they must match; if neither is present, return an error.
+fn resolve_repo(flag: Option<String>, positional: Option<String>) -> anyhow::Result<String> {
+    match (flag, positional) {
+        (None, None) => anyhow::bail!(
+            "missing repository: pass owner/repo as a positional argument or with -r/--repo"
+        ),
+        (Some(repo), None) | (None, Some(repo)) => Ok(repo),
+        (Some(flag_repo), Some(positional_repo)) if flag_repo == positional_repo => Ok(flag_repo),
+        (Some(flag_repo), Some(positional_repo)) => anyhow::bail!(
+            "conflicting repository arguments: -r/--repo '{flag_repo}' vs positional '{positional_repo}'"
+        ),
+    }
+}
+
+/// Tree/ls style: `wit tree owner/repo [path]` or `wit tree -r owner/repo [path]`.
+/// With both `-r` and a positional repo: `wit tree -r owner/repo owner/repo [path]`.
+fn resolve_repo_and_optional_path(
+    flag: Option<String>,
+    args: Vec<String>,
+) -> anyhow::Result<(String, Option<String>)> {
+    match flag {
+        None => match args.len() {
+            0 => Err(anyhow::anyhow!(
+                "missing repository: pass owner/repo as a positional argument or with -r/--repo"
+            )),
+            1 => Ok((args[0].clone(), None)),
+            2 => Ok((args[0].clone(), Some(args[1].clone()))),
+            _ => Err(anyhow::anyhow!(
+                "too many arguments: expected owner/repo [path]"
+            )),
+        },
+        Some(flag_repo) => match args.len() {
+            0 => Ok((flag_repo, None)),
+            1 if args[0] == flag_repo => Ok((flag_repo, None)),
+            1 => Ok((flag_repo, Some(args[0].clone()))),
+            2 => {
+                let repo = resolve_repo(Some(flag_repo), Some(args[0].clone()))?;
+                Ok((repo, Some(args[1].clone())))
+            }
+            _ => Err(anyhow::anyhow!(
+                "too many arguments: expected [-r owner/repo] [owner/repo] [path]"
+            )),
+        },
+    }
+}
+
+/// Cat/head/tail style: `wit cat owner/repo PATH` or `wit cat -r owner/repo PATH`.
+fn resolve_repo_and_required_path(
+    flag: Option<String>,
+    args: Vec<String>,
+) -> anyhow::Result<(String, String)> {
+    match flag {
+        None => match args.len() {
+            2 => Ok((args[0].clone(), args[1].clone())),
+            0 | 1 => Err(anyhow::anyhow!(
+                "missing arguments: expected owner/repo PATH (or -r owner/repo PATH)"
+            )),
+            _ => Err(anyhow::anyhow!(
+                "too many arguments: expected owner/repo PATH"
+            )),
+        },
+        Some(flag_repo) => match args.len() {
+            1 => Ok((flag_repo, args[0].clone())),
+            2 => {
+                let repo = resolve_repo(Some(flag_repo), Some(args[0].clone()))?;
+                Ok((repo, args[1].clone()))
+            }
+            0 => Err(anyhow::anyhow!(
+                "missing path: expected PATH after repository"
+            )),
+            _ => Err(anyhow::anyhow!(
+                "too many arguments: expected [-r owner/repo] [owner/repo] PATH"
+            )),
+        },
+    }
+}
+
+/// Rg style: pattern is separate; repo via `-r` and/or trailing positional.
+fn resolve_repo_only(flag: Option<String>, positional: Option<String>) -> anyhow::Result<String> {
+    resolve_repo(flag, positional)
 }
 
 async fn open_memory_snapshot(
@@ -655,7 +760,12 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Commands::Branches { repo, backend } => {
+        Commands::Branches {
+            repo,
+            repo_positional,
+            backend,
+        } => {
+            let repo = resolve_repo(repo, repo_positional)?;
             let branches = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -666,9 +776,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Cache {
             repo,
+            repo_positional,
             branch,
             backend,
         } => {
+            let repo = resolve_repo(repo, repo_positional)?;
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -704,10 +816,11 @@ async fn main() -> anyhow::Result<()> {
             repo,
             branch,
             refresh_cache,
-            path,
+            args,
             long,
             backend,
         } => {
+            let (repo, path) = resolve_repo_and_optional_path(repo, args)?;
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -731,10 +844,11 @@ async fn main() -> anyhow::Result<()> {
             repo,
             branch,
             refresh_cache,
-            path,
+            args,
             long,
             backend,
         } => {
+            let (repo, path) = resolve_repo_and_optional_path(repo, args)?;
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -780,7 +894,7 @@ async fn main() -> anyhow::Result<()> {
             repo,
             branch,
             refresh_cache,
-            path,
+            args,
             number,
             number_nonblank,
             squeeze_blank,
@@ -789,6 +903,7 @@ async fn main() -> anyhow::Result<()> {
             show_all,
             backend,
         } => {
+            let (repo, path) = resolve_repo_and_required_path(repo, args)?;
             let content = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -854,6 +969,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Rg {
             repo,
+            repo_positional,
             branch,
             refresh_cache,
             pattern,
@@ -871,6 +987,7 @@ async fn main() -> anyhow::Result<()> {
             long_format,
             backend,
         } => {
+            let repo = resolve_repo_only(repo, repo_positional)?;
             let mut opts = GrepOptions::new()
                 .ignore_case(ignore_case)
                 .smart_case(smart_case)
@@ -1002,11 +1119,12 @@ async fn main() -> anyhow::Result<()> {
             repo,
             branch,
             refresh_cache,
-            path,
+            args,
             lines,
             number,
             backend,
         } => {
+            let (repo, path) = resolve_repo_and_required_path(repo, args)?;
             let output = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1042,7 +1160,7 @@ async fn main() -> anyhow::Result<()> {
             let mut effective_ignore_patterns = ignore_patterns.clone();
             effective_ignore_patterns.extend(inline_ignores);
 
-            let (scripts, path) = parse_sed_invocation(expressions, files, args)?;
+            let (repo, scripts, path) = parse_sed_invocation(repo, expressions, files, args)?;
             let content = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1079,12 +1197,13 @@ async fn main() -> anyhow::Result<()> {
             repo,
             branch,
             refresh_cache,
-            path,
+            args,
             lines,
             from_line,
             number,
             backend,
         } => {
+            let (repo, path) = resolve_repo_and_required_path(repo, args)?;
             let output = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1152,10 +1271,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn parse_sed_invocation(
+    repo_flag: Option<String>,
     expressions: Vec<String>,
     files: Vec<String>,
     args: Vec<String>,
-) -> anyhow::Result<(Vec<String>, String)> {
+) -> anyhow::Result<(String, Vec<String>, String)> {
     let mut scripts = Vec::new();
     scripts.extend(expressions);
 
@@ -1165,12 +1285,35 @@ fn parse_sed_invocation(
         scripts.push(content);
     }
 
-    let (script_arg, path) = match args.len() {
-        2 => (Some(args[0].clone()), args[1].clone()),
-        1 => (None, args[0].clone()),
+    let has_ef = !scripts.is_empty();
+
+    let (repo, script_arg, path) = match (repo_flag.as_deref(), has_ef, args.as_slice()) {
+        // -r REPO SCRIPT PATH
+        (Some(repo), false, [script, path]) => {
+            (repo.to_string(), Some(script.to_string()), path.to_string())
+        }
+        // -r REPO PATH (with -e/-f)
+        (Some(repo), true, [path]) => (repo.to_string(), None, path.to_string()),
+        // -r REPO REPO SCRIPT PATH / -r REPO REPO PATH
+        (Some(repo), false, [pos, script, path]) => (
+            resolve_repo(Some(repo.to_string()), Some(pos.to_string()))?,
+            Some(script.to_string()),
+            path.to_string(),
+        ),
+        (Some(repo), true, [pos, path]) => (
+            resolve_repo(Some(repo.to_string()), Some(pos.to_string()))?,
+            None,
+            path.to_string(),
+        ),
+        // SCRIPT REPO PATH
+        (None, false, [script, repo, path]) => {
+            (repo.to_string(), Some(script.to_string()), path.to_string())
+        }
+        // REPO PATH (with -e/-f)
+        (None, true, [repo, path]) => (repo.to_string(), None, path.to_string()),
         _ => {
             return Err(anyhow::anyhow!(
-                "sed expects <SCRIPT> <PATH> or <PATH> with -e/-f (repository via -r/--repo)"
+                "sed expects [<SCRIPT>] <REPO> <PATH>, or -r <REPO> [<SCRIPT>] <PATH> (use -e/-f for the script)"
             ));
         }
     };
@@ -1185,7 +1328,7 @@ fn parse_sed_invocation(
         ));
     }
 
-    Ok((scripts, path))
+    Ok((repo, scripts, path))
 }
 
 fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>, Vec<String>)> {
@@ -1365,13 +1508,8 @@ mod tests {
                 "{command_name} should keep --repo"
             );
             assert!(
-                repo.is_required_set(),
-                "{command_name} should require --repo"
-            );
-            assert_eq!(
-                repo.get_index(),
-                None,
-                "{command_name} should not accept repo positionally"
+                !repo.is_required_set(),
+                "{command_name} should allow positional owner/repo instead of requiring --repo"
             );
         }
 
@@ -1448,11 +1586,17 @@ mod tests {
                 assert!(refresh_cache);
                 assert!(expressions.is_empty());
                 assert!(files.is_empty());
-                assert_eq!(repo, "owner/repo");
+                assert_eq!(repo, Some("owner/repo".to_string()));
                 assert_eq!(branch, None);
                 assert_eq!(backend, None);
                 assert_eq!(inline_ignores, vec!["vendor".to_string()]);
                 assert_eq!(filtered_args, vec!["1,3p", "src/lib.rs"]);
+                let (resolved, scripts, path) =
+                    parse_sed_invocation(repo, expressions, files, filtered_args)
+                        .expect("sed invocation should resolve");
+                assert_eq!(resolved, "owner/repo");
+                assert_eq!(scripts, vec!["1,3p".to_string()]);
+                assert_eq!(path, "src/lib.rs");
             }
             _ => panic!("expected sed command"),
         }
@@ -1466,10 +1610,14 @@ mod tests {
         match tree.command {
             Commands::Tree {
                 refresh_cache,
-                path,
+                args,
                 ..
             } => {
                 assert!(refresh_cache);
+                assert_eq!(args, vec!["src".to_string()]);
+                let (repo, path) =
+                    resolve_repo_and_optional_path(Some("owner/repo".to_string()), args).unwrap();
+                assert_eq!(repo, "owner/repo");
                 assert_eq!(path, Some("src".to_string()));
             }
             _ => panic!("expected tree command"),
@@ -1487,10 +1635,14 @@ mod tests {
         match cat.command {
             Commands::Cat {
                 refresh_cache,
-                path,
+                args,
                 ..
             } => {
                 assert!(refresh_cache);
+                assert_eq!(args, vec!["README.md".to_string()]);
+                let (repo, path) =
+                    resolve_repo_and_required_path(Some("owner/repo".to_string()), args).unwrap();
+                assert_eq!(repo, "owner/repo");
                 assert_eq!(path, "README.md");
             }
             _ => panic!("expected cat command"),
@@ -1642,7 +1794,10 @@ mod tests {
         let repo = find_arg(branches, "repo");
         assert_eq!(repo.get_short(), Some('r'));
         assert_eq!(repo.get_long(), Some("repo"));
-        assert!(repo.is_required_set());
+        assert!(
+            !repo.is_required_set(),
+            "branches should allow positional owner/repo"
+        );
         assert_eq!(repo.get_index(), None);
         assert!(
             branches.get_visible_aliases().next().is_none(),
@@ -1651,10 +1806,26 @@ mod tests {
 
         let parsed = WitCli::try_parse_from(["wit", "branches", "-r", "owner/repo"])
             .expect("branches -r owner/repo should parse");
-        assert!(matches!(parsed.command, Commands::Branches { repo, .. } if repo == "owner/repo"));
+        assert!(matches!(
+            parsed.command,
+            Commands::Branches {
+                repo: Some(ref value),
+                ..
+            } if value == "owner/repo"
+        ));
+
+        let positional = WitCli::try_parse_from(["wit", "branches", "owner/repo"])
+            .expect("branches owner/repo should parse");
+        assert!(matches!(
+            positional.command,
+            Commands::Branches {
+                repo_positional: Some(ref value),
+                ..
+            } if value == "owner/repo"
+        ));
 
         let missing_repo = match WitCli::try_parse_from(["wit", "branches"]) {
-            Ok(_) => panic!("branches should require --repo"),
+            Ok(_) => panic!("branches should require a repository"),
             Err(err) => err,
         };
         assert_eq!(missing_repo.kind(), ErrorKind::MissingRequiredArgument);
@@ -1703,7 +1874,7 @@ mod tests {
         let help = branches.render_long_help().to_string();
         let help_lower = help.to_ascii_lowercase();
 
-        assert!(help.contains("Usage: wit branches -r <REPO>"));
+        assert!(help.contains("Usage: wit branches [OPTIONS] [REPO]"));
         assert!(help.contains("default-branch comparison metadata"));
         assert!(help_lower.contains("ahead"));
         assert!(help_lower.contains("behind"));
@@ -2031,5 +2202,156 @@ mod tests {
             !root_help.contains("does not cover") && !root_help.to_lowercase().contains("lacks rg"),
             "help must not claim memory lacks rg/sed/head/tail"
         );
+    }
+
+    #[test]
+    fn positional_repo_parses_agrees_and_rejects_conflicts() {
+        // Positional-only
+        let tree = WitCli::try_parse_from(["wit", "tree", "owner/repo", "src"])
+            .expect("tree owner/repo src");
+        match tree.command {
+            Commands::Tree { repo, args, .. } => {
+                let (resolved, path) = resolve_repo_and_optional_path(repo, args).unwrap();
+                assert_eq!(resolved, "owner/repo");
+                assert_eq!(path.as_deref(), Some("src"));
+            }
+            _ => panic!("expected tree"),
+        }
+
+        let cat = WitCli::try_parse_from(["wit", "cat", "owner/repo", "README.md"])
+            .expect("cat owner/repo README.md");
+        match cat.command {
+            Commands::Cat { repo, args, .. } => {
+                let (resolved, path) = resolve_repo_and_required_path(repo, args).unwrap();
+                assert_eq!(resolved, "owner/repo");
+                assert_eq!(path, "README.md");
+            }
+            _ => panic!("expected cat"),
+        }
+
+        let rg =
+            WitCli::try_parse_from(["wit", "rg", "TODO", "owner/repo"]).expect("rg positional");
+        match rg.command {
+            Commands::Rg {
+                pattern,
+                repo,
+                repo_positional,
+                ..
+            } => {
+                assert_eq!(pattern, "TODO");
+                assert_eq!(
+                    resolve_repo_only(repo, repo_positional).unwrap(),
+                    "owner/repo"
+                );
+            }
+            _ => panic!("expected rg"),
+        }
+
+        let sed = WitCli::try_parse_from(["wit", "sed", "-n", "1,10p", "owner/repo", "src/lib.rs"])
+            .expect("sed positional");
+        match sed.command {
+            Commands::Sed {
+                repo,
+                expressions,
+                files,
+                args,
+                ..
+            } => {
+                let (resolved, scripts, path) =
+                    parse_sed_invocation(repo, expressions, files, args).unwrap();
+                assert_eq!(resolved, "owner/repo");
+                assert_eq!(scripts, vec!["1,10p".to_string()]);
+                assert_eq!(path, "src/lib.rs");
+            }
+            _ => panic!("expected sed"),
+        }
+
+        for (label, argv) in [
+            ("head", vec!["wit", "head", "owner/repo", "Cargo.toml"]),
+            ("tail", vec!["wit", "tail", "owner/repo", "Cargo.toml"]),
+            ("ls", vec!["wit", "ls", "owner/repo", "src"]),
+            ("branches", vec!["wit", "branches", "owner/repo"]),
+            ("cache", vec!["wit", "cache", "owner/repo"]),
+        ] {
+            WitCli::try_parse_from(argv).unwrap_or_else(|err| panic!("{label} positional: {err}"));
+        }
+
+        // Flag-only still works
+        WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "src"]).unwrap();
+        WitCli::try_parse_from(["wit", "cat", "-r", "owner/repo", "README.md"]).unwrap();
+        WitCli::try_parse_from(["wit", "rg", "TODO", "-r", "owner/repo"]).unwrap();
+
+        // Both agree
+        assert_eq!(
+            resolve_repo(
+                Some("owner/repo".to_string()),
+                Some("owner/repo".to_string())
+            )
+            .unwrap(),
+            "owner/repo"
+        );
+        let tree_agree =
+            WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "owner/repo", "src"])
+                .unwrap();
+        match tree_agree.command {
+            Commands::Tree { repo, args, .. } => {
+                let (resolved, path) = resolve_repo_and_optional_path(repo, args).unwrap();
+                assert_eq!(resolved, "owner/repo");
+                assert_eq!(path.as_deref(), Some("src"));
+            }
+            _ => panic!("expected tree"),
+        }
+
+        let branches_agree =
+            WitCli::try_parse_from(["wit", "branches", "-r", "owner/repo", "owner/repo"]).unwrap();
+        match branches_agree.command {
+            Commands::Branches {
+                repo,
+                repo_positional,
+                ..
+            } => {
+                assert_eq!(resolve_repo(repo, repo_positional).unwrap(), "owner/repo");
+            }
+            _ => panic!("expected branches"),
+        }
+
+        // Both disagree
+        let err = resolve_repo(
+            Some("owner/repo".to_string()),
+            Some("other/repo".to_string()),
+        )
+        .expect_err("disagreeing repos must error");
+        assert!(err.to_string().contains("conflicting repository arguments"));
+
+        let tree_disagree =
+            WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "other/repo", "src"])
+                .unwrap();
+        match tree_disagree.command {
+            Commands::Tree { repo, args, .. } => {
+                let err = resolve_repo_and_optional_path(repo, args)
+                    .expect_err("tree disagree must error");
+                assert!(err.to_string().contains("conflicting repository arguments"));
+            }
+            _ => panic!("expected tree"),
+        }
+
+        let branches_disagree =
+            WitCli::try_parse_from(["wit", "branches", "-r", "owner/repo", "other/repo"]).unwrap();
+        match branches_disagree.command {
+            Commands::Branches {
+                repo,
+                repo_positional,
+                ..
+            } => {
+                let err = resolve_repo(repo, repo_positional).expect_err("branches disagree");
+                assert!(err.to_string().contains("conflicting repository arguments"));
+            }
+            _ => panic!("expected branches"),
+        }
+
+        // search stays repo-free
+        let search = WitCli::try_parse_from(["wit", "search", "-p", "ratatui", "--limit", "5"])
+            .expect("search should not require a repo");
+        assert!(matches!(search.command, Commands::Search { .. }));
     }
 }

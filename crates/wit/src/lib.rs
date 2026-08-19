@@ -145,8 +145,8 @@ mod tests {
             "CLI should expose a public branches subcommand"
         );
         assert!(
-            cli.contains("Commands::Branches { repo,")
-                || cli.contains("Commands::Branches { repo }"),
+            cli.contains("resolve_repo(repo, repo_positional)")
+                || cli.contains("Commands::Branches { repo,"),
             "branches handler should route the repo argument"
         );
         assert!(
@@ -155,8 +155,8 @@ mod tests {
             "branches should use reusable branch metadata collection"
         );
         assert!(
-            cli.contains("override_usage = \"wit branches -r <REPO>\""),
-            "branches help should require -r/--repo"
+            cli.contains("override_usage = \"wit branches [OPTIONS] [REPO]\""),
+            "branches help should allow positional or -r/--repo"
         );
         assert!(
             cli.contains("branches should not have a short alias"),
@@ -172,7 +172,7 @@ mod tests {
     fn cli_branches_help_text() {
         let cli = include_str!("cli.rs");
         assert!(
-            cli.contains("wit branches -r <REPO>"),
+            cli.contains("wit branches [OPTIONS] [REPO]") || cli.contains("wit branches -r <REPO>"),
             "CLI help should show branches usage"
         );
         assert!(
