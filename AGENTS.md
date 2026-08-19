@@ -10,7 +10,7 @@ This is a Cargo workspace with two crates:
 - `src/search.rs`: GitHub repository search (`GitHubSearchClient`, octocrab), raw query assembly, and limit-aware pagination for `wit search`.
 - `src/search_run.rs`: `wit search` orchestration for GitHub-only repository discovery and result shaping.
 - `src/gitops/`: Git operations module for bare-repo caching, file access, tree display, directory listing, head/tail, and ripgrep-style search (`ops.rs`, `mod.rs`).
-- `src/snapshot/`: Disk adapter implementing the shared `wit-snapshot` open/list/tree/read contract; CLI `--backend memory|disk` for tree/ls/cat.
+- `src/snapshot/`: Disk adapter + memory helpers (`memory_ops.rs`) for the shared `wit-snapshot` open/list/tree/read/search contract; CLI `--backend memory|disk` for tree/ls/cat/rg/sed/head/tail, cache pin, and branches.
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
 
 ### `crates/wit-snapshot/` — no-FS memory snapshot backend

@@ -52,7 +52,7 @@ mod tests {
             "branch values should be parsed into command variants"
         );
         assert!(
-            cli.matches("cache_branch_selection(branch)").count() >= 8,
+            cli.matches("cache_branch_selection(branch)").count() >= 7,
             "branch values should be routed to cache acquisition"
         );
     }
@@ -145,11 +145,13 @@ mod tests {
             "CLI should expose a public branches subcommand"
         );
         assert!(
-            cli.contains("Commands::Branches { repo }"),
+            cli.contains("Commands::Branches { repo,")
+                || cli.contains("Commands::Branches { repo }"),
             "branches handler should route the repo argument"
         );
         assert!(
-            cli.contains("list_remote_branches(&repo)"),
+            cli.contains("list_remote_branches(&repo)")
+                || cli.contains("list_remote_branches_api(&repo)"),
             "branches should use reusable branch metadata collection"
         );
         assert!(

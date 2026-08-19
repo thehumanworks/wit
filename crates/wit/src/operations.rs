@@ -564,8 +564,27 @@ fn walk_tree(
     snapshot: &SnapshotHandle,
     mut visit: impl FnMut(&TreeEntry) -> Result<bool, String>,
 ) -> Result<(), String> {
+    if let Some(memory) = snapshot.memory() {
+        for entry in memory.walk_entries() {
+            context.check()?;
+            let kind = match entry.kind {
+                wit_snapshot::EntryKind::File => "blob",
+                wit_snapshot::EntryKind::Dir => "tree",
+            };
+            let tree_entry = TreeEntry {
+                kind: kind.to_string(),
+                oid: entry.sha,
+                size: entry.size,
+                path: entry.path,
+            };
+            if !visit(&tree_entry)? {
+                break;
+            }
+        }
+        return Ok(());
+    }
     let SnapshotHandle::Disk { repo_path, .. } = snapshot else {
-        return Err("walk_tree requires a disk snapshot".to_string());
+        return Err("walk_tree requires a disk or memory snapshot".to_string());
     };
     let mut command = Command::new("git");
     command
@@ -895,6 +914,86 @@ fn search_snapshot_window(
         }
         Ok(true)
     })?;
+    Ok(items)
+}
+
+async fn search_memory_snapshot_window(
+    context: &OperationContext,
+    snapshot: &SnapshotHandle,
+    queries: &[(String, Regex)],
+    filters: &SearchPathFilters,
+    context_lines: usize,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<SearchItem>, String> {
+    let memory = snapshot
+        .memory()
+        .ok_or_else(|| "search_memory_snapshot_window requires a memory snapshot".to_string())?;
+    let mut seen = 0usize;
+    let mut items = Vec::with_capacity(limit.min(MAX_CONTEXT_CANDIDATES));
+    let max_blob = 4 * 1024 * 1024u64;
+    for entry in memory.walk_entries() {
+        context.check()?;
+        if entry.kind != wit_snapshot::EntryKind::File
+            || !path_has_prefix(&entry.path, &filters.prefix)
+            || filters
+                .includes
+                .as_ref()
+                .is_some_and(|set| !set.is_match(&entry.path))
+            || filters
+                .excludes
+                .as_ref()
+                .is_some_and(|set| set.is_match(&entry.path))
+        {
+            continue;
+        }
+        let Some(size) = entry.size else {
+            continue;
+        };
+        if size > max_blob {
+            continue;
+        }
+        let Ok(text) = memory.blob_text_by_sha(&entry.sha, max_blob).await else {
+            continue;
+        };
+        let lines = text.lines().collect::<Vec<_>>();
+        for (line_index, line) in lines.iter().enumerate() {
+            for (query, regex) in queries {
+                if !regex.is_match(line) {
+                    continue;
+                }
+                if seen < offset {
+                    seen += 1;
+                    continue;
+                }
+                if items.len() >= limit {
+                    return Ok(items);
+                }
+                let match_line = line_index + 1;
+                let start_line = match_line.saturating_sub(context_lines).max(1);
+                let end_line = (match_line + context_lines).min(lines.len());
+                let source_lines = (start_line..=end_line)
+                    .map(|line_number| SourceLine {
+                        line_number,
+                        text: lines[line_number - 1].to_string(),
+                    })
+                    .collect();
+                items.push(SearchItem {
+                    snapshot_id: snapshot.snapshot_id().to_string(),
+                    repo: snapshot.repo().to_string(),
+                    commit_sha: snapshot.commit_sha().to_string(),
+                    path: entry.path.clone(),
+                    blob_sha: entry.sha.clone(),
+                    query: query.clone(),
+                    match_line,
+                    start_line,
+                    end_line,
+                    lines: source_lines,
+                });
+                seen += 1;
+            }
+        }
+    }
     Ok(items)
 }
 
@@ -1635,6 +1734,65 @@ mod tests {
         assert!(
             std::fs::read_dir(probe.path()).unwrap().next().is_none(),
             "memory MCP path must not write WIT_CACHE_DIR"
+        );
+        // Safety: restore previous value so parallel tests are not polluted.
+        unsafe {
+            match previous_cache {
+                Some(value) => std::env::set_var("WIT_CACHE_DIR", value),
+                None => std::env::remove_var("WIT_CACHE_DIR"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_search_code_without_disk() {
+        let probe = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("WIT_CACHE_DIR");
+        // Safety: scoped env override restored before the test returns.
+        unsafe {
+            std::env::set_var("WIT_CACHE_DIR", probe.path());
+        }
+        let (operations, snapshot_id) = operations_with_memory_snapshot();
+        let page = operations
+            .search_code(
+                &OperationContext::default(),
+                SearchCodeArgs {
+                    snapshot_id: snapshot_id.clone(),
+                    queries: vec!["hello".to_string()],
+                    ..SearchCodeArgs::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            page.items
+                .iter()
+                .any(|item| item.path == "README.md" && item.match_line == 1),
+            "expected README.md match, got {:?}",
+            page.items
+        );
+
+        let context_page = operations
+            .context(
+                &OperationContext::default(),
+                ContextArgs {
+                    snapshot_id,
+                    queries: vec!["answer".to_string()],
+                    ..ContextArgs::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            context_page
+                .items
+                .iter()
+                .any(|item| item.path == "src/lib.rs"),
+            "expected src/lib.rs context hit"
+        );
+        assert!(
+            std::fs::read_dir(probe.path()).unwrap().next().is_none(),
+            "memory wit_search_code must not write WIT_CACHE_DIR"
         );
         // Safety: restore previous value so parallel tests are not polluted.
         unsafe {
@@ -2836,7 +2994,6 @@ impl WitOperations {
     ) -> Result<Page<SearchItem>, String> {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
-        snapshot.require_disk_path()?;
         let queries = compile_queries(&args.queries)?;
         let mut include_globs = args.globs.clone();
         if let Some(glob) = args.glob.as_deref() {
@@ -2879,15 +3036,29 @@ impl WitOperations {
             prefix: path_prefix,
             excludes,
         };
-        let items = search_snapshot_window(
-            context,
-            &snapshot,
-            &queries,
-            &filters,
-            context_lines,
-            offset,
-            max_results + 1,
-        )?;
+        let items = if snapshot.memory().is_some() {
+            search_memory_snapshot_window(
+                context,
+                &snapshot,
+                &queries,
+                &filters,
+                context_lines,
+                offset,
+                max_results + 1,
+            )
+            .await?
+        } else {
+            snapshot.require_disk_path()?;
+            search_snapshot_window(
+                context,
+                &snapshot,
+                &queries,
+                &filters,
+                context_lines,
+                offset,
+                max_results + 1,
+            )?
+        };
         let page = paginate_window(
             "wit_search_code",
             Some(snapshot.snapshot_id()),
@@ -2997,7 +3168,6 @@ impl WitOperations {
     ) -> Result<Page<ContextItem>, String> {
         context.check()?;
         let snapshot = self.snapshot(&args.snapshot_id)?;
-        snapshot.require_disk_path()?;
         let queries = compile_queries(&args.queries)?;
         let globs = compile_globs(&args.globs)?;
         let context_lines = validate_range(
@@ -3032,15 +3202,29 @@ impl WitOperations {
             prefix: String::new(),
             excludes: None,
         };
-        let candidates = search_snapshot_window(
-            context,
-            &snapshot,
-            &queries,
-            &filters,
-            context_lines,
-            0,
-            MAX_CONTEXT_CANDIDATES + 1,
-        )?;
+        let candidates = if snapshot.memory().is_some() {
+            search_memory_snapshot_window(
+                context,
+                &snapshot,
+                &queries,
+                &filters,
+                context_lines,
+                0,
+                MAX_CONTEXT_CANDIDATES + 1,
+            )
+            .await?
+        } else {
+            snapshot.require_disk_path()?;
+            search_snapshot_window(
+                context,
+                &snapshot,
+                &queries,
+                &filters,
+                context_lines,
+                0,
+                MAX_CONTEXT_CANDIDATES + 1,
+            )?
+        };
         if candidates.len() > MAX_CONTEXT_CANDIDATES {
             return Err(format!(
                 "wit_context matched more than {MAX_CONTEXT_CANDIDATES} candidate windows; narrow queries or globs so deterministic ranking stays memory-bounded"

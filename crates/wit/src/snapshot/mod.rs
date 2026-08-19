@@ -3,6 +3,13 @@
 //! This keeps the production CLI path working while sharing the same open /
 //! list / tree / read contract as the memory backend.
 
+mod memory_ops;
+
+pub use memory_ops::{
+    filter_ignored_paths, grep_memory_snapshot, head_from_text, list_remote_branches_api,
+    read_memory_text, tail_from_text,
+};
+
 use crate::gitops::ops::{
     CacheAcquisitionMode, CacheBranchSelection, FileMetadata, cache_github_repo, list_dir,
     read_file, tree_text_with_ignore,
@@ -267,7 +274,7 @@ fn map_path_err(path: &str, err: anyhow::Error) -> SnapshotError {
     }
 }
 
-/// Which snapshot backend the human CLI should use for tree/ls/cat.
+/// Which snapshot backend the human CLI should use for repo-reading commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliSnapshotBackend {
     Disk,

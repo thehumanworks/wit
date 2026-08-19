@@ -9,13 +9,16 @@ use wit::{
     ensure_rustls_provider,
     gitops::ops::{
         BranchMetadata, CacheAcquisitionMode, CacheBranchSelection, GrepOptions, GrepResult,
-        build_tree_with_ignore, cache_github_repo, grep_repo_with_options, head_with_ignore,
-        list_dir_with_ignore, list_remote_branches, read_file, read_file_with_ignore,
-        revalidate_github_repo, tail_with_ignore,
+        IgnoreMatcher, build_tree_with_ignore, cache_github_repo, grep_repo_with_options,
+        head_with_ignore, list_dir_with_ignore, list_remote_branches, read_file,
+        read_file_with_ignore, revalidate_github_repo, tail_with_ignore,
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
-    snapshot::CliSnapshotBackend,
+    snapshot::{
+        CliSnapshotBackend, grep_memory_snapshot, head_from_text, list_remote_branches_api,
+        read_memory_text, tail_from_text,
+    },
 };
 use wit_snapshot::{
     DirEntry, EntryKind, MemoryBackend, RepoSnapshot, SnapshotBackend, SnapshotProvenance,
@@ -26,7 +29,7 @@ use wit_snapshot::{
 #[command(
     about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
     long_about = None,
-    after_help = "Branch discovery: run wit branches -r owner/repo to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: tree/ls/cat default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory backend does not support rg/sed/head/tail in this slice."
+    after_help = "Branch discovery: run wit branches -r owner/repo to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: repo-reading commands default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory covers tree/ls/cat/rg/sed/head/tail, maps cache to an in-memory pin/prefetch, and lists branches via the GitHub API. search always uses the GitHub REST API (no disk cache)."
 )]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
@@ -77,18 +80,22 @@ enum Commands {
         name = "branches",
         about = "List remote branches with default-branch comparison metadata",
         override_usage = "wit branches -r <REPO>",
-        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nExamples:\n  wit branches -r ratatui/ratatui"
+        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nWith --backend memory (or WIT_SNAPSHOT_BACKEND=memory), branch listing uses the GitHub REST API and does not write WIT_CACHE_DIR.\n\nExamples:\n  wit branches -r ratatui/ratatui\n  wit branches -r octocat/Hello-World --backend memory"
     )]
     Branches {
         /// Repository in "owner/repo" format
         #[arg(short = 'r', long = "repo")]
         repo: String,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "cache",
         visible_alias = "c",
-        about = "Clone a repository into the local cache (or refresh an existing one)",
-        after_help = "Repos are auto-cached on first use by other commands. Use this to force-refresh the default branch cache before returning, or pass --branch BRANCH to refresh a named branch cache.\n\nRepo-reading commands normally serve cached content immediately and revalidate the selected branch in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when the read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui                    # Force re-clone of default branch\n  wit cache -r ratatui/ratatui --branch main      # Force refresh a named branch"
+        about = "Pin a repository snapshot (disk cache refresh, or memory open/prefetch)",
+        after_help = "Disk backend: force-refresh the bare-repo cache. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes).\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache -r ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache -r octocat/Hello-World --backend memory"
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -98,6 +105,10 @@ enum Commands {
         /// Branch name under refs/heads to cache instead of the repository default branch
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "tree",
@@ -214,7 +225,7 @@ enum Commands {
         name = "rg",
         about = "Search file contents (ripgrep-style). Use -l to find files, -g to filter by type",
         override_usage = "wit rg [OPTIONS] <PATTERN> -r <REPO>",
-        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nExamples:\n  wit rg 'impl Widget' -r ratatui/ratatui              # Find implementations\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui          # List files containing pattern\n  wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui         # Case-insensitive in .rs files\n  wit rg -C 3 'fn render' -r ratatui/ratatui             # 3 lines of context"
+        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nExamples:\n  wit rg 'impl Widget' -r ratatui/ratatui              # Find implementations\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui          # List files containing pattern\n  wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui         # Case-insensitive in .rs files\n  wit rg -C 3 'fn render' -r ratatui/ratatui             # 3 lines of context\n  wit rg 'Hello' -r octocat/Hello-World --backend memory # No disk cache"
     )]
     Rg {
         /// Regex pattern to search for
@@ -279,12 +290,16 @@ enum Commands {
         /// Show file sizes alongside file names (useful with -l)
         #[arg(long = "long")]
         long_format: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "sed",
         about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
         override_usage = "wit sed [OPTIONS] -r <REPO> [<SCRIPT>] <PATH>",
-        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range\n  wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text\n  wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures"
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nExamples:\n  wit sed -n -r modal-labs/modal-client '320,460p' modal/image.py    # Print line range\n  wit sed -n -r ratatui/ratatui '/TODO/p' src/lib.rs                 # Lines matching pattern\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs       # Substitute text\n  wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs              # Extract function signatures\n  wit sed -e 's/Hello/Hi/' -r octocat/Hello-World README --backend memory"
     )]
     Sed {
         /// Suppress automatic printing of pattern space
@@ -311,6 +326,10 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
+
         /// Sed script and file path (positional): <SCRIPT> <PATH>, or <PATH> when using -e/-f for the script
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
@@ -319,7 +338,7 @@ enum Commands {
         name = "head",
         about = "Print the first N lines of a file (default: 10)",
         override_usage = "wit head [OPTIONS] -r <REPO> <PATH>",
-        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nExamples:\n  wit head -r ratatui/ratatui src/lib.rs            # First 10 lines\n  wit head -n 50 -r ratatui/ratatui Cargo.toml      # First 50 lines\n  wit head -N -r ratatui/ratatui README.md           # With line numbers"
+        after_help = "Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.\n\nExamples:\n  wit head -r ratatui/ratatui src/lib.rs            # First 10 lines\n  wit head -n 50 -r ratatui/ratatui Cargo.toml      # First 50 lines\n  wit head -N -r ratatui/ratatui README.md           # With line numbers\n  wit head -n 5 -r octocat/Hello-World README --backend memory"
     )]
     Head {
         /// Repository in "owner/repo" format
@@ -344,12 +363,16 @@ enum Commands {
         /// Number all output lines
         #[arg(short = 'N', long = "number")]
         number: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "tail",
         about = "Print the last N lines of a file, or from line N onward",
         override_usage = "wit tail [OPTIONS] -r <REPO> <PATH>",
-        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nExamples:\n  wit tail -r ratatui/ratatui src/lib.rs              # Last 10 lines\n  wit tail -n 20 -r ratatui/ratatui Cargo.toml        # Last 20 lines\n  wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end"
+        after_help = "Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.\n\nExamples:\n  wit tail -r ratatui/ratatui src/lib.rs              # Last 10 lines\n  wit tail -n 20 -r ratatui/ratatui Cargo.toml        # Last 20 lines\n  wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end\n  wit tail -n 5 -r octocat/Hello-World README --backend memory"
     )]
     Tail {
         /// Repository in "owner/repo" format
@@ -378,6 +401,10 @@ enum Commands {
         /// Number all output lines
         #[arg(short = 'N', long = "number")]
         number: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "skill",
@@ -554,11 +581,16 @@ fn print_snapshot_tree<S: RepoSnapshot>(
     snap: &S,
     path: Option<&str>,
     long: bool,
+    ignore_patterns: &[String],
 ) -> anyhow::Result<()> {
     let view = snap.tree(path).map_err(|err| anyhow::anyhow!(err))?;
+    let ignore = IgnoreMatcher::new(ignore_patterns)?;
     println!("{}", view.root);
     let mut dirs: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for entry in &view.entries {
+        if ignore.is_ignored(&entry.path) {
+            continue;
+        }
         let relative = if let Some(base) = path {
             let base = base.trim_end_matches('/');
             entry
@@ -623,18 +655,52 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Commands::Branches { repo } => {
-            let branches = list_remote_branches(&repo)?;
+        Commands::Branches { repo, backend } => {
+            let branches = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => list_remote_branches(&repo)?,
+                CliSnapshotBackend::Memory => list_remote_branches_api(&repo).await?,
+            };
             print_branch_results(&branches);
         }
-        Commands::Cache { repo, branch } => {
-            let repo = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                CacheAcquisitionMode::ForceInvalidate,
-            )
-            .await?;
-            println!("Cached repository: {}", repo.path().display());
+        Commands::Cache {
+            repo,
+            branch,
+            backend,
+        } => {
+            match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repo = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        CacheAcquisitionMode::ForceInvalidate,
+                    )
+                    .await?;
+                    println!("Cached repository: {}", repo.path().display());
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    // Prefetch tree is already done by open; warm a few root blobs when cheap.
+                    let root = snap.list(None).map_err(|err| anyhow::anyhow!(err))?;
+                    let mut warmed = 0usize;
+                    for entry in root.into_iter().take(8) {
+                        if entry.kind == EntryKind::File {
+                            if snap.read(&entry.path).await.is_ok() {
+                                warmed += 1;
+                            }
+                        }
+                    }
+                    println!(
+                        "Pinned memory snapshot {}@{} (warmed {warmed} root blobs)",
+                        snap.provenance().repo,
+                        snap.provenance().commit_sha
+                    );
+                }
+            }
         }
         Commands::Tree {
             repo,
@@ -659,7 +725,7 @@ async fn main() -> anyhow::Result<()> {
                 CliSnapshotBackend::Memory => {
                     let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
                     print_memory_provenance(snap.provenance());
-                    print_snapshot_tree(&snap, path.as_deref(), long)?;
+                    print_snapshot_tree(&snap, path.as_deref(), long, &ignore_patterns)?;
                 }
             }
         }
@@ -691,6 +757,19 @@ async fn main() -> anyhow::Result<()> {
                     let entries = snap
                         .list(path.as_deref())
                         .map_err(|err| anyhow::anyhow!(err))?;
+                    let ignore = IgnoreMatcher::new(&ignore_patterns)?;
+                    let entries: Vec<_> = entries
+                        .into_iter()
+                        .filter(|entry| {
+                            let full = match path.as_deref() {
+                                Some(base) if !base.is_empty() => {
+                                    format!("{}/{}", base.trim_end_matches('/'), entry.name)
+                                }
+                                _ => entry.name.clone(),
+                            };
+                            !ignore.is_ignored(&full)
+                        })
+                        .collect();
                     if entries.is_empty() {
                         println!("{}", "Directory is empty or does not exist.".yellow());
                     } else {
@@ -727,10 +806,7 @@ async fn main() -> anyhow::Result<()> {
                 CliSnapshotBackend::Memory => {
                     let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
                     print_memory_provenance(snap.provenance());
-                    snap.read(&path)
-                        .await
-                        .map_err(|err| anyhow::anyhow!(err))?
-                        .text
+                    read_memory_text(&snap, &path, &ignore_patterns).await?
                 }
             };
 
@@ -795,15 +871,8 @@ async fn main() -> anyhow::Result<()> {
             files_with_matches,
             count,
             long_format,
+            backend,
         } => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-
-            // Build options from CLI flags
             let mut opts = GrepOptions::new()
                 .ignore_case(ignore_case)
                 .smart_case(smart_case)
@@ -819,12 +888,38 @@ async fn main() -> anyhow::Result<()> {
                 opts = opts.max_count(max_count);
             }
 
-            let result = grep_repo_with_options(&repository, &pattern, &opts)?;
+            enum RgSource {
+                Disk(gix::Repository),
+                Memory(wit_snapshot::MemorySnapshot<wit_snapshot::ReqwestGitHubClient>),
+            }
+
+            let source = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    RgSource::Disk(repository)
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    RgSource::Memory(snap)
+                }
+            };
+
+            let result = match &source {
+                RgSource::Disk(repository) => grep_repo_with_options(repository, &pattern, &opts)?,
+                RgSource::Memory(snap) => grep_memory_snapshot(snap, &pattern, &opts).await?,
+            };
 
             match result {
                 GrepResult::Matches(matches) => {
                     if matches.is_empty() {
-                        // No output for no matches (like rg)
                         return Ok(());
                     }
 
@@ -832,15 +927,13 @@ async fn main() -> anyhow::Result<()> {
                     let has_context = before_context > 0 || after_context > 0 || context > 0;
 
                     for m in matches {
-                        // Print file header when file changes
                         if m.path != current_file {
                             if !current_file.is_empty() && has_context {
-                                println!(); // Blank line between files
+                                println!();
                             }
                             current_file = m.path.clone();
                         }
 
-                        // Handle context separator
                         if m.line_number == 0 && m.content == "--" {
                             println!("{}", "--".dimmed());
                             continue;
@@ -848,7 +941,6 @@ async fn main() -> anyhow::Result<()> {
 
                         let line_num = m.line_number.to_string();
                         if m.is_context {
-                            // Context line (dimmed)
                             println!(
                                 "{}{}{}{} {}",
                                 m.path.magenta(),
@@ -858,7 +950,6 @@ async fn main() -> anyhow::Result<()> {
                                 m.content.dimmed()
                             );
                         } else {
-                            // Match line (highlighted)
                             println!(
                                 "{}{}{}{}{}",
                                 m.path.magenta(),
@@ -873,9 +964,14 @@ async fn main() -> anyhow::Result<()> {
                 GrepResult::Files(files) => {
                     if long_format {
                         for file in &files {
-                            let content = read_file(&repository, file);
+                            let content = match &source {
+                                RgSource::Disk(repository) => read_file(repository, file).ok(),
+                                RgSource::Memory(snap) => {
+                                    read_memory_text(snap, file, &[]).await.ok()
+                                }
+                            };
                             match content {
-                                Ok(text) => {
+                                Some(text) => {
                                     let lines = text.lines().count();
                                     let tokens = lines * 5;
                                     println!(
@@ -885,7 +981,7 @@ async fn main() -> anyhow::Result<()> {
                                         tokens
                                     );
                                 }
-                                Err(_) => {
+                                None => {
                                     println!("{}", file.magenta());
                                 }
                             }
@@ -910,14 +1006,27 @@ async fn main() -> anyhow::Result<()> {
             path,
             lines,
             number,
+            backend,
         } => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-            let output = head_with_ignore(&repository, &path, lines, number, &ignore_patterns)?;
+            let output = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    head_with_ignore(&repository, &path, lines, number, &ignore_patterns)?
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    let content = read_memory_text(&snap, &path, &ignore_patterns).await?;
+                    head_from_text(&content, lines, number)
+                }
+            };
             println!("{}", output);
         }
         Commands::Sed {
@@ -927,6 +1036,7 @@ async fn main() -> anyhow::Result<()> {
             files,
             repo,
             branch,
+            backend,
             args,
         } => {
             let (args, inline_ignores) = extract_sed_inline_ignores(args)?;
@@ -934,13 +1044,24 @@ async fn main() -> anyhow::Result<()> {
             effective_ignore_patterns.extend(inline_ignores);
 
             let (scripts, path) = parse_sed_invocation(expressions, files, args)?;
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-            let content = read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?;
+            let content = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    read_memory_text(&snap, &path, &effective_ignore_patterns).await?
+                }
+            };
             let program = sed::parse_script(&scripts)?;
             let output = sed::run(
                 &program,
@@ -963,21 +1084,34 @@ async fn main() -> anyhow::Result<()> {
             lines,
             from_line,
             number,
+            backend,
         } => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-            let output = tail_with_ignore(
-                &repository,
-                &path,
-                lines,
-                from_line,
-                number,
-                &ignore_patterns,
-            )?;
+            let output = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    tail_with_ignore(
+                        &repository,
+                        &path,
+                        lines,
+                        from_line,
+                        number,
+                        &ignore_patterns,
+                    )?
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    let content = read_memory_text(&snap, &path, &ignore_patterns).await?;
+                    tail_from_text(&content, lines, from_line, number)
+                }
+            };
             println!("{}", output);
         }
         Commands::CacheRevalidate { repo, branch } => {
@@ -1305,6 +1439,7 @@ mod tests {
                 files,
                 repo,
                 branch,
+                backend,
                 args,
             } => {
                 let (filtered_args, inline_ignores) =
@@ -1316,6 +1451,7 @@ mod tests {
                 assert!(files.is_empty());
                 assert_eq!(repo, "owner/repo");
                 assert_eq!(branch, None);
+                assert_eq!(backend, None);
                 assert_eq!(inline_ignores, vec!["vendor".to_string()]);
                 assert_eq!(filtered_args, vec!["1,3p", "src/lib.rs"]);
             }
@@ -1516,7 +1652,7 @@ mod tests {
 
         let parsed = WitCli::try_parse_from(["wit", "branches", "-r", "owner/repo"])
             .expect("branches -r owner/repo should parse");
-        assert!(matches!(parsed.command, Commands::Branches { repo } if repo == "owner/repo"));
+        assert!(matches!(parsed.command, Commands::Branches { repo, .. } if repo == "owner/repo"));
 
         let missing_repo = match WitCli::try_parse_from(["wit", "branches"]) {
             Ok(_) => panic!("branches should require --repo"),
@@ -1752,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_backend_flag_parses_for_tree_ls_cat() {
+    fn snapshot_backend_flag_parses_for_repo_reading_commands() {
         let tree =
             WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "--backend", "memory"])
                 .expect("tree --backend memory should parse");
@@ -1792,8 +1928,109 @@ mod tests {
             } if value == "memory"
         ));
 
+        let rg = WitCli::try_parse_from([
+            "wit",
+            "rg",
+            "pattern",
+            "-r",
+            "owner/repo",
+            "--backend",
+            "memory",
+        ])
+        .expect("rg --backend memory should parse");
+        assert!(matches!(
+            rg.command,
+            Commands::Rg {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let sed = WitCli::try_parse_from([
+            "wit",
+            "sed",
+            "-e",
+            "s/a/b/",
+            "-r",
+            "owner/repo",
+            "README.md",
+            "--backend",
+            "memory",
+        ])
+        .expect("sed --backend memory should parse");
+        assert!(matches!(
+            sed.command,
+            Commands::Sed {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let head = WitCli::try_parse_from([
+            "wit",
+            "head",
+            "-r",
+            "owner/repo",
+            "README.md",
+            "--backend",
+            "memory",
+        ])
+        .expect("head --backend memory should parse");
+        assert!(matches!(
+            head.command,
+            Commands::Head {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let tail = WitCli::try_parse_from([
+            "wit",
+            "tail",
+            "-r",
+            "owner/repo",
+            "README.md",
+            "--backend",
+            "memory",
+        ])
+        .expect("tail --backend memory should parse");
+        assert!(matches!(
+            tail.command,
+            Commands::Tail {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let cache =
+            WitCli::try_parse_from(["wit", "cache", "-r", "owner/repo", "--backend", "memory"])
+                .expect("cache --backend memory should parse");
+        assert!(matches!(
+            cache.command,
+            Commands::Cache {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let branches =
+            WitCli::try_parse_from(["wit", "branches", "-r", "owner/repo", "--backend", "memory"])
+                .expect("branches --backend memory should parse");
+        assert!(matches!(
+            branches.command,
+            Commands::Branches {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
         let root_help = WitCli::command().render_long_help().to_string();
         assert!(root_help.contains("--backend memory"));
         assert!(root_help.contains("WIT_SNAPSHOT_BACKEND=memory"));
+        assert!(root_help.contains("Memory covers tree/ls/cat/rg/sed/head/tail"));
+        assert!(
+            !root_help.contains("does not cover") && !root_help.to_lowercase().contains("lacks rg"),
+            "help must not claim memory lacks rg/sed/head/tail"
+        );
     }
 }

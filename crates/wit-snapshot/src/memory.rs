@@ -220,6 +220,11 @@ pub struct MemorySnapshot<C> {
 }
 
 impl<C> MemorySnapshot<C> {
+    /// Limits that govern blob fetch and cache budget for this snapshot.
+    pub fn limits(&self) -> &MemoryBackendLimits {
+        &self.limits
+    }
+
     fn from_fixture(
         provenance: SnapshotProvenance,
         nodes: BTreeMap<String, TreeNode>,

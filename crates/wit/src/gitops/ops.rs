@@ -1255,6 +1255,47 @@ pub enum GrepResult {
     Counts(Vec<(String, usize)>),
 }
 
+/// Search one UTF-8/binary-checked blob buffer with the same ripgrep-style options.
+pub fn search_blob_bytes(
+    path: &str,
+    data: &[u8],
+    pattern: &str,
+    opts: &GrepOptions,
+    remaining: usize,
+) -> anyhow::Result<Vec<GrepMatch>> {
+    if remaining == 0 {
+        return Ok(Vec::new());
+    }
+    if data.iter().any(|&b| b == 0) {
+        return Ok(Vec::new());
+    }
+    let matcher = RegexMatcherBuilder::new()
+        .case_insensitive(opts.ignore_case)
+        .case_smart(opts.smart_case)
+        .word(opts.word_regexp)
+        .build(pattern)?;
+
+    let mut file_match_list: Vec<GrepMatch> = Vec::new();
+    let mut searcher_builder = SearcherBuilder::new();
+    searcher_builder.line_number(true);
+    searcher_builder.invert_match(opts.invert_match);
+    if opts.before_context > 0 || opts.after_context > 0 {
+        searcher_builder.before_context(opts.before_context);
+        searcher_builder.after_context(opts.after_context);
+    }
+    searcher_builder.build().search_slice(
+        &matcher,
+        data,
+        MatchCollector {
+            path,
+            matches: &mut file_match_list,
+            max_count: remaining,
+            total_count: 0,
+        },
+    )?;
+    Ok(file_match_list)
+}
+
 pub async fn cache_github_repo(
     owner_repo: &str,
     branch: CacheBranchSelection,
@@ -1996,7 +2037,7 @@ impl Sink for MatchCollector<'_> {
 }
 
 /// Check if a path matches a glob pattern
-fn matches_glob(path: &str, pattern: &str) -> bool {
+pub(crate) fn matches_glob(path: &str, pattern: &str) -> bool {
     // Simple glob matching: support *, **, and ?
     let pattern = pattern.trim();
 

@@ -304,15 +304,21 @@ wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
 
 ### Snapshot backends (disk vs memory)
 
-`tree`, `ls`, and `cat` default to the **disk** cache backend. Pass `--backend memory` (or set `WIT_SNAPSHOT_BACKEND=memory`) to load a **public** repository over the GitHub REST API into RAM with **zero** `WIT_CACHE_DIR` writes. Provenance (`commit_sha`, `tree_sha`, backend label) is printed on stderr.
+Repo-reading commands default to the **disk** cache backend. Pass `--backend memory` (or set `WIT_SNAPSHOT_BACKEND=memory`) to load a **public** repository over the GitHub REST API into RAM with **zero** `WIT_CACHE_DIR` writes. Provenance (`commit_sha`, `tree_sha`, backend label) is printed on stderr.
+
+Memory covers `tree` / `ls` / `cat` / `rg` / `sed` / `head` / `tail` (including `--branch`, `--ignore`, `-l`, and `-n` where those flags apply). `wit cache --backend memory` pins/opens the in-memory snapshot (prefetch tree; optional root-blob warm) instead of cloning. `wit branches --backend memory` lists branches via the GitHub API. `wit search` always uses the GitHub REST API and never needs the disk cache.
 
 ```bash
 wit tree -r octocat/Hello-World --backend memory
 wit ls   -r octocat/Hello-World --backend memory
 wit cat  -r octocat/Hello-World README --backend memory
+wit rg 'Hello' -r octocat/Hello-World --backend memory
+wit head -n 5 -r octocat/Hello-World README --backend memory
+wit cache -r octocat/Hello-World --backend memory
+wit branches -r octocat/Hello-World --backend memory
 ```
 
-The memory path does not replace the CLI cache and does not cover `rg` / `sed` / `head` / `tail`. See `docs/nofS-snapshot.md` and `bash scripts/nofS_demo.sh` for the no-FS demo.
+See `docs/nofS-snapshot.md` and `bash scripts/nofS_demo.sh` for the no-FS demo.
 
 ### tree (alias: t)
 
