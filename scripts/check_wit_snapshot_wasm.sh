@@ -35,4 +35,7 @@ cp "$wasm" "$root/crates/wit-snapshot/demo/browser/wit_snapshot.wasm"
 echo "==> wasmtime fixture smoke (module runs; not browser-ready)"
 cargo run -p wit-snapshot --features wasmtime-fixture --bin wit-snapshot-wasmtime-fixture -- "$wasm"
 
+echo "==> host repo-cache unit tests (hit / miss / expiry / independent TTL)"
+node --test "$root/crates/wit-snapshot/demo/browser/repo-cache.test.js"
+
 echo "check_wit_snapshot_wasm: ok"

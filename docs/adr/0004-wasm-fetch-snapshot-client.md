@@ -22,13 +22,14 @@ Keep one snapshot impl. Add one HTTP impl.
 5. Compile `wit-snapshot` only to `wasm32-unknown-unknown`. Export `open` / `list` / `read` plus the existing typed errors (`rate_limit`, `oversized`, `not_found`, `binary`, `private_repo`, `oom`). Host/fetch failure maps onto those or `Api` — it is not a third impl.
 6. Browser demo is those three exports in-page. wasmtime + fixture is CI evidence that the wasm module runs; it must not be labeled browser-ready.
 7. Document this cut in-repo (this ADR plus a short how-to). Do not replace disk as the native default.
+8. The **host** may cache slim tree/blob material per `(owner/repo, resolved ref)` with a TTL (default 24h) in front of `http_get`. That is host infrastructure (e.g. IndexedDB in `demo/browser`), not a third snapshot backend and not a change to native `ReqwestGitHubClient`.
 
 ## Consequences
 
 Positive:
 
 - The no-FS design is reusable across native, wasmtime, and browser without a `WasmSnapshotStore`.
-- CORS and auth stay with the host, where they belong.
+- CORS, auth, and optional per-repo HTTP caching stay with the host, where they belong.
 - Typed errors stay one set.
 
 Tradeoffs:
