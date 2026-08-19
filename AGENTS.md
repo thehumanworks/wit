@@ -2,7 +2,7 @@
 
 ## Project Structure
 
-This is a Cargo workspace with two crates:
+This is a Cargo workspace with several crates:
 
 ### `crates/wit/` — main CLI
 - `src/cli.rs`: Primary CLI binary entrypoint (`wit`). Contains all subcommand definitions (clap derive) and display/output logic.
@@ -13,11 +13,15 @@ This is a Cargo workspace with two crates:
 - `src/snapshot/`: Disk adapter + memory helpers (`memory_ops.rs`) for the shared `wit-snapshot` open/list/tree/read/search contract; CLI `--backend memory|disk` for tree/ls/cat/rg/sed/head/tail, cache pin, and branches.
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
 
-### `crates/wit-snapshot/` — no-FS memory snapshot backend
+### `crates/wit-snapshot/` — no-FS memory snapshots (+ wasm32 fetch client)
 - `src/lib.rs`: `SnapshotBackend` / `RepoSnapshot` traits and shared provenance types.
-- `src/memory.rs`: In-memory GitHub trees/blobs backend (zero `WIT_CACHE_DIR` writes).
+- `src/memory.rs`: `MemoryBackend<C: GitHubHttpClient>` — sole no-FS snapshot impl (`open` / `list` / `tree` / `read`).
+- `src/fetch.rs` + `src/wasm_abi.rs` (wasm32 only): `FetchGitHubClient` via host `http_get`; exports `open` / `list` / `read` + typed errors.
+- Native `ReqwestGitHubClient` stays behind the `http` feature; wasm32 builds use `--no-default-features` (no reqwest).
 - `src/bin/wit_nofS_demo.rs`: Live + fixture demo harness (`cargo run -p wit-snapshot --features demo --bin wit-nofS-demo`).
+- `demo/browser/`: in-page fixture demo of the three exports. `wit-snapshot-wasmtime-fixture`: CI evidence the module runs (not browser-ready).
 - `tests/memory_backend.rs`: Wiremock + failure-case coverage (rate limit, private, oversized, binary, OOM budget).
+- Docs: `docs/adr/0004-wasm-fetch-snapshot-client.md` + `docs/adr/0004-wasm-fetch-howto.md`.
 
 ### `crates/wits/` — grep.app client crate (also standalone CLI `wits`)
 - `src/lib.rs`: Library root; re-exports `client`, `types`, `RepoListMetric`, and `print_search_results()`.
@@ -57,6 +61,7 @@ This is a Cargo workspace with two crates:
 - `cargo clippy --workspace --all-targets -- -D warnings`: Lint and treat warnings as errors.
 - `cargo test --workspace`: Run unit tests. `cargo test -- --ignored` for integration tests (require network).
 - `bash scripts/check_wit_search_migration.sh`: Enforce `wit search` stays GitHub-only and does not reintroduce grep.app wiring under `crates/wit/src`.
+- `bash scripts/check_wit_snapshot_wasm.sh`: Build `wit-snapshot` for `wasm32-unknown-unknown` without reqwest; run wasmtime fixture smoke.
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.
 - `cargo test -p wit --test search_github_live -- --ignored`: Optional live GitHub smoke test (`GITHUB_TOKEN` recommended).
@@ -105,5 +110,5 @@ This is a Cargo workspace with two crates:
 
 - Prefer `rg` / `rg --files` for repo search while working on changes.
 - Keep patches focused and avoid committing generated artifacts under `target/`.
-- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `bash scripts/check_wit_search_migration.sh`.
+- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, and `bash scripts/check_wit_snapshot_wasm.sh`.
 - The `sed` subcommand aims for broad POSIX coverage; update tests and docs alongside behavior changes.

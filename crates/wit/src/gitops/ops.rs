@@ -461,8 +461,20 @@ fn commit_metadata(graph_path: &Path, sha: &str) -> anyhow::Result<CommitMetadat
     Ok(CommitMetadata {
         sha: parsed_sha.to_string(),
         author: author.to_string(),
-        time: time.to_string(),
+        time: normalize_git_iso8601(time),
     })
+}
+
+/// Prefer `Z` over `+00:00` / `-00:00` so branch tip times stay stable across
+/// git versions (`%aI` formatting differs).
+fn normalize_git_iso8601(time: &str) -> String {
+    if let Some(prefix) = time.strip_suffix("+00:00") {
+        format!("{prefix}Z")
+    } else if let Some(prefix) = time.strip_suffix("-00:00") {
+        format!("{prefix}Z")
+    } else {
+        time.to_string()
+    }
 }
 
 fn branch_ahead_behind(

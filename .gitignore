@@ -24,3 +24,6 @@ Thumbs.db
 # Logs
 *.log
 .grok
+
+# Staged wit-snapshot wasm demo artifact
+crates/wit-snapshot/demo/browser/wit_snapshot.wasm
