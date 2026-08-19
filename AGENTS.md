@@ -6,11 +6,18 @@ This is a Cargo workspace with two crates:
 
 ### `crates/wit/` — main CLI
 - `src/cli.rs`: Primary CLI binary entrypoint (`wit`). Contains all subcommand definitions (clap derive) and display/output logic.
-- `src/lib.rs`: Library crate root; exposes `gitops`, `sed`, `search`, and `search_run`.
+- `src/lib.rs`: Library crate root; exposes `gitops`, `sed`, `search`, `search_run`, and `snapshot`.
 - `src/search.rs`: GitHub repository search (`GitHubSearchClient`, octocrab), raw query assembly, and limit-aware pagination for `wit search`.
 - `src/search_run.rs`: `wit search` orchestration for GitHub-only repository discovery and result shaping.
 - `src/gitops/`: Git operations module for bare-repo caching, file access, tree display, directory listing, head/tail, and ripgrep-style search (`ops.rs`, `mod.rs`).
+- `src/snapshot/`: Disk adapter implementing the shared `wit-snapshot` open/list/tree/read contract; CLI `--backend memory|disk` for tree/ls/cat.
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
+
+### `crates/wit-snapshot/` — no-FS memory snapshot backend
+- `src/lib.rs`: `SnapshotBackend` / `RepoSnapshot` traits and shared provenance types.
+- `src/memory.rs`: In-memory GitHub trees/blobs backend (zero `WIT_CACHE_DIR` writes).
+- `src/bin/wit_nofS_demo.rs`: Live + fixture demo harness (`cargo run -p wit-snapshot --features demo --bin wit-nofS-demo`).
+- `tests/memory_backend.rs`: Wiremock + failure-case coverage (rate limit, private, oversized, binary, OOM budget).
 
 ### `crates/wits/` — grep.app client crate (also standalone CLI `wits`)
 - `src/lib.rs`: Library root; re-exports `client`, `types`, `RepoListMetric`, and `print_search_results()`.

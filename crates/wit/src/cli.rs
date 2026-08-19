@@ -1,5 +1,6 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -14,6 +15,10 @@ use wit::{
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
+    snapshot::CliSnapshotBackend,
+};
+use wit_snapshot::{
+    DirEntry, EntryKind, MemoryBackend, RepoSnapshot, SnapshotBackend, SnapshotProvenance,
 };
 
 #[derive(Parser)]
@@ -21,7 +26,7 @@ use wit::{
 #[command(
     about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
     long_about = None,
-    after_help = "Branch discovery: run wit branches -r owner/repo to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed."
+    after_help = "Branch discovery: run wit branches -r owner/repo to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache -r owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: tree/ls/cat default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory backend does not support rg/sed/head/tail in this slice."
 )]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
@@ -99,7 +104,7 @@ enum Commands {
         visible_alias = "t",
         about = "Show the file tree of a repository (or subtree). Use -l for line counts",
         override_usage = "wit <tree|t> [OPTIONS] -r <REPO> [PATH]",
-        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nExamples:\n  wit tree -r ratatui/ratatui                # Full repo tree\n  wit tree -r ratatui/ratatui src/widgets    # Only the widgets subtree\n  wit tree -l -r ratatui/ratatui src         # With line counts and token estimates"
+        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nExamples:\n  wit tree -r ratatui/ratatui                # Full repo tree\n  wit tree -r ratatui/ratatui src/widgets    # Only the widgets subtree\n  wit tree -l -r ratatui/ratatui src         # With line counts and token estimates\n  wit tree -r octocat/Hello-World --backend memory"
     )]
     Tree {
         /// Repository in "owner/repo" format
@@ -120,12 +125,16 @@ enum Commands {
         /// Show file sizes: lines and approximate token count
         #[arg(short = 'l', long = "long")]
         long: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "ls",
         about = "List directory contents (non-recursive). Use -l for file sizes",
         override_usage = "wit ls [OPTIONS] -r <REPO> [PATH]",
-        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nExamples:\n  wit ls -r ratatui/ratatui                    # List repo root\n  wit ls -r ratatui/ratatui src/widgets        # List a subdirectory\n  wit ls -l -r ratatui/ratatui src             # With file sizes"
+        after_help = "Use to browse one directory level at a time. Unlike tree (recursive), ls shows only immediate children. Use -l to see line counts and token estimates before deciding what to read.\n\nExamples:\n  wit ls -r ratatui/ratatui                    # List repo root\n  wit ls -r ratatui/ratatui src/widgets        # List a subdirectory\n  wit ls -l -r ratatui/ratatui src             # With file sizes\n  wit ls -r ratatui/ratatui --backend memory   # No disk cache"
     )]
     Ls {
         /// Repository in "owner/repo" format
@@ -146,12 +155,16 @@ enum Commands {
         /// Show file sizes: lines and approximate token count
         #[arg(short = 'l', long = "long")]
         long: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "cat",
         about = "Print a file's contents. Use -n for line numbers",
         override_usage = "wit cat [OPTIONS] -r <REPO> <PATH>",
-        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nExamples:\n  wit cat -r ratatui/ratatui Cargo.toml             # Print file\n  wit cat -n -r ratatui/ratatui src/lib.rs           # With line numbers\n  wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only"
+        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nExamples:\n  wit cat -r ratatui/ratatui Cargo.toml             # Print file\n  wit cat -n -r ratatui/ratatui src/lib.rs           # With line numbers\n  wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only\n  wit cat -r octocat/Hello-World README --backend memory"
     )]
     Cat {
         /// Repository in "owner/repo" format
@@ -192,6 +205,10 @@ enum Commands {
         /// Equivalent to -ET (show ends and tabs)
         #[arg(short = 'A', long = "show-all")]
         show_all: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
     },
     #[command(
         name = "rg",
@@ -446,6 +463,136 @@ fn cache_branch_selection(branch: Option<String>) -> CacheBranchSelection {
     branch.map_or(CacheBranchSelection::Default, CacheBranchSelection::named)
 }
 
+async fn open_memory_snapshot(
+    repo: &str,
+    branch: Option<&str>,
+) -> anyhow::Result<wit_snapshot::MemorySnapshot<wit_snapshot::ReqwestGitHubClient>> {
+    let backend = MemoryBackend::from_env().map_err(|err| anyhow::anyhow!(err))?;
+    backend
+        .open(repo, branch)
+        .await
+        .map_err(|err| anyhow::anyhow!(err))
+}
+
+fn print_memory_provenance(provenance: &SnapshotProvenance) {
+    eprintln!(
+        "snapshot: backend={} repo={} commit={} cache={}",
+        provenance.backend, provenance.repo, provenance.commit_sha, provenance.cache_state
+    );
+}
+
+fn print_ls_entries(entries: &[wit::gitops::ops::FileMetadata], long: bool) {
+    if entries.is_empty() {
+        println!("{}", "Directory is empty or does not exist.".yellow());
+        return;
+    }
+    if long {
+        let max_lines = entries.iter().filter_map(|e| e.lines).max().unwrap_or(0);
+        let lines_width = max_lines.to_string().len().max(1);
+        for entry in entries {
+            if entry.is_dir {
+                println!(
+                    "{:>width$}  {}/",
+                    "",
+                    entry.name,
+                    width = lines_width + 3 + 3
+                );
+            } else if entry.is_binary {
+                println!(
+                    "{:>width$}   {}",
+                    "[bin]",
+                    entry.name,
+                    width = lines_width + 3 + 2
+                );
+            } else if let Some(lines) = entry.lines {
+                let tokens = lines * 5;
+                println!(
+                    "{:>width$} ln  {:<30} (~{} tok)",
+                    lines,
+                    entry.name,
+                    tokens,
+                    width = lines_width
+                );
+            }
+        }
+    } else {
+        for entry in entries {
+            if entry.is_dir {
+                println!("{}/", entry.name);
+            } else {
+                println!("{}", entry.name);
+            }
+        }
+    }
+}
+
+fn print_snapshot_ls(entries: &[DirEntry], long: bool) {
+    if long {
+        for entry in entries {
+            match entry.kind {
+                EntryKind::Dir => println!("            {}/", entry.name),
+                EntryKind::File => {
+                    if let Some(size) = entry.size_bytes {
+                        println!("{:>8} B  {}", size, entry.name);
+                    } else {
+                        println!("            {}", entry.name);
+                    }
+                }
+            }
+        }
+    } else {
+        for entry in entries {
+            match entry.kind {
+                EntryKind::Dir => println!("{}/", entry.name),
+                EntryKind::File => println!("{}", entry.name),
+            }
+        }
+    }
+}
+
+fn print_snapshot_tree<S: RepoSnapshot>(
+    snap: &S,
+    path: Option<&str>,
+    long: bool,
+) -> anyhow::Result<()> {
+    let view = snap.tree(path).map_err(|err| anyhow::anyhow!(err))?;
+    println!("{}", view.root);
+    let mut dirs: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for entry in &view.entries {
+        let relative = if let Some(base) = path {
+            let base = base.trim_end_matches('/');
+            entry
+                .path
+                .strip_prefix(base)
+                .map(|rest| rest.trim_start_matches('/'))
+                .unwrap_or(entry.path.as_str())
+        } else {
+            entry.path.as_str()
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        if let Some((dir, name)) = relative.rsplit_once('/') {
+            dirs.entry(dir.to_string()).or_default().push(name);
+        } else {
+            dirs.entry(String::new()).or_default().push(relative);
+        }
+        let _ = long;
+        let label = if long {
+            if let Some(size) = entry.size_bytes {
+                format!("{relative} ({size} B)")
+            } else {
+                relative.to_string()
+            }
+        } else {
+            relative.to_string()
+        };
+        println!("  {label}");
+    }
+    let _ = dirs;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__codemode-worker")) {
@@ -495,14 +642,26 @@ async fn main() -> anyhow::Result<()> {
             refresh_cache,
             path,
             long,
+            backend,
         } => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-            build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
+            match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    print_snapshot_tree(&snap, path.as_deref(), long)?;
+                }
+            }
         }
         Commands::Ls {
             repo,
@@ -510,58 +669,32 @@ async fn main() -> anyhow::Result<()> {
             refresh_cache,
             path,
             long,
+            backend,
         } => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-            let entries =
-                list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
-
-            if entries.is_empty() {
-                println!("{}", "Directory is empty or does not exist.".yellow());
-                return Ok(());
-            }
-
-            if long {
-                // Find max line count width for alignment
-                let max_lines = entries.iter().filter_map(|e| e.lines).max().unwrap_or(0);
-                let lines_width = max_lines.to_string().len().max(1);
-
-                for entry in &entries {
-                    if entry.is_dir {
-                        println!(
-                            "{:>width$}  {}/",
-                            "",
-                            entry.name,
-                            width = lines_width + 3 + 3
-                        );
-                    } else if entry.is_binary {
-                        println!(
-                            "{:>width$}   {}",
-                            "[bin]",
-                            entry.name,
-                            width = lines_width + 3 + 2
-                        );
-                    } else if let Some(lines) = entry.lines {
-                        let tokens = lines * 5;
-                        println!(
-                            "{:>width$} ln  {:<30} (~{} tok)",
-                            lines,
-                            entry.name,
-                            tokens,
-                            width = lines_width
-                        );
-                    }
+            match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    let entries =
+                        list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
+                    print_ls_entries(&entries, long);
                 }
-            } else {
-                for entry in &entries {
-                    if entry.is_dir {
-                        println!("{}/", entry.name);
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    let entries = snap
+                        .list(path.as_deref())
+                        .map_err(|err| anyhow::anyhow!(err))?;
+                    if entries.is_empty() {
+                        println!("{}", "Directory is empty or does not exist.".yellow());
                     } else {
-                        println!("{}", entry.name);
+                        print_snapshot_ls(&entries, long);
                     }
                 }
             }
@@ -577,14 +710,29 @@ async fn main() -> anyhow::Result<()> {
             show_ends,
             show_tabs,
             show_all,
+            backend,
         } => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
-            let content = read_file_with_ignore(&repository, &path, &ignore_patterns)?;
+            let content = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
+                .map_err(anyhow::Error::msg)?
+            {
+                CliSnapshotBackend::Disk => {
+                    let repository = cache_github_repo(
+                        &repo,
+                        cache_branch_selection(branch),
+                        repo_cache_mode(refresh_cache),
+                    )
+                    .await?;
+                    read_file_with_ignore(&repository, &path, &ignore_patterns)?
+                }
+                CliSnapshotBackend::Memory => {
+                    let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+                    print_memory_provenance(snap.provenance());
+                    snap.read(&path)
+                        .await
+                        .map_err(|err| anyhow::anyhow!(err))?
+                        .text
+                }
+            };
 
             // -A is equivalent to -ET
             let show_ends = show_ends || show_all;
@@ -1601,5 +1749,57 @@ mod tests {
         assert!(mcp_help.contains("Experimental Code Mode"));
         assert!(mcp_help.contains("one native JavaScript code tool"));
         assert!(mcp_help.contains("--mode <MODE>"));
+    }
+
+    #[test]
+    fn snapshot_backend_flag_parses_for_tree_ls_cat() {
+        let tree = WitCli::try_parse_from([
+            "wit",
+            "tree",
+            "-r",
+            "owner/repo",
+            "--backend",
+            "memory",
+        ])
+        .expect("tree --backend memory should parse");
+        assert!(matches!(
+            tree.command,
+            Commands::Tree {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let ls = WitCli::try_parse_from(["wit", "ls", "-r", "owner/repo", "--backend", "disk"])
+            .expect("ls --backend disk should parse");
+        assert!(matches!(
+            ls.command,
+            Commands::Ls {
+                backend: Some(ref value),
+                ..
+            } if value == "disk"
+        ));
+
+        let cat = WitCli::try_parse_from([
+            "wit",
+            "cat",
+            "-r",
+            "owner/repo",
+            "README.md",
+            "--backend",
+            "memory",
+        ])
+        .expect("cat --backend memory should parse");
+        assert!(matches!(
+            cat.command,
+            Commands::Cat {
+                backend: Some(ref value),
+                ..
+            } if value == "memory"
+        ));
+
+        let root_help = WitCli::command().render_long_help().to_string();
+        assert!(root_help.contains("--backend memory"));
+        assert!(root_help.contains("WIT_SNAPSHOT_BACKEND=memory"));
     }
 }

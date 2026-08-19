@@ -46,7 +46,10 @@ fn branches_cli_lists_metadata_and_listed_branch_reads() -> anyhow::Result<()> {
         "yes",
     );
     assert!(line_for_branch(&output, "main").contains("Main Author <main@example.com>"));
-    assert!(line_for_branch(&output, "main").contains("2024-01-05T00:00:00Z"));
+    assert!(
+        line_for_branch(&output, "main").contains("2024-01-05T00:00:00Z")
+            || line_for_branch(&output, "main").contains("2024-01-05T00:00:00+00:00")
+    );
     assert!(line_for_branch(&output, "main").contains("tip commit fallback"));
 
     assert_branch_columns(

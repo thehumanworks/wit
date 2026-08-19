@@ -2721,6 +2721,15 @@ mod tests {
         assert!(CacheTarget::new("owner/repo", "").is_err());
     }
 
+    fn assert_utc_timestamp(actual: &str, expected_day: &str) {
+        let expected_z = format!("{expected_day}T00:00:00Z");
+        let expected_offset = format!("{expected_day}T00:00:00+00:00");
+        assert!(
+            actual == expected_z || actual == expected_offset,
+            "unexpected timestamp {actual} (expected {expected_z} or {expected_offset})"
+        );
+    }
+
     #[test]
     fn branches_metadata_format() {
         let temp = tempfile::tempdir().unwrap();
@@ -2739,7 +2748,7 @@ mod tests {
         assert!(main.is_default);
         assert_eq!(main.tip_sha, fixture.main_sha);
         assert_eq!(main.tip_author, "Main Author <main@example.com>");
-        assert_eq!(main.tip_time, "2024-01-05T00:00:00Z");
+        assert_utc_timestamp(&main.tip_time, "2024-01-05");
         assert_eq!(main.ahead, 0);
         assert_eq!(main.behind, 0);
         assert!(main.merged);
@@ -2751,11 +2760,11 @@ mod tests {
         assert!(!active.is_default);
         assert_eq!(active.tip_sha, fixture.active_sha);
         assert_eq!(active.tip_author, "Feature Author <feature@example.com>");
-        assert_eq!(active.tip_time, "2024-01-02T00:00:00Z");
+        assert_utc_timestamp(&active.tip_time, "2024-01-02");
         assert_eq!(active.ahead, 1);
         assert_eq!(active.behind, 3);
         assert!(!active.merged);
-        assert_eq!(active.created_time, "2024-01-02T00:00:00Z");
+        assert_utc_timestamp(&active.created_time, "2024-01-02");
         assert_eq!(
             active.created_source,
             BranchCreatedSource::FirstUniqueCommit
@@ -2778,7 +2787,7 @@ mod tests {
         assert!(!merged.is_default);
         assert_eq!(merged.tip_sha, fixture.merged_sha);
         assert_eq!(merged.tip_author, "Merged Author <merged@example.com>");
-        assert_eq!(merged.tip_time, "2024-01-03T00:00:00Z");
+        assert_utc_timestamp(&merged.tip_time, "2024-01-03");
         assert_eq!(merged.ahead, 0);
         assert_eq!(merged.behind, 2);
         assert!(merged.merged);

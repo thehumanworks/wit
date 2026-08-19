@@ -1,0 +1,9 @@
+{
+  "sha": "treesha",
+  "truncated": false,
+  "tree": [
+    {"path": "README.md", "mode": "100644", "type": "blob", "sha": "blob-readme", "size": 13},
+    {"path": "src", "mode": "040000", "type": "tree", "sha": "tree-src"},
+    {"path": "src/main.rs", "mode": "100644", "type": "blob", "sha": "blob-main", "size": 20}
+  ]
+}

@@ -8,6 +8,7 @@ pub mod operations;
 pub mod search;
 pub mod search_run;
 pub mod sed;
+pub mod snapshot;
 mod tls;
 
 pub use tls::ensure_rustls_provider;

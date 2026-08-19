@@ -5774,6 +5774,7 @@ dependencies = [
  "tracing-subscriber",
  "wiremock",
  "wit-quickjs-spike",
+ "wit-snapshot",
  "wits",
 ]
 
@@ -5875,6 +5876,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "wit-snapshot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

@@ -1,0 +1,68 @@
+# No-filesystem repository snapshots
+
+Status: shipped for the open/list/read (tree/ls/cat) slice.
+
+## What changed
+
+`wit` still defaults to the disk cache (`gix` bare clones under `WIT_CACHE_DIR`,
+serialized with `fs2`). That path cannot move onto Cloudflare Workers / WASM as-is.
+
+This slice adds a second backend:
+
+| Backend | Mechanism | Disk cache writes | Commands |
+|---------|-----------|-------------------|----------|
+| `disk` (default) | existing bare-repo cache | yes | all CLI reads |
+| `memory` | GitHub REST trees/blobs into RAM | **none** | `tree`, `ls`, `cat` |
+
+Shared contract: `wit_snapshot::{SnapshotBackend, RepoSnapshot}` with provenance
+(`repo`, resolved ref, `commit_sha`, `tree_sha`, backend label, cache state).
+
+## Why full CLI WASM is still impossible
+
+Evidence from the disk path in `crates/wit/src/gitops/ops.rs`:
+
+- `cache_github_repo` writes bare clones under `WIT_CACHE_DIR` / `.wit/cache`
+- `fs2::FileExt` advisory locks (`.cache.lock`) require a real filesystem
+- `gix` repository handles are filesystem-backed object stores
+- MCP/`operations.rs` pins snapshots with `tempfile::TempDir` + `git clone --bare`
+- `rg` / grep uses local object walks and is out of scope for memory
+
+Lifting that stack into Workers/WASM would fake a filesystem, not remove the dependency.
+
+## How to run the no-FS demo
+
+```bash
+# 1) Dedicated demo binary (asserts zero cache writes)
+bash scripts/nofS_demo.sh live
+
+# 2) Fixture-only (no GitHub; same memory list/read logic)
+bash scripts/nofS_demo.sh fixture
+
+# 3) Real CLI flags against a public repo, still zero cache files
+bash scripts/nofS_demo.sh cli-memory
+
+# Equivalent manual commands:
+cargo run -p wit --bin wit -- tree -r octocat/Hello-World --backend memory
+cargo run -p wit --bin wit -- ls  -r octocat/Hello-World --backend memory
+cargo run -p wit --bin wit -- cat -r octocat/Hello-World README --backend memory
+# or: WIT_SNAPSHOT_BACKEND=memory wit tree -r octocat/Hello-World
+```
+
+A wasmtime **networked** WASI build of the full CLI is not shipped. The memory
+backend + `wit-nofS-demo` are the honest no-FS surface; a future Worker/wasi-http
+binding can call the same `MemoryBackend` without inventing a disk.
+
+## Failure handling
+
+The memory backend returns typed errors for:
+
+- GitHub rate limits (`403`/`429` with rate-limit body)
+- Private / inaccessible repos (`401`/`403`/`404`, or `private: true`)
+- Oversized recursive trees (`truncated: true` or entry cap)
+- Oversized blobs (default 1 MiB)
+- Missing paths / directory-vs-file misuse
+- Binary blobs (NUL bytes)
+- Memory budget pressure on the in-process blob cache
+
+Unit/integration coverage lives in `crates/wit-snapshot/tests/memory_backend.rs`
+(wiremock + in-memory HTTP doubles; no live GitHub flakiness).
