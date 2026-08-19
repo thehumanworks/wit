@@ -4,15 +4,28 @@
 //! list/tree/read from RAM. It never writes under `WIT_CACHE_DIR` or any other
 //! disk cache. Disk-backed caching remains in the `wit` crate and implements the
 //! same [`RepoSnapshot`] contract via an adapter.
+//!
+//! On `wasm32-unknown-unknown`, [`FetchGitHubClient`] implements the same
+//! [`GitHubHttpClient`] seam via a host-supplied `fetch` import. Native builds
+//! use [`ReqwestGitHubClient`] behind the `http` feature.
 
 mod error;
 pub mod memory;
 mod types;
 
+#[cfg(target_arch = "wasm32")]
+mod fetch;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_abi;
+
 pub use error::{SnapshotError, SnapshotResult};
+#[cfg(target_arch = "wasm32")]
+pub use fetch::FetchGitHubClient;
+#[cfg(feature = "http")]
+pub use memory::ReqwestGitHubClient;
 pub use memory::{
-    GitHubHttpClient, MemoryBackend, MemoryBackendLimits, MemorySnapshot, ReqwestGitHubClient,
-    WalkEntry, snapshot_from_tree_json,
+    GitHubHttpClient, MemoryBackend, MemoryBackendLimits, MemorySnapshot, WalkEntry,
+    snapshot_from_tree_json,
 };
 pub use types::{DirEntry, EntryKind, FileContent, SnapshotProvenance, TreeEntry, TreeView};
 

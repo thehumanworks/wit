@@ -1,4 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
+#[cfg(feature = "http")]
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path, path_regex},
@@ -281,6 +282,7 @@ async fn memory_backend_never_writes_cache_dir() {
 }
 
 /// Integration-style: real HTTP server (wiremock), still no live GitHub.
+#[cfg(feature = "http")]
 #[tokio::test]
 async fn memory_wiremock_http_open_list_read() {
     let server = MockServer::start().await;

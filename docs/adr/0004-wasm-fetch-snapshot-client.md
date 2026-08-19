@@ -37,6 +37,10 @@ Tradeoffs:
 - rg / sed / head / tail stay native views; they are not wasm exports in this cut.
 - Two HTTP clients to keep in contract (`reqwest` vs `fetch`).
 
+## How-to
+
+See [0004-wasm-fetch-howto.md](./0004-wasm-fetch-howto.md) for build flags, host `http_get`, CORS, the in-page fixture demo, and the wasmtime CI smoke.
+
 ## Alternatives Considered
 
 1. WASM the full `wit` CLI:

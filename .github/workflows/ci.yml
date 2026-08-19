@@ -38,6 +38,9 @@ jobs:
       - name: wit search migration guard
         run: bash scripts/check_wit_search_migration.sh
 
+      - name: wit-snapshot wasm32 fetch client
+        run: bash scripts/check_wit_snapshot_wasm.sh
+
       - name: release workflow guard
         run: bash scripts/check_release_workflows.sh
 
