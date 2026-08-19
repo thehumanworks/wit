@@ -1,0 +1,6 @@
+{
+  "name": "wit-snapshot-browser-demo",
+  "private": true,
+  "type": "module",
+  "description": "Fixture host + per-repo cache demo for wit-snapshot wasm32 (not published)"
+}
