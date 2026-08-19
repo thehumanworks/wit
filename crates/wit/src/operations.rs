@@ -44,6 +44,8 @@ const MAX_CONTEXT_CANDIDATES: usize = 5000;
 pub struct WitOperations {
     snapshots: Arc<Mutex<HashMap<String, SnapshotRecord>>>,
     snapshot_backend: CliSnapshotBackend,
+    /// Optional injected GitHub HTTP client for the memory backend (tests / custom base URL).
+    memory_github: Option<ReqwestGitHubClient>,
 }
 
 impl WitOperations {
@@ -52,6 +54,7 @@ impl WitOperations {
             snapshots: Arc::new(Mutex::new(HashMap::new())),
             snapshot_backend: CliSnapshotBackend::from_env_or_flag(None)
                 .unwrap_or(CliSnapshotBackend::Disk),
+            memory_github: None,
         }
     }
 
@@ -60,6 +63,26 @@ impl WitOperations {
         Self {
             snapshots: Arc::new(Mutex::new(HashMap::new())),
             snapshot_backend,
+            memory_github: None,
+        }
+    }
+
+    /// Memory backend with an injected GitHub HTTP client (wiremock / custom API base).
+    pub fn with_memory_github_client(client: ReqwestGitHubClient) -> Self {
+        Self {
+            snapshots: Arc::new(Mutex::new(HashMap::new())),
+            snapshot_backend: CliSnapshotBackend::Memory,
+            memory_github: Some(client),
+        }
+    }
+
+    fn memory_backend(&self) -> Result<MemoryBackend<ReqwestGitHubClient>, String> {
+        match &self.memory_github {
+            Some(client) => Ok(MemoryBackend::new(
+                client.clone(),
+                wit_snapshot::MemoryBackendLimits::default(),
+            )),
+            None => MemoryBackend::from_env().map_err(snapshot_error),
         }
     }
 
@@ -1556,7 +1579,8 @@ mod tests {
     #[tokio::test]
     async fn memory_snapshot_list_and_read_without_disk() {
         let probe = tempfile::tempdir().unwrap();
-        // Safety: test isolation for accidental cache writes.
+        let previous_cache = std::env::var_os("WIT_CACHE_DIR");
+        // Safety: scoped env override restored before the test returns.
         unsafe {
             std::env::set_var("WIT_CACHE_DIR", probe.path());
         }
@@ -1612,17 +1636,73 @@ mod tests {
             std::fs::read_dir(probe.path()).unwrap().next().is_none(),
             "memory MCP path must not write WIT_CACHE_DIR"
         );
+        // Safety: restore previous value so parallel tests are not polluted.
+        unsafe {
+            match previous_cache {
+                Some(value) => std::env::set_var("WIT_CACHE_DIR", value),
+                None => std::env::remove_var("WIT_CACHE_DIR"),
+            }
+        }
     }
 
-    #[test]
-    fn memory_cache_provenance_state_is_memory() {
-        let cache = CacheProvenance {
-            state: "memory".to_string(),
-            last_checked_at: None,
-            last_updated_at: None,
-            last_error: None,
+    #[tokio::test]
+    async fn memory_wit_open_surfaces_typed_rate_limit_without_cache_writes() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
         };
-        assert_eq!(cache.state, "memory");
+
+        let probe = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("WIT_CACHE_DIR");
+        // Safety: scoped env override restored before the test returns.
+        unsafe {
+            std::env::set_var("WIT_CACHE_DIR", probe.path());
+        }
+
+        let server = MockServer::start().await;
+        let body = r#"{"message":"API rate limit exceeded for anonymous requests"}"#;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/demo"))
+            .respond_with(ResponseTemplate::new(403).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = ReqwestGitHubClient::new(server.uri(), None).unwrap();
+        let operations = WitOperations::with_memory_github_client(client);
+        let error = operations
+            .open(
+                &OperationContext::default(),
+                OpenArgs {
+                    repo: "acme/demo".to_string(),
+                    reference: None,
+                    freshness: Freshness::AllowStale,
+                },
+            )
+            .await
+            .expect_err("rate-limited open must fail");
+
+        let expected = SnapshotError::from_status(403, body, "acme/demo");
+        assert!(
+            matches!(expected, SnapshotError::RateLimited(_)),
+            "fixture must map to RateLimited, got {expected:?}"
+        );
+        assert_eq!(error, expected.to_string());
+        assert!(
+            operations.snapshots.lock().unwrap().is_empty(),
+            "failed open must not publish a snapshot"
+        );
+        assert!(
+            std::fs::read_dir(probe.path()).unwrap().next().is_none(),
+            "memory wit_open must not write WIT_CACHE_DIR on failure"
+        );
+
+        // Safety: restore previous value so parallel tests are not polluted.
+        unsafe {
+            match previous_cache {
+                Some(value) => std::env::set_var("WIT_CACHE_DIR", value),
+                None => std::env::remove_var("WIT_CACHE_DIR"),
+            }
+        }
     }
 
     #[tokio::test]
@@ -2510,7 +2590,7 @@ impl WitOperations {
         requested: String,
     ) -> Result<OpenResponse, String> {
         context.check()?;
-        let backend = MemoryBackend::from_env().map_err(snapshot_error)?;
+        let backend = self.memory_backend()?;
         let branch = if requested == "HEAD" {
             None
         } else {
