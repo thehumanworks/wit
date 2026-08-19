@@ -1,0 +1,38 @@
+[package]
+name = "wit-snapshot"
+version = "0.1.0"
+edition = "2024"
+description = "Repository snapshot backends for wit: in-memory (no filesystem) and shared types"
+license = "MIT"
+
+[lib]
+name = "wit_snapshot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wit-nofS-demo"
+path = "src/bin/wit_nofS_demo.rs"
+required-features = ["demo"]
+
+[features]
+default = ["http"]
+http = ["dep:reqwest", "dep:tokio"]
+demo = ["http", "dep:clap", "dep:tokio", "dep:rustls"]
+# Fixture-only surface for wasmtime no-FS demos (no HTTP client, no TLS).
+fixture = []
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+thiserror = "2"
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros"] }
+clap = { workspace = true, optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["aws_lc_rs", "std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"
+tempfile = "3.13.0"

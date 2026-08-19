@@ -29,7 +29,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: tests
-        run: cargo test --workspace
+        # Bound wall time so a stuck stdio child cannot hold the job for hours.
+        run: timeout 25m cargo test --workspace
 
       - name: Code Mode declaration type check
         run: bash scripts/check_codemode_types.sh

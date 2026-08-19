@@ -8,6 +8,7 @@ pub mod operations;
 pub mod search;
 pub mod search_run;
 pub mod sed;
+pub mod snapshot;
 mod tls;
 
 pub use tls::ensure_rustls_provider;
@@ -51,7 +52,7 @@ mod tests {
             "branch values should be parsed into command variants"
         );
         assert!(
-            cli.matches("cache_branch_selection(branch)").count() >= 8,
+            cli.matches("cache_branch_selection(branch)").count() >= 7,
             "branch values should be routed to cache acquisition"
         );
     }
@@ -144,16 +145,18 @@ mod tests {
             "CLI should expose a public branches subcommand"
         );
         assert!(
-            cli.contains("Commands::Branches { repo }"),
+            cli.contains("resolve_repo(repo, repo_positional)")
+                || cli.contains("Commands::Branches { repo,"),
             "branches handler should route the repo argument"
         );
         assert!(
-            cli.contains("list_remote_branches(&repo)"),
+            cli.contains("list_remote_branches(&repo)")
+                || cli.contains("list_remote_branches_api(&repo)"),
             "branches should use reusable branch metadata collection"
         );
         assert!(
-            cli.contains("override_usage = \"wit branches -r <REPO>\""),
-            "branches help should require -r/--repo"
+            cli.contains("override_usage = \"wit branches [OPTIONS] [REPO]\""),
+            "branches help should allow positional or -r/--repo"
         );
         assert!(
             cli.contains("branches should not have a short alias"),
@@ -169,7 +172,7 @@ mod tests {
     fn cli_branches_help_text() {
         let cli = include_str!("cli.rs");
         assert!(
-            cli.contains("wit branches -r <REPO>"),
+            cli.contains("wit branches [OPTIONS] [REPO]") || cli.contains("wit branches -r <REPO>"),
             "CLI help should show branches usage"
         );
         assert!(

@@ -1,7 +1,6 @@
 use rmcp::{
     ServiceExt,
     model::{ReadResourceRequestParams, ResourceContents},
-    transport::TokioChildProcess,
 };
 use std::process::Command;
 
@@ -55,7 +54,18 @@ async fn code_mode_documentation_surfaces_hold_their_individual_contracts() -> a
     );
 
     let mcp = env!("CARGO_BIN_EXE_wit-mcp");
-    let client = ().serve(TokioChildProcess::new(tokio::process::Command::new(mcp))?).await?;
+    // Prefer in-process duplex over TokioChildProcess: child-process MCP clients
+    // hang intermittently and held rust CI for hours.
+    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        wit::mcp::WitMcpServer::new()
+            .serve(server_transport)
+            .await?
+            .waiting()
+            .await?;
+        anyhow::Ok(())
+    });
+    let mut client = ().serve(client_transport).await?;
     let workflow = read_text_resource(&client, "wit://guide/workflow").await?;
     assert_surface(
         "wit://guide/workflow",
@@ -98,7 +108,10 @@ async fn code_mode_documentation_surfaces_hold_their_individual_contracts() -> a
             "fail-closed recommendation",
         ],
     );
-    client.cancel().await?;
+    let _ = client
+        .close_with_timeout(std::time::Duration::from_secs(5))
+        .await?;
+    server.await??;
 
     let wit_help = command_stdout(
         env!("CARGO_BIN_EXE_wit"),

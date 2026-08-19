@@ -302,14 +302,36 @@ wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
 
 `wit cache -r owner/repo` is also a force-refresh command for the default branch; add `--branch BRANCH` to refresh that named branch. Internally, cache entries are stored per repository and branch under `WIT_CACHE_DIR`, with metadata recording the branch name and current SHA. No public `--max-age` or TTL option exists.
 
+### Snapshot backends (disk vs memory)
+
+Repo-reading commands default to the **disk** cache backend. Pass `--backend memory` (or set `WIT_SNAPSHOT_BACKEND=memory`) to load a **public** repository over the GitHub REST API into RAM with **zero** `WIT_CACHE_DIR` writes. Provenance (`commit_sha`, `tree_sha`, backend label) is printed on stderr.
+
+Memory covers `tree` / `ls` / `cat` / `rg` / `sed` / `head` / `tail` (including `--branch`, `--ignore`, `-l`, and `-n` where those flags apply). `wit cache --backend memory` pins/opens the in-memory snapshot (prefetch tree; optional root-blob warm) instead of cloning. `wit branches --backend memory` lists branches via the GitHub API. `wit search` always uses the GitHub REST API and never needs the disk cache.
+
+Pass the repository as a positional `owner/repo` or with `-r/--repo` (if both are given they must match):
+
+```bash
+wit tree octocat/Hello-World
+wit tree octocat/Hello-World --backend memory
+wit ls   octocat/Hello-World
+wit cat  octocat/Hello-World README
+wit rg 'Hello' octocat/Hello-World --backend memory
+wit head -n 5 octocat/Hello-World README --backend memory
+wit cache octocat/Hello-World --backend memory
+wit branches octocat/Hello-World --backend memory
+```
+
+See `docs/nofS-snapshot.md` and `bash scripts/nofS_demo.sh` for the no-FS demo.
+
 ### tree (alias: t)
 
 Show the file tree of a repository (or subtree). Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-l` for line counts and token estimates.
 
 ```bash
-wit tree -r ratatui/ratatui                # Full repo tree
-wit tree -r ratatui/ratatui src/widgets    # Only the widgets subtree
-wit tree -l -r ratatui/ratatui src         # With line counts and token estimates
+wit tree ratatui/ratatui                # Full repo tree
+wit tree ratatui/ratatui src/widgets    # Only the widgets subtree
+wit tree -l -r ratatui/ratatui src      # With line counts and token estimates
+wit tree octocat/Hello-World --backend memory
 ```
 
 ### ls

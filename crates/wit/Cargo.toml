@@ -17,6 +17,7 @@ path = "src/bin/wit-mcp.rs"
 
 [dependencies]
 wits = { path = "../wits" }
+wit-snapshot = { path = "../wit-snapshot", features = ["http"] }
 anyhow.workspace = true
 clap.workspace = true
 colored.workspace = true
