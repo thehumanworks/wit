@@ -7,12 +7,43 @@ use rmcp::{
     service::PeerRequestOptions,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Duration,
+};
+
+/// Parallel `TokioChildProcess` MCP clients deadlock intermittently under cargo's
+/// default test concurrency (CI hung for hours on guidance-resources / cancel).
+fn stdio_child_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &LOCK
+}
+
+async fn lock_stdio_child_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    stdio_child_lock().lock().await
+}
+
+fn lock_stdio_child_tests_blocking() -> tokio::sync::MutexGuard<'static, ()> {
+    stdio_child_lock().blocking_lock()
+}
+
+type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ()>;
+
+/// `RunningService::cancel` can wait forever if the serve task never exits; bound it.
+async fn shutdown_client(mut client: McpClient) -> anyhow::Result<()> {
+    let _ = client.close_with_timeout(Duration::from_secs(5)).await?;
+    Ok(())
+}
 
 #[cfg(unix)]
 #[tokio::test]
 async fn stdio_cancel_notification_stops_dynamic_route_git_work() -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
+    let _serial = lock_stdio_child_tests().await;
+    tokio::time::timeout(Duration::from_secs(30), async {
     let bin = env!("CARGO_BIN_EXE_wit-mcp");
     let temp = tempfile::tempdir()?;
     let fake_bin = temp.path().join("bin");
@@ -31,7 +62,8 @@ async fn stdio_cancel_notification_stops_dynamic_route_git_work() -> anyhow::Res
     ));
     let path = std::env::join_paths(paths)?;
     let transport = TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
-        cmd.env("PATH", path)
+        cmd.kill_on_drop(true)
+            .env("PATH", path)
             .env("WIT_FAKE_GIT_STARTED", &started)
             .env("WIT_FAKE_GIT_TERMINATED", &terminated);
     }))?;
@@ -50,8 +82,11 @@ async fn stdio_cancel_notification_stops_dynamic_route_git_work() -> anyhow::Res
     wait_for_path(&terminated, std::time::Duration::from_secs(2)).await?;
     assert_eq!(client.list_all_tools().await?.len(), 7);
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
     Ok(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("stdio_cancel_notification_stops_dynamic_route_git_work timed out"))?
 }
 
 #[cfg(unix)]
@@ -67,16 +102,20 @@ async fn wait_for_path(path: &Path, timeout: std::time::Duration) -> anyhow::Res
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
-use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-};
-
 #[tokio::test]
 async fn wit_mcp_exposes_snapshot_first_guidance_resources() -> anyhow::Result<()> {
-    let bin = env!("CARGO_BIN_EXE_wit-mcp");
-    let client = ().serve(TokioChildProcess::new(tokio::process::Command::new(bin))?).await?;
+    // In-process duplex avoids TokioChildProcess hangs that flake under CI
+    // (the child-process path left orphan wit-mcp and blocked cargo test for hours).
+    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        wit::mcp::WitMcpServer::new()
+            .serve(server_transport)
+            .await?
+            .waiting()
+            .await?;
+        anyhow::Ok(())
+    });
+    let client = ().serve(client_transport).await?;
 
     let resources = client.list_all_resources().await?;
     let uris = resources
@@ -104,12 +143,14 @@ async fn wit_mcp_exposes_snapshot_first_guidance_resources() -> anyhow::Result<(
         assert!(!text.contains("MCP v1"));
     }
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
+    server.await??;
     Ok(())
 }
 
 #[test]
 fn wit_mcp_rejects_unknown_arguments_and_preserves_help_and_version() -> anyhow::Result<()> {
+    let _serial = lock_stdio_child_tests_blocking();
     let bin = env!("CARGO_BIN_EXE_wit-mcp");
     let unknown = Command::new(bin).arg("--unknown").output()?;
     assert!(!unknown.status.success());
@@ -134,348 +175,355 @@ fn wit_mcp_rejects_unknown_arguments_and_preserves_help_and_version() -> anyhow:
 
 #[tokio::test]
 async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Result<()> {
-    let bin = env!("CARGO_BIN_EXE_wit-mcp");
-    let cache = tempfile::tempdir()?;
-    let fixture = seed_cached_repo(cache.path())?;
-    let transport = TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
-        cmd.env("WIT_CACHE_DIR", cache.path())
-            .env("GIT_CONFIG_GLOBAL", &fixture.git_config)
-            .env("GIT_CONFIG_NOSYSTEM", "1");
-    }))?;
-    let client = ().serve(transport).await?;
+    let _serial = lock_stdio_child_tests().await;
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let bin = env!("CARGO_BIN_EXE_wit-mcp");
+        let cache = tempfile::tempdir()?;
+        let fixture = seed_cached_repo(cache.path())?;
+        let transport =
+            TokioChildProcess::new(tokio::process::Command::new(bin).configure(|cmd| {
+                cmd.kill_on_drop(true)
+                    .env("WIT_CACHE_DIR", cache.path())
+                    .env("GIT_CONFIG_GLOBAL", &fixture.git_config)
+                    .env("GIT_CONFIG_NOSYSTEM", "1");
+            }))?;
+        let client = ().serve(transport).await?;
 
-    let tools = client.list_all_tools().await?;
-    let names = tools
-        .iter()
-        .map(|tool| tool.name.as_ref())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names,
-        vec![
-            "wit_context",
-            "wit_find_repositories",
-            "wit_list",
-            "wit_open",
-            "wit_read",
-            "wit_refs",
-            "wit_search_code",
-        ]
-    );
-    assert!(!names.contains(&"wit_cat"));
-
-    let refs = call_tool_json(
-        &client,
-        "wit_refs",
-        object!({
-            "repo": "owner/repo",
-            "max_items": 10,
-            "max_bytes": 8192
-        }),
-    )
-    .await?;
-    assert!(
-        refs["items"].as_array().unwrap().iter().any(|item| {
-            item["resolved_ref"] == "refs/heads/main" && item["is_default"] == true
-        })
-    );
-    assert!(
-        refs["items"]
-            .as_array()
-            .unwrap()
+        let tools = client.list_all_tools().await?;
+        let names = tools
             .iter()
-            .any(|item| { item["resolved_ref"] == "refs/tags/v-test" })
-    );
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "wit_context",
+                "wit_find_repositories",
+                "wit_list",
+                "wit_open",
+                "wit_read",
+                "wit_refs",
+                "wit_search_code",
+            ]
+        );
+        assert!(!names.contains(&"wit_cat"));
 
-    let opened = call_tool_json(
-        &client,
-        "wit_open",
-        object!({
-            "repo": "owner/repo",
-            "freshness": "allow_stale"
-        }),
-    )
-    .await?;
-    let snapshot_id = opened["snapshot_id"].as_str().unwrap().to_string();
-    let original_sha = opened["commit_sha"].as_str().unwrap().to_string();
-    assert_eq!(opened["api_version"], "2");
-    assert_eq!(opened["resolved_ref"], "refs/heads/main");
-    assert_eq!(opened["cache"]["state"], "stale_served_revalidating");
-    assert!(
-        opened["capabilities"]["pull_request_heads"]
-            .as_str()
-            .unwrap()
-            .contains("not_supported")
-    );
+        let refs = call_tool_json(
+            &client,
+            "wit_refs",
+            object!({
+                "repo": "owner/repo",
+                "max_items": 10,
+                "max_bytes": 8192
+            }),
+        )
+        .await?;
+        assert!(refs["items"].as_array().unwrap().iter().any(|item| {
+            item["resolved_ref"] == "refs/heads/main" && item["is_default"] == true
+        }));
+        assert!(
+            refs["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| { item["resolved_ref"] == "refs/tags/v-test" })
+        );
 
-    let first_list = call_tool_json(
-        &client,
-        "wit_list",
-        object!({
-            "snapshot_id": snapshot_id,
-            "depth": 3,
-            "max_items": 1,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert_eq!(first_list["returned_items"], 1);
-    assert_eq!(first_list["has_more"], true);
-    assert!(first_list["next_cursor"].is_string());
-    assert!(first_list["budget"]["serialized_bytes"].as_u64().unwrap() <= 4096);
-    assert_eq!(
-        serde_json::to_vec(&first_list)?.len() as u64,
-        first_list["budget"]["serialized_bytes"].as_u64().unwrap()
-    );
-    let first_path = first_list["items"][0]["path"].as_str().unwrap().to_string();
-    assert_eq!(first_list["items"][0]["commit_sha"], original_sha);
+        let opened = call_tool_json(
+            &client,
+            "wit_open",
+            object!({
+                "repo": "owner/repo",
+                "freshness": "allow_stale"
+            }),
+        )
+        .await?;
+        let snapshot_id = opened["snapshot_id"].as_str().unwrap().to_string();
+        let original_sha = opened["commit_sha"].as_str().unwrap().to_string();
+        assert_eq!(opened["api_version"], "2");
+        assert_eq!(opened["resolved_ref"], "refs/heads/main");
+        assert_eq!(opened["cache"]["state"], "stale_served_revalidating");
+        assert!(
+            opened["capabilities"]["pull_request_heads"]
+                .as_str()
+                .unwrap()
+                .contains("not_supported")
+        );
 
-    let second_list = call_tool_json(
-        &client,
-        "wit_list",
-        object!({
-            "snapshot_id": snapshot_id,
-            "depth": 3,
-            "max_items": 1,
-            "max_bytes": 4096,
-            "cursor": first_list["next_cursor"]
-        }),
-    )
-    .await?;
-    assert_ne!(second_list["items"][0]["path"], first_path);
-
-    let mismatched_cursor = client
-        .call_tool(
-            CallToolRequestParams::new("wit_list").with_arguments(object!({
+        let first_list = call_tool_json(
+            &client,
+            "wit_list",
+            object!({
                 "snapshot_id": snapshot_id,
-                "depth": 2,
+                "depth": 3,
+                "max_items": 1,
+                "max_bytes": 4096
+            }),
+        )
+        .await?;
+        assert_eq!(first_list["returned_items"], 1);
+        assert_eq!(first_list["has_more"], true);
+        assert!(first_list["next_cursor"].is_string());
+        assert!(first_list["budget"]["serialized_bytes"].as_u64().unwrap() <= 4096);
+        assert_eq!(
+            serde_json::to_vec(&first_list)?.len() as u64,
+            first_list["budget"]["serialized_bytes"].as_u64().unwrap()
+        );
+        let first_path = first_list["items"][0]["path"].as_str().unwrap().to_string();
+        assert_eq!(first_list["items"][0]["commit_sha"], original_sha);
+
+        let second_list = call_tool_json(
+            &client,
+            "wit_list",
+            object!({
+                "snapshot_id": snapshot_id,
+                "depth": 3,
                 "max_items": 1,
                 "max_bytes": 4096,
                 "cursor": first_list["next_cursor"]
-            })),
+            }),
         )
         .await?;
-    assert_eq!(mismatched_cursor.is_error, Some(true));
-    assert!(format!("{:?}", mismatched_cursor.content).contains("does not match"));
+        assert_ne!(second_list["items"][0]["path"], first_path);
 
-    let search = call_tool_json(
-        &client,
-        "wit_search_code",
-        object!({
-            "snapshot_id": snapshot_id,
-            "queries": ["beta", "demo"],
-            "globs": ["*.md", "**/*.rs"],
-            "context_lines": 1,
-            "max_results": 10,
-            "max_bytes": 8192
-        }),
-    )
-    .await?;
-    let beta = search["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["query"] == "beta")
-        .unwrap();
-    assert_eq!(beta["path"], "README.md");
-    assert_eq!(beta["match_line"], 2);
-    assert_eq!(beta["start_line"], 1);
-    assert_eq!(beta["end_line"], 3);
-    assert_eq!(beta["commit_sha"], original_sha);
-    assert!(beta["blob_sha"].as_str().unwrap().len() >= 40);
+        let mismatched_cursor = client
+            .call_tool(
+                CallToolRequestParams::new("wit_list").with_arguments(object!({
+                    "snapshot_id": snapshot_id,
+                    "depth": 2,
+                    "max_items": 1,
+                    "max_bytes": 4096,
+                    "cursor": first_list["next_cursor"]
+                })),
+            )
+            .await?;
+        assert_eq!(mismatched_cursor.is_error, Some(true));
+        assert!(format!("{:?}", mismatched_cursor.content).contains("does not match"));
 
-    let read = call_tool_json(
-        &client,
-        "wit_read",
-        object!({
-            "snapshot_id": snapshot_id,
-            "path": "README.md",
-            "start_line": 2,
-            "end_line": 2,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert_eq!(read["items"][0]["text"], "beta");
-    assert_eq!(read["items"][0]["start_line"], 2);
-    assert_eq!(read["items"][0]["end_line"], 2);
-    assert!(read.get("rendered_text").is_none());
-
-    let mut paged_lines = Vec::new();
-    let mut read_cursor: Option<String> = None;
-    loop {
-        let mut arguments = object!({
-            "snapshot_id": snapshot_id,
-            "path": "README.md",
-            "start_line": 1,
-            "end_line": 3,
-            "max_lines": 1,
-            "max_bytes": 4096
-        });
-        if let Some(cursor) = &read_cursor {
-            arguments.insert("cursor".to_string(), Value::String(cursor.clone()));
-        }
-        let page = call_tool_json(&client, "wit_read", arguments).await?;
-        paged_lines.push(page["items"][0]["text"].as_str().unwrap().to_string());
-        if page["has_more"] == false {
-            break;
-        }
-        read_cursor = Some(page["next_cursor"].as_str().unwrap().to_string());
-    }
-    assert_eq!(paged_lines, vec!["alpha", "beta", "gamma"]);
-
-    let first_search_page = call_tool_json(
-        &client,
-        "wit_search_code",
-        object!({
-            "snapshot_id": snapshot_id,
-            "queries": ["alpha|beta|gamma"],
-            "globs": ["*.md"],
-            "context_lines": 1,
-            "max_results": 1,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert_eq!(first_search_page["has_more"], true);
-    let second_search_page = call_tool_json(
-        &client,
-        "wit_search_code",
-        object!({
-            "snapshot_id": snapshot_id,
-            "queries": ["alpha|beta|gamma"],
-            "globs": ["*.md"],
-            "context_lines": 1,
-            "max_results": 1,
-            "max_bytes": 4096,
-            "cursor": first_search_page["next_cursor"]
-        }),
-    )
-    .await?;
-    assert_ne!(
-        first_search_page["items"][0]["match_line"],
-        second_search_page["items"][0]["match_line"]
-    );
-
-    let high_match = call_tool_json(
-        &client,
-        "wit_search_code",
-        object!({
-            "snapshot_id": snapshot_id,
-            "queries": ["high match"],
-            "globs": ["high_matches.txt"],
-            "context_lines": 1,
-            "max_results": 5,
-            "max_bytes": 8192
-        }),
-    )
-    .await?;
-    assert_eq!(high_match["returned_items"], 5);
-    assert_eq!(high_match["has_more"], true);
-    assert!(high_match["next_cursor"].is_string());
-
-    let context = call_tool_json(
-        &client,
-        "wit_context",
-        object!({
-            "snapshot_id": snapshot_id,
-            "queries": ["alpha", "beta"],
-            "context_lines": 1,
-            "max_results": 10,
-            "max_bytes": 8192
-        }),
-    )
-    .await?;
-    assert_eq!(context["items"][0]["path"], "README.md");
-    assert!(context["items"][0]["score"].as_i64().unwrap() > 0);
-    assert!(
-        context["items"][0]["ranking_reasons"]
+        let search = call_tool_json(
+            &client,
+            "wit_search_code",
+            object!({
+                "snapshot_id": snapshot_id,
+                "queries": ["beta", "demo"],
+                "globs": ["*.md", "**/*.rs"],
+                "context_lines": 1,
+                "max_results": 10,
+                "max_bytes": 8192
+            }),
+        )
+        .await?;
+        let beta = search["items"]
             .as_array()
             .unwrap()
-            .len()
-            >= 2
-    );
+            .iter()
+            .find(|item| item["query"] == "beta")
+            .unwrap();
+        assert_eq!(beta["path"], "README.md");
+        assert_eq!(beta["match_line"], 2);
+        assert_eq!(beta["start_line"], 1);
+        assert_eq!(beta["end_line"], 3);
+        assert_eq!(beta["commit_sha"], original_sha);
+        assert!(beta["blob_sha"].as_str().unwrap().len() >= 40);
 
-    let named = call_tool_json(
-        &client,
-        "wit_open",
-        object!({ "repo": "owner/repo", "ref": "feature/mcp" }),
-    )
-    .await?;
-    assert_eq!(named["resolved_ref"], "refs/heads/feature/mcp");
-    let named_read = call_tool_json(
-        &client,
-        "wit_read",
-        object!({
-            "snapshot_id": named["snapshot_id"],
-            "path": "README.md",
-            "start_line": 1,
-            "end_line": 1,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert_eq!(named_read["items"][0]["text"], "feature alpha");
+        let read = call_tool_json(
+            &client,
+            "wit_read",
+            object!({
+                "snapshot_id": snapshot_id,
+                "path": "README.md",
+                "start_line": 2,
+                "end_line": 2,
+                "max_bytes": 4096
+            }),
+        )
+        .await?;
+        assert_eq!(read["items"][0]["text"], "beta");
+        assert_eq!(read["items"][0]["start_line"], 2);
+        assert_eq!(read["items"][0]["end_line"], 2);
+        assert!(read.get("rendered_text").is_none());
 
-    let moved_sha = move_main_branch(&fixture, "changed after snapshot\n")?;
-    assert_ne!(moved_sha, original_sha);
-    let exact_replay = call_tool_json(
-        &client,
-        "wit_read",
-        object!({
-            "snapshot_id": snapshot_id,
-            "path": "README.md",
-            "start_line": 2,
-            "end_line": 2,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert_eq!(exact_replay, read);
-    let replay = call_tool_json(
-        &client,
-        "wit_read",
-        object!({
-            "snapshot_id": snapshot_id,
-            "path": "README.md",
-            "start_line": 1,
-            "end_line": 3,
-            "max_bytes": 4096
-        }),
-    )
-    .await?;
-    assert_eq!(replay["items"][0]["text"], "alpha");
-    assert_eq!(replay["items"][0]["commit_sha"], original_sha);
+        let mut paged_lines = Vec::new();
+        let mut read_cursor: Option<String> = None;
+        loop {
+            let mut arguments = object!({
+                "snapshot_id": snapshot_id,
+                "path": "README.md",
+                "start_line": 1,
+                "end_line": 3,
+                "max_lines": 1,
+                "max_bytes": 4096
+            });
+            if let Some(cursor) = &read_cursor {
+                arguments.insert("cursor".to_string(), Value::String(cursor.clone()));
+            }
+            let page = call_tool_json(&client, "wit_read", arguments).await?;
+            paged_lines.push(page["items"][0]["text"].as_str().unwrap().to_string());
+            if page["has_more"] == false {
+                break;
+            }
+            read_cursor = Some(page["next_cursor"].as_str().unwrap().to_string());
+        }
+        assert_eq!(paged_lines, vec!["alpha", "beta", "gamma"]);
 
-    let fresh = call_tool_json(
-        &client,
-        "wit_open",
-        object!({
-            "repo": "owner/repo",
-            "ref": "main",
-            "freshness": "require_fresh"
-        }),
-    )
-    .await?;
-    assert_eq!(fresh["commit_sha"], moved_sha);
-    assert_eq!(fresh["cache"]["state"], "explicitly_refreshed");
+        let first_search_page = call_tool_json(
+            &client,
+            "wit_search_code",
+            object!({
+                "snapshot_id": snapshot_id,
+                "queries": ["alpha|beta|gamma"],
+                "globs": ["*.md"],
+                "context_lines": 1,
+                "max_results": 1,
+                "max_bytes": 4096
+            }),
+        )
+        .await?;
+        assert_eq!(first_search_page["has_more"], true);
+        let second_search_page = call_tool_json(
+            &client,
+            "wit_search_code",
+            object!({
+                "snapshot_id": snapshot_id,
+                "queries": ["alpha|beta|gamma"],
+                "globs": ["*.md"],
+                "context_lines": 1,
+                "max_results": 1,
+                "max_bytes": 4096,
+                "cursor": first_search_page["next_cursor"]
+            }),
+        )
+        .await?;
+        assert_ne!(
+            first_search_page["items"][0]["match_line"],
+            second_search_page["items"][0]["match_line"]
+        );
 
-    let tag = call_tool_json(
-        &client,
-        "wit_open",
-        object!({ "repo": "owner/repo", "ref": "v-test" }),
-    )
-    .await?;
-    assert_eq!(tag["resolved_ref"], "refs/tags/v-test");
-    let by_sha = call_tool_json(
-        &client,
-        "wit_open",
-        object!({ "repo": "owner/repo", "ref": tag["commit_sha"] }),
-    )
-    .await?;
-    assert_eq!(by_sha["commit_sha"], tag["commit_sha"]);
+        let high_match = call_tool_json(
+            &client,
+            "wit_search_code",
+            object!({
+                "snapshot_id": snapshot_id,
+                "queries": ["high match"],
+                "globs": ["high_matches.txt"],
+                "context_lines": 1,
+                "max_results": 5,
+                "max_bytes": 8192
+            }),
+        )
+        .await?;
+        assert_eq!(high_match["returned_items"], 5);
+        assert_eq!(high_match["has_more"], true);
+        assert!(high_match["next_cursor"].is_string());
 
-    client.cancel().await?;
-    Ok(())
+        let context = call_tool_json(
+            &client,
+            "wit_context",
+            object!({
+                "snapshot_id": snapshot_id,
+                "queries": ["alpha", "beta"],
+                "context_lines": 1,
+                "max_results": 10,
+                "max_bytes": 8192
+            }),
+        )
+        .await?;
+        assert_eq!(context["items"][0]["path"], "README.md");
+        assert!(context["items"][0]["score"].as_i64().unwrap() > 0);
+        assert!(
+            context["items"][0]["ranking_reasons"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 2
+        );
+
+        let named = call_tool_json(
+            &client,
+            "wit_open",
+            object!({ "repo": "owner/repo", "ref": "feature/mcp" }),
+        )
+        .await?;
+        assert_eq!(named["resolved_ref"], "refs/heads/feature/mcp");
+        let named_read = call_tool_json(
+            &client,
+            "wit_read",
+            object!({
+                "snapshot_id": named["snapshot_id"],
+                "path": "README.md",
+                "start_line": 1,
+                "end_line": 1,
+                "max_bytes": 4096
+            }),
+        )
+        .await?;
+        assert_eq!(named_read["items"][0]["text"], "feature alpha");
+
+        let moved_sha = move_main_branch(&fixture, "changed after snapshot\n")?;
+        assert_ne!(moved_sha, original_sha);
+        let exact_replay = call_tool_json(
+            &client,
+            "wit_read",
+            object!({
+                "snapshot_id": snapshot_id,
+                "path": "README.md",
+                "start_line": 2,
+                "end_line": 2,
+                "max_bytes": 4096
+            }),
+        )
+        .await?;
+        assert_eq!(exact_replay, read);
+        let replay = call_tool_json(
+            &client,
+            "wit_read",
+            object!({
+                "snapshot_id": snapshot_id,
+                "path": "README.md",
+                "start_line": 1,
+                "end_line": 3,
+                "max_bytes": 4096
+            }),
+        )
+        .await?;
+        assert_eq!(replay["items"][0]["text"], "alpha");
+        assert_eq!(replay["items"][0]["commit_sha"], original_sha);
+
+        let fresh = call_tool_json(
+            &client,
+            "wit_open",
+            object!({
+                "repo": "owner/repo",
+                "ref": "main",
+                "freshness": "require_fresh"
+            }),
+        )
+        .await?;
+        assert_eq!(fresh["commit_sha"], moved_sha);
+        assert_eq!(fresh["cache"]["state"], "explicitly_refreshed");
+
+        let tag = call_tool_json(
+            &client,
+            "wit_open",
+            object!({ "repo": "owner/repo", "ref": "v-test" }),
+        )
+        .await?;
+        assert_eq!(tag["resolved_ref"], "refs/tags/v-test");
+        let by_sha = call_tool_json(
+            &client,
+            "wit_open",
+            object!({ "repo": "owner/repo", "ref": tag["commit_sha"] }),
+        )
+        .await?;
+        assert_eq!(by_sha["commit_sha"], tag["commit_sha"]);
+
+        shutdown_client(client).await?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("wit_mcp_v2_snapshot_provenance_pagination_and_replay timed out")
+    })?
 }
 
 async fn call_tool_json(

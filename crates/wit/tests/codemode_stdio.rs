@@ -14,8 +14,27 @@ use std::{
 
 const CODE_TOOL: &str = "code";
 
+/// Parallel Code Mode stdio children deadlock intermittently (CI hung on
+/// `main_wit_binary_serves_code_mode` for hours under default test threads).
+fn stdio_child_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &LOCK
+}
+
+async fn lock_stdio_child_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    stdio_child_lock().lock().await
+}
+
+type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ()>;
+
+async fn shutdown_client(mut client: McpClient) -> anyhow::Result<()> {
+    let _ = client.close_with_timeout(Duration::from_secs(5)).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn shipped_code_mode_lists_deterministic_typed_contract() -> anyhow::Result<()> {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let client = start_code_client(temp.path(), None).await?;
 
@@ -45,13 +64,14 @@ async fn shipped_code_mode_lists_deterministic_typed_contract() -> anyhow::Resul
         serde_json::to_vec(&client.list_all_tools().await?)?
     );
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
     wait_for_empty_directory(temp.path()).await
 }
 
 #[tokio::test]
 async fn shipped_code_mode_supports_progressive_help_and_method_suggestions() -> anyhow::Result<()>
 {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let client = start_code_client(temp.path(), None).await?;
 
@@ -123,13 +143,14 @@ async fn shipped_code_mode_supports_progressive_help_and_method_suggestions() ->
             .contains("findRepositories")
     );
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
     wait_for_empty_directory(temp.path()).await
 }
 
 #[tokio::test]
 async fn shipped_code_mode_compacts_reads_and_lists_and_filters_search_paths() -> anyhow::Result<()>
 {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let cache = temp.path().join("cache");
     std::fs::create_dir(&cache)?;
@@ -206,38 +227,45 @@ async fn shipped_code_mode_compacts_reads_and_lists_and_filters_search_paths() -
         assert_eq!(result[key]["snapshot_id"], result["opened"]["snapshot_id"]);
     }
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn main_wit_binary_serves_code_mode() -> anyhow::Result<()> {
-    let temp = tempfile::tempdir()?;
-    let transport = TokioChildProcess::new(
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_wit")).configure(|command| {
-            command
-                .args(["mcp", "--transport", "stdio", "--mode", "code"])
-                .env("TMPDIR", temp.path())
-                .env("TMP", temp.path())
-                .env("TEMP", temp.path());
-        }),
-    )?;
-    let client = ().serve(transport).await?;
+    let _serial = lock_stdio_child_tests().await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let temp = tempfile::tempdir()?;
+        let transport = TokioChildProcess::new(
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_wit")).configure(|command| {
+                command
+                    .kill_on_drop(true)
+                    .args(["mcp", "--transport", "stdio", "--mode", "code"])
+                    .env("TMPDIR", temp.path())
+                    .env("TMP", temp.path())
+                    .env("TEMP", temp.path());
+            }),
+        )?;
+        let client = ().serve(transport).await?;
 
-    let tools = client.list_all_tools().await?;
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, CODE_TOOL);
-    assert_eq!(
-        call_code_success(&client, "return codemode.wit.help('open').name;").await?,
-        "open"
-    );
+        let tools = client.list_all_tools().await?;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, CODE_TOOL);
+        assert_eq!(
+            call_code_success(&client, "return codemode.wit.help('open').name;").await?,
+            "open"
+        );
 
-    client.cancel().await?;
-    wait_for_empty_directory(temp.path()).await
+        shutdown_client(client).await?;
+        wait_for_empty_directory(temp.path()).await
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("main_wit_binary_serves_code_mode timed out"))?
 }
 
 #[tokio::test]
 async fn shipped_code_mode_composes_snapshot_operations_and_pins_branch() -> anyhow::Result<()> {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let cache = temp.path().join("cache");
     std::fs::create_dir(&cache)?;
@@ -343,12 +371,13 @@ async fn shipped_code_mode_composes_snapshot_operations_and_pins_branch() -> any
     assert_eq!(replay["fresh"]["commit_sha"], moved_sha);
     assert_eq!(replay["freshRead"]["text"], "changed after snapshot");
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn shipped_code_mode_exhausts_list_and_search_cursors_stably() -> anyhow::Result<()> {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let cache = temp.path().join("cache");
     std::fs::create_dir(&cache)?;
@@ -407,12 +436,13 @@ async fn shipped_code_mode_exhausts_list_and_search_cursors_stably() -> anyhow::
         let unique = values.iter().collect::<std::collections::HashSet<_>>();
         assert_eq!(values.len(), unique.len(), "{key} contains duplicates");
     }
-    client.cancel().await?;
+    shutdown_client(client).await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn shipped_code_mode_enforces_host_concurrency_and_byte_budgets() -> anyhow::Result<()> {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let cache = temp.path().join("cache");
     std::fs::create_dir(&cache)?;
@@ -479,13 +509,14 @@ async fn shipped_code_mode_enforces_host_concurrency_and_byte_budgets() -> anyho
         call_code_success(&client, "return 'after-host-limits';").await?,
         "after-host-limits"
     );
-    client.cancel().await?;
+    shutdown_client(client).await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn shipped_code_mode_contains_failures_and_recovers_without_temp_leaks() -> anyhow::Result<()>
 {
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let scratch = temp.path().join("scratch");
     std::fs::create_dir(&scratch)?;
@@ -632,7 +663,7 @@ async fn shipped_code_mode_contains_failures_and_recovers_without_temp_leaks() -
     );
     wait_for_empty_directory(&scratch).await?;
 
-    client.cancel().await?;
+    shutdown_client(client).await?;
     wait_for_empty_directory(&scratch).await
 }
 
@@ -641,6 +672,7 @@ async fn shipped_code_mode_contains_failures_and_recovers_without_temp_leaks() -
 async fn shipped_code_cancellation_reaps_worker_and_git_processes() -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
+    let _serial = lock_stdio_child_tests().await;
     let temp = tempfile::tempdir()?;
     let cache = temp.path().join("cache");
     let scratch = temp.path().join("scratch");
@@ -696,7 +728,7 @@ async fn shipped_code_cancellation_reaps_worker_and_git_processes() -> anyhow::R
         call_code_success(&client, "return 'after-git-cancel';").await?,
         "after-git-cancel"
     );
-    client.cancel().await?;
+    shutdown_client(client).await?;
     wait_for_empty_directory(&scratch).await
 }
 
@@ -737,6 +769,7 @@ async fn start_code_client_inner(
     let transport =
         TokioChildProcess::new(tokio::process::Command::new(bin).configure(|command| {
             command
+                .kill_on_drop(true)
                 .args(["--mode", "code"])
                 .env("TMPDIR", temp_root)
                 .env("TMP", temp_root)
