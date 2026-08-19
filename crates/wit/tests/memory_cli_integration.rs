@@ -95,19 +95,29 @@ fn memory_backend_cli_commands_leave_cache_empty() -> anyhow::Result<()> {
 
     let sed = run_wit(
         cache,
+        &["sed", "-n", "1,5p", repo, "README", "--backend", "memory"],
+    )?;
+    assert_success(&sed, "sed trailing --backend");
+    assert!(
+        !String::from_utf8_lossy(&sed.stdout).is_empty(),
+        "sed trailing --backend should print lines"
+    );
+
+    // Flag-first form remains supported
+    let sed_flag_first = run_wit(
+        cache,
         &[
             "sed",
-            "-e",
-            "s/Hello/Hi/",
-            "-r",
-            repo,
             "--backend",
             "memory",
+            "-e",
+            "s/Hello/Hi/",
+            repo,
             "README",
         ],
     )?;
-    assert_success(&sed, "sed");
-    assert!(String::from_utf8_lossy(&sed.stdout).contains("Hi"));
+    assert_success(&sed_flag_first, "sed flag-first --backend");
+    assert!(String::from_utf8_lossy(&sed_flag_first.stdout).contains("Hi"));
 
     let cache_cmd = run_wit(cache, &["cache", "-r", repo, "--backend", "memory"])?;
     assert_success(&cache_cmd, "cache");
@@ -129,6 +139,40 @@ fn memory_backend_cli_commands_leave_cache_empty() -> anyhow::Result<()> {
 
     assert_cache_empty(cache);
     Ok(())
+}
+
+#[test]
+fn tree_positional_before_repo_flag_conflicts_before_backend() {
+    let probe = tempfile::tempdir().unwrap();
+    let output = run_wit(
+        probe.path(),
+        &[
+            "tree",
+            "other/repo",
+            "-r",
+            "octocat/Hello-World",
+            "--backend",
+            "memory",
+        ],
+    )
+    .expect("wit tree should spawn");
+    assert!(
+        !output.status.success(),
+        "disagreeing positional/-r must fail before backend"
+    );
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        err.contains("conflicting repository arguments"),
+        "expected conflict error, got:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("path not found"),
+        "must not treat positional repo as a path:\n{err}"
+    );
 }
 
 #[test]

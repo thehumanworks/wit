@@ -318,7 +318,7 @@ enum Commands {
         name = "sed",
         about = "Extract or transform file content using sed scripts (POSIX-style, Rust regex)",
         override_usage = "wit sed [OPTIONS] [<SCRIPT>] [REPO] <PATH>",
-        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py\n  wit sed -n '/TODO/p' ratatui/ratatui src/lib.rs\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs\n  wit sed -n '/^pub fn/p' -r ratatui/ratatui src/lib.rs\n  wit sed -e 's/Hello/Hi/' --backend memory octocat/Hello-World README"
+        after_help = "Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match. Trailing --backend/--repo after the script/path are accepted (same as tree/ls/cat).\n\nExamples:\n  wit sed -n '320,460p' modal-labs/modal-client modal/image.py\n  wit sed -n '1,5p' octocat/Hello-World README --backend memory\n  wit sed --backend memory -e 's/Hello/Hi/' octocat/Hello-World README\n  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs"
     )]
     Sed {
         /// Suppress automatic printing of pattern space
@@ -527,11 +527,70 @@ fn resolve_repo(flag: Option<String>, positional: Option<String>) -> anyhow::Res
     }
 }
 
+/// True when a non-flag positional appears before `-r`/`--repo` for the subcommand.
+///
+/// Distinguishes `wit tree other/repo -r owner/repo` (positional repo) from
+/// `wit tree -r owner/repo src/widgets` (path after `-r`).
+fn nonflag_positional_before_repo_flag(argv: &[impl AsRef<str>]) -> bool {
+    let argv: Vec<&str> = argv.iter().map(AsRef::as_ref).collect();
+    let mut after_subcommand = false;
+    let mut i = 1usize; // skip binary name
+    while i < argv.len() {
+        let a = argv[i];
+        if !after_subcommand {
+            if a == "--ignore" {
+                i += 2;
+                continue;
+            }
+            if a.starts_with("--ignore=") {
+                i += 1;
+                continue;
+            }
+            if a.starts_with('-') {
+                i += 1;
+                continue;
+            }
+            after_subcommand = true;
+            i += 1;
+            continue;
+        }
+
+        if a == "-r" || a == "--repo" || a.starts_with("--repo=") {
+            return false;
+        }
+        if a == "--branch" || a == "--backend" {
+            i += 2;
+            continue;
+        }
+        if a.starts_with("--branch=") || a.starts_with("--backend=") {
+            i += 1;
+            continue;
+        }
+        if matches!(
+            a,
+            "--refresh-cache" | "--long" | "-l" | "-h" | "--help" | "-n" | "--number" | "-N"
+        ) {
+            i += 1;
+            continue;
+        }
+        if a.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 /// Tree/ls style: `wit tree owner/repo [path]` or `wit tree -r owner/repo [path]`.
-/// With both `-r` and a positional repo: `wit tree -r owner/repo owner/repo [path]`.
+///
+/// `argv` is the original process argv (including binary name) used to detect
+/// `wit tree other/repo -r owner/repo` as a conflicting positional repo, while
+/// still treating `wit tree -r owner/repo src/widgets` as a path.
 fn resolve_repo_and_optional_path(
     flag: Option<String>,
     args: Vec<String>,
+    argv: &[impl AsRef<str>],
 ) -> anyhow::Result<(String, Option<String>)> {
     match flag {
         None => match args.len() {
@@ -547,6 +606,11 @@ fn resolve_repo_and_optional_path(
         Some(flag_repo) => match args.len() {
             0 => Ok((flag_repo, None)),
             1 if args[0] == flag_repo => Ok((flag_repo, None)),
+            1 if nonflag_positional_before_repo_flag(argv) => {
+                // Positional appeared before -r/--repo → treat as repo, not path.
+                let repo = resolve_repo(Some(flag_repo), Some(args[0].clone()))?;
+                Ok((repo, None))
+            }
             1 => Ok((flag_repo, Some(args[0].clone()))),
             2 => {
                 let repo = resolve_repo(Some(flag_repo), Some(args[0].clone()))?;
@@ -741,6 +805,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     ensure_rustls_provider();
+    let argv: Vec<String> = std::env::args().collect();
     let cli = WitCli::parse();
     let ignore_patterns = cli.ignore;
 
@@ -820,7 +885,7 @@ async fn main() -> anyhow::Result<()> {
             long,
             backend,
         } => {
-            let (repo, path) = resolve_repo_and_optional_path(repo, args)?;
+            let (repo, path) = resolve_repo_and_optional_path(repo, args, &argv)?;
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -848,7 +913,7 @@ async fn main() -> anyhow::Result<()> {
             long,
             backend,
         } => {
-            let (repo, path) = resolve_repo_and_optional_path(repo, args)?;
+            let (repo, path) = resolve_repo_and_optional_path(repo, args, &argv)?;
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1148,7 +1213,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Sed {
             quiet,
-            refresh_cache,
+            mut refresh_cache,
             expressions,
             files,
             repo,
@@ -1156,11 +1221,20 @@ async fn main() -> anyhow::Result<()> {
             backend,
             args,
         } => {
-            let (args, inline_ignores) = extract_sed_inline_ignores(args)?;
+            let extracted = extract_sed_inline_flags(args)?;
             let mut effective_ignore_patterns = ignore_patterns.clone();
-            effective_ignore_patterns.extend(inline_ignores);
+            effective_ignore_patterns.extend(extracted.ignores);
+            refresh_cache = refresh_cache || extracted.refresh_cache;
+            let backend = merge_optional_flags("backend", backend, extracted.backend)?;
+            let branch = merge_optional_flags("branch", branch, extracted.branch)?;
+            let repo = match (repo, extracted.repo) {
+                (None, None) => None,
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (Some(a), Some(b)) => Some(resolve_repo(Some(a), Some(b))?),
+            };
 
-            let (repo, scripts, path) = parse_sed_invocation(repo, expressions, files, args)?;
+            let (repo, scripts, path) =
+                parse_sed_invocation(repo, expressions, files, extracted.args)?;
             let content = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1331,9 +1405,39 @@ fn parse_sed_invocation(
     Ok((repo, scripts, path))
 }
 
-fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+fn merge_optional_flags(
+    name: &str,
+    clap_value: Option<String>,
+    extracted: Option<String>,
+) -> anyhow::Result<Option<String>> {
+    match (clap_value, extracted) {
+        (None, None) => Ok(None),
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
+        (Some(a), Some(b)) if a == b => Ok(Some(a)),
+        (Some(a), Some(b)) => anyhow::bail!("conflicting --{name} values: '{a}' vs '{b}'"),
+    }
+}
+
+struct SedInlineFlags {
+    args: Vec<String>,
+    ignores: Vec<String>,
+    repo: Option<String>,
+    branch: Option<String>,
+    backend: Option<String>,
+    refresh_cache: bool,
+}
+
+/// Pull flags that `allow_hyphen_values` on sed positionals would otherwise swallow.
+///
+/// Enables trailing forms like:
+/// `wit sed -n '1,5p' owner/repo README --backend memory`
+fn extract_sed_inline_flags(args: Vec<String>) -> anyhow::Result<SedInlineFlags> {
     let mut remaining_args = Vec::new();
     let mut ignores = Vec::new();
+    let mut repo = None;
+    let mut branch = None;
+    let mut backend = None;
+    let mut refresh_cache = false;
     let mut iter = args.into_iter();
 
     while let Some(arg) = iter.next() {
@@ -1344,7 +1448,6 @@ fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>,
             ignores.push(pattern);
             continue;
         }
-
         if let Some(pattern) = arg.strip_prefix("--ignore=") {
             if pattern.is_empty() {
                 return Err(anyhow::anyhow!("--ignore requires a value"));
@@ -1353,10 +1456,85 @@ fn extract_sed_inline_ignores(args: Vec<String>) -> anyhow::Result<(Vec<String>,
             continue;
         }
 
+        if arg == "--backend" {
+            let value = iter
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--backend requires a value"))?;
+            if backend.is_some() {
+                anyhow::bail!("duplicate --backend flag in sed arguments");
+            }
+            backend = Some(value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--backend=") {
+            if value.is_empty() {
+                return Err(anyhow::anyhow!("--backend requires a value"));
+            }
+            if backend.is_some() {
+                anyhow::bail!("duplicate --backend flag in sed arguments");
+            }
+            backend = Some(value.to_string());
+            continue;
+        }
+
+        if arg == "-r" || arg == "--repo" {
+            let value = iter
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+            if repo.is_some() {
+                anyhow::bail!("duplicate -r/--repo flag in sed arguments");
+            }
+            repo = Some(value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--repo=") {
+            if value.is_empty() {
+                return Err(anyhow::anyhow!("--repo requires a value"));
+            }
+            if repo.is_some() {
+                anyhow::bail!("duplicate -r/--repo flag in sed arguments");
+            }
+            repo = Some(value.to_string());
+            continue;
+        }
+
+        if arg == "--branch" {
+            let value = iter
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--branch requires a value"))?;
+            if branch.is_some() {
+                anyhow::bail!("duplicate --branch flag in sed arguments");
+            }
+            branch = Some(value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--branch=") {
+            if value.is_empty() {
+                return Err(anyhow::anyhow!("--branch requires a value"));
+            }
+            if branch.is_some() {
+                anyhow::bail!("duplicate --branch flag in sed arguments");
+            }
+            branch = Some(value.to_string());
+            continue;
+        }
+
+        if arg == "--refresh-cache" {
+            refresh_cache = true;
+            continue;
+        }
+
         remaining_args.push(arg);
     }
 
-    Ok((remaining_args, ignores))
+    Ok(SedInlineFlags {
+        args: remaining_args,
+        ignores,
+        repo,
+        branch,
+        backend,
+        refresh_cache,
+    })
 }
 
 fn print_branch_results(branches: &[BranchMetadata]) {
@@ -1579,8 +1757,8 @@ mod tests {
                 backend,
                 args,
             } => {
-                let (filtered_args, inline_ignores) =
-                    extract_sed_inline_ignores(args).expect("inline sed ignores should parse");
+                let extracted =
+                    extract_sed_inline_flags(args).expect("inline sed flags should parse");
 
                 assert!(quiet);
                 assert!(refresh_cache);
@@ -1589,16 +1767,139 @@ mod tests {
                 assert_eq!(repo, Some("owner/repo".to_string()));
                 assert_eq!(branch, None);
                 assert_eq!(backend, None);
-                assert_eq!(inline_ignores, vec!["vendor".to_string()]);
-                assert_eq!(filtered_args, vec!["1,3p", "src/lib.rs"]);
+                assert_eq!(extracted.ignores, vec!["vendor".to_string()]);
+                assert_eq!(extracted.args, vec!["1,3p", "src/lib.rs"]);
                 let (resolved, scripts, path) =
-                    parse_sed_invocation(repo, expressions, files, filtered_args)
+                    parse_sed_invocation(repo, expressions, files, extracted.args)
                         .expect("sed invocation should resolve");
                 assert_eq!(resolved, "owner/repo");
                 assert_eq!(scripts, vec!["1,3p".to_string()]);
                 assert_eq!(path, "src/lib.rs");
             }
             _ => panic!("expected sed command"),
+        }
+    }
+
+    #[test]
+    fn sed_trailing_backend_and_repo_flags_are_extracted() {
+        // Flag-first form still parses via clap.
+        let flag_first = WitCli::try_parse_from([
+            "wit",
+            "sed",
+            "--backend",
+            "memory",
+            "-n",
+            "1,5p",
+            "octocat/Hello-World",
+            "README",
+        ])
+        .expect("flag-first sed --backend should parse");
+        match flag_first.command {
+            Commands::Sed {
+                backend,
+                repo,
+                args,
+                expressions,
+                files,
+                ..
+            } => {
+                assert_eq!(backend.as_deref(), Some("memory"));
+                let extracted = extract_sed_inline_flags(args).unwrap();
+                let backend =
+                    merge_optional_flags("backend", backend, extracted.backend).unwrap();
+                assert_eq!(backend.as_deref(), Some("memory"));
+                assert_eq!(
+                    CliSnapshotBackend::from_env_or_flag(backend.as_deref()).unwrap(),
+                    CliSnapshotBackend::Memory
+                );
+                let (resolved, scripts, path) =
+                    parse_sed_invocation(repo, expressions, files, extracted.args).unwrap();
+                assert_eq!(resolved, "octocat/Hello-World");
+                assert_eq!(scripts, vec!["1,5p".to_string()]);
+                assert_eq!(path, "README");
+            }
+            _ => panic!("expected sed"),
+        }
+
+        // Trailing flags are swallowed into positionals by allow_hyphen_values; extract them.
+        let trailing = WitCli::try_parse_from([
+            "wit",
+            "sed",
+            "-n",
+            "1,5p",
+            "octocat/Hello-World",
+            "README",
+            "--backend",
+            "memory",
+        ])
+        .expect("trailing sed --backend should parse into args");
+        match trailing.command {
+            Commands::Sed {
+                backend,
+                repo,
+                args,
+                expressions,
+                files,
+                ..
+            } => {
+                assert_eq!(backend, None, "trailing --backend is not seen by clap");
+                assert!(
+                    args.iter().any(|a| a == "--backend"),
+                    "trailing --backend should land in sed args: {args:?}"
+                );
+                let extracted = extract_sed_inline_flags(args).unwrap();
+                assert_eq!(extracted.backend.as_deref(), Some("memory"));
+                let backend =
+                    merge_optional_flags("backend", backend, extracted.backend).unwrap();
+                assert_eq!(
+                    CliSnapshotBackend::from_env_or_flag(backend.as_deref()).unwrap(),
+                    CliSnapshotBackend::Memory
+                );
+                let (resolved, scripts, path) =
+                    parse_sed_invocation(repo, expressions, files, extracted.args).unwrap();
+                assert_eq!(resolved, "octocat/Hello-World");
+                assert_eq!(scripts, vec!["1,5p".to_string()]);
+                assert_eq!(path, "README");
+            }
+            _ => panic!("expected sed"),
+        }
+
+        let trailing_repo = WitCli::try_parse_from([
+            "wit",
+            "sed",
+            "-n",
+            "1,5p",
+            "README",
+            "--repo",
+            "octocat/Hello-World",
+            "--backend",
+            "memory",
+        ])
+        .expect("trailing --repo/--backend should parse");
+        match trailing_repo.command {
+            Commands::Sed {
+                backend,
+                repo,
+                args,
+                expressions,
+                files,
+                ..
+            } => {
+                let extracted = extract_sed_inline_flags(args).unwrap();
+                let backend =
+                    merge_optional_flags("backend", backend, extracted.backend).unwrap();
+                let repo = match (repo, extracted.repo) {
+                    (None, None) => None,
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (Some(a), Some(b)) => Some(resolve_repo(Some(a), Some(b)).unwrap()),
+                };
+                assert_eq!(backend.as_deref(), Some("memory"));
+                let (resolved, _, path) =
+                    parse_sed_invocation(repo, expressions, files, extracted.args).unwrap();
+                assert_eq!(resolved, "octocat/Hello-World");
+                assert_eq!(path, "README");
+            }
+            _ => panic!("expected sed"),
         }
     }
 
@@ -1615,8 +1916,13 @@ mod tests {
             } => {
                 assert!(refresh_cache);
                 assert_eq!(args, vec!["src".to_string()]);
-                let (repo, path) =
-                    resolve_repo_and_optional_path(Some("owner/repo".to_string()), args).unwrap();
+                let argv = ["wit", "tree", "-r", "owner/repo", "--refresh-cache", "src"];
+                let (repo, path) = resolve_repo_and_optional_path(
+                    Some("owner/repo".to_string()),
+                    args,
+                    &argv,
+                )
+                .unwrap();
                 assert_eq!(repo, "owner/repo");
                 assert_eq!(path, Some("src".to_string()));
             }
@@ -2211,7 +2517,8 @@ mod tests {
             .expect("tree owner/repo src");
         match tree.command {
             Commands::Tree { repo, args, .. } => {
-                let (resolved, path) = resolve_repo_and_optional_path(repo, args).unwrap();
+                let argv = ["wit", "tree", "owner/repo", "src"];
+                let (resolved, path) = resolve_repo_and_optional_path(repo, args, &argv).unwrap();
                 assert_eq!(resolved, "owner/repo");
                 assert_eq!(path.as_deref(), Some("src"));
             }
@@ -2295,7 +2602,8 @@ mod tests {
                 .unwrap();
         match tree_agree.command {
             Commands::Tree { repo, args, .. } => {
-                let (resolved, path) = resolve_repo_and_optional_path(repo, args).unwrap();
+                let argv = ["wit", "tree", "-r", "owner/repo", "owner/repo", "src"];
+                let (resolved, path) = resolve_repo_and_optional_path(repo, args, &argv).unwrap();
                 assert_eq!(resolved, "owner/repo");
                 assert_eq!(path.as_deref(), Some("src"));
             }
@@ -2323,14 +2631,38 @@ mod tests {
         .expect_err("disagreeing repos must error");
         assert!(err.to_string().contains("conflicting repository arguments"));
 
-        let tree_disagree =
-            WitCli::try_parse_from(["wit", "tree", "-r", "owner/repo", "other/repo", "src"])
-                .unwrap();
+        let tree_disagree_argv = ["wit", "tree", "-r", "owner/repo", "other/repo", "src"];
+        let tree_disagree = WitCli::try_parse_from(tree_disagree_argv).unwrap();
         match tree_disagree.command {
             Commands::Tree { repo, args, .. } => {
-                let err = resolve_repo_and_optional_path(repo, args)
+                let err = resolve_repo_and_optional_path(repo, args, &tree_disagree_argv)
                     .expect_err("tree disagree must error");
                 assert!(err.to_string().contains("conflicting repository arguments"));
+            }
+            _ => panic!("expected tree"),
+        }
+
+        // Unambiguous both-disagree: positional repo before -r
+        let order_argv = ["wit", "tree", "other/repo", "-r", "octocat/Hello-World"];
+        let order_disagree = WitCli::try_parse_from(order_argv).unwrap();
+        match order_disagree.command {
+            Commands::Tree { repo, args, .. } => {
+                let err = resolve_repo_and_optional_path(repo, args, &order_argv)
+                    .expect_err("positional-before -r disagree must error");
+                assert!(err.to_string().contains("conflicting repository arguments"));
+            }
+            _ => panic!("expected tree"),
+        }
+
+        // Path after -r with a slash must remain a path, not a conflict
+        let path_argv = ["wit", "tree", "-r", "owner/repo", "src/widgets"];
+        let path_ok = WitCli::try_parse_from(path_argv).unwrap();
+        match path_ok.command {
+            Commands::Tree { repo, args, .. } => {
+                let (resolved, path) =
+                    resolve_repo_and_optional_path(repo, args, &path_argv).unwrap();
+                assert_eq!(resolved, "owner/repo");
+                assert_eq!(path.as_deref(), Some("src/widgets"));
             }
             _ => panic!("expected tree"),
         }
