@@ -4,7 +4,7 @@
  * Not a third SnapshotBackend — host sits in front of get_json.
  */
 
-import { SafeError, scrubSecrets } from "./auth.js";
+import { SafeError, safeConsole, scrubSecrets } from "./auth.js";
 
 const ERR_NAMES = {
   0: "ok",
@@ -53,8 +53,8 @@ export function makeHostImports(getExports, cache) {
         // Sync path: only cache / previously prefetched responses.
         const result = cache.getOrFetch(path, () => null);
         if (!result) {
-          // Do not echo path query tokens (paths are API paths, but scrub anyway).
-          console.error("http_get miss", scrubSecrets(path));
+          // Do not echo secrets (paths are API paths; scrub anyway).
+          safeConsole.error("http_get miss", path);
           return 3;
         }
         const bodyBytes = new TextEncoder().encode(result.body);

@@ -6,13 +6,60 @@
 
 const TOKEN_QUERY_KEYS = new Set(["token", "access_token"]);
 
+/** @type {string[]} */
+let activeSecrets = [];
+
 /**
- * Strip secrets from a string (query tokens, bearer values).
+ * Run `fn` while treating `secrets` as redaction targets for scrubSecrets / safeConsole.
+ * Nested calls restore the previous set. Awaits async `fn` so secrets stay active
+ * through the full request (including catch-path console.error).
+ * @template T
+ * @param {Array<string | null | undefined>} secrets
+ * @param {() => T | Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+export async function withActiveSecrets(secrets, fn) {
+  const prev = activeSecrets;
+  activeSecrets = secrets.filter((s) => typeof s === "string" && s.length > 0);
+  try {
+    return await fn();
+  } finally {
+    activeSecrets = prev;
+  }
+}
+
+/**
+ * @param {unknown} value
+ */
+function formatLogArg(value) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) {
+    return value.stack || value.message || String(value);
+  }
+  if (value == null) return String(value);
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return Object.prototype.toString.call(value);
+    }
+  }
+  return String(value);
+}
+
+/**
+ * Strip secrets from a string (query tokens, bearer values, active PATs).
  * @param {string} text
  */
 export function scrubSecrets(text) {
-  if (!text) return text;
+  if (text == null) return text;
   let out = String(text);
+  // Exact active secrets first (header PAT, query PAT, etc.)
+  for (const secret of activeSecrets) {
+    if (secret && out.includes(secret)) {
+      out = out.split(secret).join("[REDACTED]");
+    }
+  }
   // ?token=... / &token=... (and access_token)
   out = out.replace(
     /([?&](?:token|access_token)=)([^&#\s]*)/gi,
@@ -23,10 +70,50 @@ export function scrubSecrets(text) {
     /(Authorization\s*:\s*(?:Bearer|token)\s+)(\S+)/gi,
     "$1[REDACTED]",
   );
+  // Bare Bearer|token <pat> in free-form log lines
+  out = out.replace(
+    /(\b(?:Bearer|token)\s+)(\S+)/gi,
+    "$1[REDACTED]",
+  );
   // Standalone github_pat_ / ghp_ tokens if they leak into messages
   out = out.replace(/\b(?:github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]+/g, "[REDACTED]");
   return out;
 }
+
+/**
+ * Scrub every console argument (strings, Errors, objects).
+ * @param {unknown[]} args
+ */
+export function scrubLogArgs(args) {
+  return args.map((arg) => scrubSecrets(formatLogArg(arg)));
+}
+
+/**
+ * console.* wrappers that always scrubSecrets every argument.
+ * Use these for every log line in the showcase host.
+ */
+export const safeConsole = {
+  /** @param {...unknown} args */
+  log(...args) {
+    console.log(...scrubLogArgs(args));
+  },
+  /** @param {...unknown} args */
+  info(...args) {
+    console.info(...scrubLogArgs(args));
+  },
+  /** @param {...unknown} args */
+  warn(...args) {
+    console.warn(...scrubLogArgs(args));
+  },
+  /** @param {...unknown} args */
+  error(...args) {
+    console.error(...scrubLogArgs(args));
+  },
+  /** @param {...unknown} args */
+  debug(...args) {
+    console.debug(...scrubLogArgs(args));
+  },
+};
 
 /**
  * Safe Error whose message is scrubbed.

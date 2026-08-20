@@ -60,3 +60,24 @@ describe("scrubSecrets", () => {
     assert.match(err.message, /REDACTED/);
   });
 });
+
+describe("safeConsole", () => {
+  it("scrubs every console.error argument", async () => {
+    const { safeConsole, withActiveSecrets } = await import("../lib/auth.js");
+    const seen = [];
+    const orig = console.error;
+    console.error = (...args) => {
+      seen.push(args);
+    };
+    try {
+      await withActiveSecrets(["ghp_LOG_SECRET"], async () => {
+        safeConsole.error("hit", "ghp_LOG_SECRET", "url?token=ghp_LOG_SECRET");
+      });
+      const flat = seen.flat().join(" ");
+      assert.equal(flat.includes("ghp_LOG_SECRET"), false);
+      assert.match(flat, /REDACTED/);
+    } finally {
+      console.error = orig;
+    }
+  });
+});

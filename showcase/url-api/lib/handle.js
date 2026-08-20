@@ -3,7 +3,13 @@
  * Three verbs only; MemoryBackend via wasm open/list/read; text/plain out.
  */
 
-import { extractToken, SafeError, scrubSecrets } from "./auth.js";
+import {
+  extractToken,
+  SafeError,
+  safeConsole,
+  scrubSecrets,
+  withActiveSecrets,
+} from "./auth.js";
 import { formatCat, formatLs, formatTree } from "./format.js";
 import {
   blobShaForPath,
@@ -56,11 +62,26 @@ export async function handleRequest(request, deps) {
     return textResponse("error: method not allowed\n", 405);
   }
 
+  const token = extractToken({ headers: request.headers, url });
+  // Scrub both the winning Authorization PAT and any ?token= fallback so a
+  // mistaken log of request.url cannot leak either value.
+  const queryToken = url.searchParams.get("token") || url.searchParams.get("access_token");
+  const secrets = [token, queryToken].filter(Boolean);
+
+  return withActiveSecrets(secrets, () => handleRequestInner(request, deps, url, token));
+}
+
+/**
+ * @param {Request} request
+ * @param {HandlerDeps} deps
+ * @param {URL} url
+ * @param {string | null} token
+ */
+async function handleRequestInner(request, deps, url, token) {
   try {
     const route = parseRoute(url);
     if (!route) return null;
 
-    const token = extractToken({ headers: request.headers, url });
     const ttl = ttlFromSearchParams(url.search);
     const cache = getCache(deps);
     if (ttl != null) cache.setTtlMs(ttl);
@@ -116,8 +137,8 @@ export async function handleRequest(request, deps) {
     return textResponse(body.endsWith("\n") ? body : `${body}\n`, 200);
   } catch (err) {
     const { status, body } = errorBody(err);
-    // Never log raw token-bearing URLs
-    console.error("url-api error", scrubSecrets(String(err?.message || err)));
+    // Never log raw token-bearing URLs / PATs (safeConsole scrubs every arg).
+    safeConsole.error("url-api error", err?.message || err, String(url));
     return textResponse(body, status);
   }
 }
