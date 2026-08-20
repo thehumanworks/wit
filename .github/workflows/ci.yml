@@ -44,6 +44,46 @@ jobs:
       - name: release workflow guard
         run: bash scripts/check_release_workflows.sh
 
+  wit-snapshot-wasm:
+    name: wit_snapshot.wasm (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build wit-snapshot wasm (release, no reqwest)
+        run: cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features
+
+      - name: Ensure reqwest is not a wasm32 dependency
+        run: |
+          set -euo pipefail
+          if cargo tree -p wit-snapshot --target wasm32-unknown-unknown --no-default-features -i reqwest >/dev/null 2>&1; then
+            echo "reqwest must not appear in wit-snapshot wasm32 dependency tree" >&2
+            cargo tree -p wit-snapshot --target wasm32-unknown-unknown --no-default-features -i reqwest || true
+            exit 1
+          fi
+          echo "reqwest: not present (ok)"
+
+      - name: Stage wit_snapshot.wasm
+        run: |
+          set -euo pipefail
+          wasm="target/wasm32-unknown-unknown/release/wit_snapshot.wasm"
+          if [[ ! -f "$wasm" ]]; then
+            echo "missing $wasm" >&2
+            exit 1
+          fi
+          cp "$wasm" wit_snapshot.wasm
+
+      - name: Upload wit_snapshot.wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: wit_snapshot.wasm
+          path: wit_snapshot.wasm
+          if-no-files-found: error
+
   cancellation-platforms:
     name: cancellation (${{ matrix.os }})
     strategy:

@@ -54,6 +54,21 @@ The installer auto-detects platform and fetches these release artifacts:
 - `wit-windows-x86_64.zip`
 - `wit-windows-aarch64.zip` (best effort; falls back to x64 in shell environments if unavailable)
 
+### Run with mise (GitHub release)
+
+```bash
+mise x github:thehumanworks/wit -- wit tree owner/repo
+```
+
+To also fetch the release wasm module (`wit_snapshot.wasm`), set in mise config:
+
+```toml
+[tools]
+"github:thehumanworks/wit" = { version = "latest", additional_asset_patterns = ["wit_snapshot.wasm"] }
+```
+
+CI uploads `wit_snapshot.wasm` on every green main/PR run; semver tags attach it to the GitHub release (and list it in `wit-checksums.txt`).
+
 ### Install from source
 
 ```bash
