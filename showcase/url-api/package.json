@@ -7,7 +7,7 @@
     "test": "node --test tests/*.test.js",
     "sync-lib": "rm -rf public/lib && cp -a lib public/lib",
     "build:wasm": "cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features && cp ../../target/wasm32-unknown-unknown/release/wit_snapshot.wasm public/wit_snapshot.wasm",
-    "dev": "npm run build:wasm && npm run sync-lib && npx --yes wrangler@4 pages dev public --functions=functions --port=8787",
+    "dev": "npm run build:wasm && npm run sync-lib && npx --yes wrangler@4 pages dev public --port=8787",
     "check": "npm run sync-lib && npm test"
   }
 }

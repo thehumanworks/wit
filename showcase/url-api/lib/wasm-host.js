@@ -74,7 +74,10 @@ export function makeHostImports(getExports, cache) {
 
 /**
  * Instantiate wit_snapshot.wasm with host imports.
- * @param {BufferSource | Response | Promise<Response>} source
+ * Accepts bytes/Response (browser) or a precompiled WebAssembly.Module
+ * (Cloudflare Workers — dynamic codegen from ArrayBuffer is disallowed).
+ *
+ * @param {BufferSource | Response | Promise<Response> | WebAssembly.Module} source
  * @param {import('./repo-cache.js').RepoSnapshotCache} cache
  */
 export async function loadWasm(source, cache) {
@@ -83,7 +86,9 @@ export async function loadWasm(source, cache) {
   const imports = makeHostImports(() => exports, cache);
 
   let instance;
-  if (source instanceof Response || (source && typeof source.then === "function")) {
+  if (source instanceof WebAssembly.Module) {
+    instance = new WebAssembly.Instance(source, imports);
+  } else if (source instanceof Response || (source && typeof source.then === "function")) {
     const result = await WebAssembly.instantiateStreaming(source, imports);
     instance = result.instance;
   } else {

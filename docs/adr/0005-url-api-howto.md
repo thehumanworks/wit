@@ -7,7 +7,7 @@ Companion to [0005-url-api-host.md](./0005-url-api-host.md).
 | Surface | Role |
 |---------|------|
 | `showcase/url-api/public/` | Static HTML + JS + `wit_snapshot.wasm` |
-| `showcase/url-api/functions/` | Cloudflare Pages Function (host `get_json` adapter) |
+| `showcase/url-api/public/_worker.js` | Cloudflare Pages `_worker` (host `get_json` adapter) |
 | `showcase/url-api/lib/` | Shared routing, auth scrubbing, plaintext format, wasm host |
 
 Same `MemoryBackend` as ADR 0004. Exports used: `open` / `list` / `read` only.
@@ -62,7 +62,7 @@ cp target/wasm32-unknown-unknown/debug/wit_snapshot.wasm \
 cd showcase/url-api
 npm run sync-lib
 npm test
-npx --yes wrangler@4 pages dev public --functions=functions --port=8787
+npx --yes wrangler@4 pages dev public --port=8787
 ```
 
 ### curl (public repo)
