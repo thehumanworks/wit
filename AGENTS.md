@@ -34,6 +34,7 @@ This is a Cargo workspace with several crates:
 ### Top-level
 - `tasks/`: Task/planning files (e.g., `sed.txt`).
 - `README.md`: User-facing installation and usage examples.
+- `docs/index.html` + `docs/try/`: static GitHub Pages try-it (`wit tree|ls|cat` via existing `wit_snapshot.wasm`).
 - `target/`: Build artifacts (ignored via `.gitignore`).
 
 ## CLI Subcommands
@@ -62,6 +63,7 @@ This is a Cargo workspace with several crates:
 - `cargo test --workspace`: Run unit tests. `cargo test -- --ignored` for integration tests (require network).
 - `bash scripts/check_wit_search_migration.sh`: Enforce `wit search` stays GitHub-only and does not reintroduce grep.app wiring under `crates/wit/src`.
 - `bash scripts/check_wit_snapshot_wasm.sh`: Build `wit-snapshot` for `wasm32-unknown-unknown` without reqwest; run wasmtime fixture smoke.
+- `bash scripts/check_docs_site.sh`: Pages try-it parser/formatter tests plus fixture wasm smoke (`wit tree demo/repo`).
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.
 - `cargo test -p wit --test search_github_live -- --ignored`: Optional live GitHub smoke test (`GITHUB_TOKEN` recommended).
@@ -110,5 +112,5 @@ This is a Cargo workspace with several crates:
 
 - Prefer `rg` / `rg --files` for repo search while working on changes.
 - Keep patches focused and avoid committing generated artifacts under `target/`.
-- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, and `bash scripts/check_wit_snapshot_wasm.sh`.
+- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, and `bash scripts/check_docs_site.sh`.
 - The `sed` subcommand aims for broad POSIX coverage; update tests and docs alongside behavior changes.

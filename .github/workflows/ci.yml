@@ -41,6 +41,9 @@ jobs:
       - name: wit-snapshot wasm32 fetch client
         run: bash scripts/check_wit_snapshot_wasm.sh
 
+      - name: docs try-it site
+        run: bash scripts/check_docs_site.sh
+
       - name: release workflow guard
         run: bash scripts/check_release_workflows.sh
 

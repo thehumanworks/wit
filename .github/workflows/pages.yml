@@ -1,0 +1,55 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Assemble static site
+        run: |
+          set -euo pipefail
+          mkdir -p _site/try/fixtures
+          cp docs/index.html docs/.nojekyll _site/
+          cp docs/try/*.js docs/try/*.mjs _site/try/
+          cp docs/try/fixtures/*.json _site/try/fixtures/
+          dest="_site/try/wit_snapshot.wasm"
+          url="https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm"
+          if curl -fsSL -o "$dest" "$url"; then
+            echo "using release v0.1.33 wit_snapshot.wasm"
+          else
+            echo "release asset missing; building the same no-reqwest module"
+            cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features
+            cp target/wasm32-unknown-unknown/release/wit_snapshot.wasm "$dest"
+          fi
+          test -s "$dest"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

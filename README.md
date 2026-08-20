@@ -6,6 +6,26 @@ GitHub for AI Agents -- explore GitHub repositories without cloning. Repos are c
 
 **v0.1.0** - Early development
 
+## Try without installing
+
+A static GitHub Pages page runs `wit tree`, `wit ls`, and `wit cat` in the
+browser through the existing `wit_snapshot.wasm` module (fixture-backed
+`demo/repo`; live `api.github.com` is best-effort):
+
+https://thehumanworks.github.io/wit/
+
+```bash
+# same page documents this one-liner
+mise x github:thehumanworks/wit -- wit tree owner/repo
+```
+
+Local preview from this repo:
+
+```bash
+bash scripts/serve_docs_site.sh
+# open http://127.0.0.1:8765/ and run: wit tree demo/repo
+```
+
 ## Installation
 
 ### Install from npm
