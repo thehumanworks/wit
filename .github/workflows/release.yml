@@ -209,6 +209,9 @@ jobs:
 
   release:
     name: publish release
+    # Keep needs: build so successful native artifacts are still available, but do not
+    # require the whole matrix green — a failed cell (e.g. windows-x86_64) must not skip publish.
+    if: ${{ !cancelled() && needs.build-wasm.result == 'success' }}
     runs-on: ubuntu-latest
     needs:
       - build
@@ -225,6 +228,7 @@ jobs:
           path: dist
           pattern: dist-*
           merge-multiple: true
+          if-no-files-found: ignore
 
       - name: Download wit_snapshot.wasm
         uses: actions/download-artifact@v4
@@ -238,8 +242,11 @@ jobs:
           set -euo pipefail
           cd dist
           test -f wit_snapshot.wasm
-          # wit-* covers native archives; wit_snapshot.wasm uses underscore and must be listed explicitly.
-          sha256sum wit-* wit_snapshot.wasm > wit-checksums.txt
+          # Hash whatever native archives exist; always require wit_snapshot.wasm.
+          # A missing matrix cell is a skipped download, not a failed publish.
+          shopt -s nullglob
+          natives=(wit-*.tar.gz wit-*.zip)
+          sha256sum "${natives[@]}" wit_snapshot.wasm > wit-checksums.txt
           grep -F 'wit_snapshot.wasm' wit-checksums.txt
 
       - name: Build SPDX dependency SBOM

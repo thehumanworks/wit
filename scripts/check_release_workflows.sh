@@ -117,8 +117,12 @@ assert_contains "$ci_workflow" 'tar -C "target/${{ matrix.target }}/release" -cz
 assert_contains "$ci_workflow" 'Compress-Archive -Path $files -DestinationPath $artifact -Force' \
   "pull-request Windows package gate must include wit.exe and wit-mcp.exe"
 
-assert_contains "$release_workflow" 'sha256sum wit-* wit_snapshot.wasm > wit-checksums.txt' \
-  "release checksums must include wit_snapshot.wasm alongside native wit-* archives"
+assert_contains "$release_workflow" 'sha256sum "${natives[@]}" wit_snapshot.wasm > wit-checksums.txt' \
+  "release checksums must hash existing native archives and always include wit_snapshot.wasm"
+assert_contains "$release_workflow" 'natives=(wit-*.tar.gz wit-*.zip)' \
+  "release checksums must only consider native archives that actually downloaded"
+assert_contains "$release_workflow" 'test -f wit_snapshot.wasm' \
+  "release publish must require wit_snapshot.wasm even when some native cells fail"
 assert_contains "$release_workflow" 'cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features' \
   "release workflow must build wit_snapshot.wasm without default features"
 assert_contains "$release_workflow" 'name: wit_snapshot.wasm' \
@@ -126,7 +130,13 @@ assert_contains "$release_workflow" 'name: wit_snapshot.wasm' \
 assert_contains "$release_workflow" 'dist/wit_snapshot.wasm' \
   "release workflow must attach wit_snapshot.wasm to the GitHub release"
 assert_contains "$release_workflow" 'needs:'$'\n''      - build'$'\n''      - build-wasm' \
-  "publish release must wait for native build and build-wasm"
+  "publish release must still list needs for native build and build-wasm"
+assert_contains "$release_workflow" 'if: ${{ !cancelled() && needs.build-wasm.result == '\''success'\'' }}' \
+  "publish must run when build-wasm succeeds even if the native matrix has a failed cell"
+assert_contains "$release_workflow" 'if-no-files-found: ignore' \
+  "publish must tolerate missing native dist-* artifacts from failed matrix cells"
+assert_not_contains "$release_workflow" 'needs.build.result' \
+  "publish must not gate on needs.build.result (that would skip attach when one native cell is red)"
 assert_contains "$ci_workflow" 'cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features' \
   "CI must build the release wit_snapshot.wasm artifact"
 assert_contains "$ci_workflow" 'name: wit_snapshot.wasm' \
