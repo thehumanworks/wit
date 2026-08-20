@@ -159,10 +159,45 @@ jobs:
           path: wit-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.archive }}
           if-no-files-found: error
 
+  build-wasm:
+    name: build wit_snapshot.wasm
+    needs: validate_ref
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build release wit_snapshot.wasm (no reqwest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p wit-snapshot \
+            --target wasm32-unknown-unknown --no-default-features
+          if cargo tree -p wit-snapshot --target wasm32-unknown-unknown \
+            --no-default-features -i reqwest >/dev/null 2>&1; then
+            echo "reqwest must not appear in wit-snapshot wasm32 dependency tree" >&2
+            cargo tree -p wit-snapshot --target wasm32-unknown-unknown \
+              --no-default-features -i reqwest || true
+            exit 1
+          fi
+          cp target/wasm32-unknown-unknown/release/wit_snapshot.wasm wit_snapshot.wasm
+
+      - name: Upload wit_snapshot.wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-wit_snapshot-wasm
+          path: wit_snapshot.wasm
+          if-no-files-found: error
+
   release:
     name: publish release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, build-wasm]
     permissions:
       actions: read
       contents: write
@@ -181,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum wit-* > wit-checksums.txt
+          sha256sum wit-*.tar.gz wit-*.zip wit_snapshot.wasm > wit-checksums.txt
 
       - name: Build SPDX dependency SBOM
         uses: anchore/sbom-action@v0.20.6
@@ -198,6 +233,7 @@ jobs:
           files: |
             dist/wit-*.tar.gz
             dist/wit-*.zip
+            dist/wit_snapshot.wasm
             dist/wit-checksums.txt
             dist/wit-sbom.spdx.json
             THIRD-PARTY-LICENSES.md

@@ -18,7 +18,7 @@ assert_contains() {
   local needle="$2"
   local message="$3"
 
-  grep -Fq "$needle" "$file" || fail "$message"
+  grep -Fq -- "$needle" "$file" || fail "$message"
 }
 
 assert_not_contains() {
@@ -26,7 +26,7 @@ assert_not_contains() {
   local needle="$2"
   local message="$3"
 
-  if grep -Fq "$needle" "$file"; then
+  if grep -Fq -- "$needle" "$file"; then
     fail "$message"
   fi
 }
@@ -116,6 +116,25 @@ assert_contains "$ci_workflow" 'tar -C "target/${{ matrix.target }}/release" -cz
   "pull-request Unix package gate must include wit and wit-mcp"
 assert_contains "$ci_workflow" 'Compress-Archive -Path $files -DestinationPath $artifact -Force' \
   "pull-request Windows package gate must include wit.exe and wit-mcp.exe"
+
+assert_contains "$release_workflow" 'cargo build --locked --release -p wit-snapshot' \
+  "release workflow must build a release wit-snapshot wasm module"
+assert_contains "$release_workflow" '--target wasm32-unknown-unknown --no-default-features' \
+  "release wasm build must target wasm32 without default features (no reqwest)"
+assert_contains "$release_workflow" 'name: dist-wit_snapshot-wasm' \
+  "release workflow must upload wit_snapshot.wasm as a dist artifact"
+assert_contains "$release_workflow" 'sha256sum wit-*.tar.gz wit-*.zip wit_snapshot.wasm > wit-checksums.txt' \
+  "release checksums must include wit_snapshot.wasm beside native archives"
+assert_contains "$release_workflow" 'dist/wit_snapshot.wasm' \
+  "release workflow must attach wit_snapshot.wasm to the GitHub release"
+assert_contains "$release_workflow" 'needs: [build, build-wasm]' \
+  "release publish job must wait for native builds and the wasm module"
+assert_contains "$ci_workflow" 'name: wit_snapshot.wasm' \
+  "CI must upload a downloadable release wit_snapshot.wasm artifact"
+assert_contains "$ci_workflow" 'cargo build --locked --release -p wit-snapshot' \
+  "CI must produce a release-quality wit_snapshot.wasm (not only debug)"
+assert_contains "$ci_workflow" 'bash scripts/check_wit_snapshot_wasm.sh' \
+  "CI must keep the existing debug/wasmtime no-reqwest wasm check"
 
 target_count="$(grep -c '"id":' "$npm_targets")"
 [ "$target_count" -eq 6 ] || fail "npm targets must contain exactly six release targets"

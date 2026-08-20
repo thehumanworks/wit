@@ -23,8 +23,23 @@ cargo build -p wit-snapshot --target wasm32-unknown-unknown --no-default-feature
 
 Artifact: `target/wasm32-unknown-unknown/debug/wit_snapshot.wasm`.
 
-CI runs the same check and a **wasmtime + fixture** smoke (module runs; not
-browser-ready certification).
+For a release-quality module (what CI uploads and what tag releases attach):
+
+```bash
+cargo build --locked --release -p wit-snapshot \
+  --target wasm32-unknown-unknown --no-default-features
+# → target/wasm32-unknown-unknown/release/wit_snapshot.wasm
+```
+
+Published release URL form:
+
+```text
+https://github.com/thehumanworks/wit/releases/download/<tag>/wit_snapshot.wasm
+```
+
+CI runs a **debug** build plus a **wasmtime + fixture** smoke (module runs; not
+browser-ready certification), and separately uploads the **release** wasm as an
+Actions artifact named `wit_snapshot.wasm`.
 
 ## Host-supplied fetch
 

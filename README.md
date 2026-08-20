@@ -60,6 +60,30 @@ The installer auto-detects platform and fetches these release artifacts:
 cargo install --path crates/wit --bins
 ```
 
+### Run from GitHub releases with mise
+
+Native archives (`wit-linux-x86_64.tar.gz`, etc.) are mise-friendly. Run without a permanent install:
+
+```bash
+mise x github:thehumanworks/wit -- wit tree owner/repo
+```
+
+Optional: overlay the release `wit_snapshot.wasm` into the same install directory via the GitHub backend:
+
+```toml
+[tools."github:thehumanworks/wit"]
+version = "latest"
+
+[tools."github:thehumanworks/wit".platforms]
+linux-x64 = { additional_asset_patterns = ["wit_snapshot.wasm"] }
+```
+
+Stable direct URL (replace `<tag>` with a semver tag such as `v0.1.31`):
+
+```text
+https://github.com/thehumanworks/wit/releases/download/<tag>/wit_snapshot.wasm
+```
+
 ## Quick Start
 
 ```bash
@@ -436,7 +460,8 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end
 - Every push to `main` triggers `.github/workflows/auto-tag.yml`, which increments the patch version in `Cargo.toml`, creates a new `vX.Y.Z` tag, and pushes it.
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
 - `.github/workflows/release.yml` can also be triggered manually with `workflow_dispatch` (select a `vX.Y.Z` tag ref).
-- `.github/workflows/release.yml` validates the tag ref, builds Linux/macOS/Windows artifacts on GitHub-hosted runners, uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
+- `.github/workflows/release.yml` validates the tag ref, builds Linux/macOS/Windows artifacts on GitHub-hosted runners, builds a release `wit_snapshot.wasm` (wasm32, `--no-default-features`), uploads `wit-<platform>-<arch>` archives plus `wit_snapshot.wasm` and `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
+- CI on pull requests and `main` also uploads a downloadable release-quality `wit_snapshot.wasm` Actions artifact (in addition to the existing debug/wasmtime check).
 - `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the attached GitHub release assets and can be re-run manually for an existing release tag without rebuilding Rust binaries.
 - `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 
