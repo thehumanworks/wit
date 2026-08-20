@@ -80,8 +80,10 @@ curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
   "http://127.0.0.1:8787/tree/octocat/Hello-World"
 ```
 
-Plaintext matches `wit tree|ls|cat … --backend memory` stdout (CLI provenance
-stays on stderr; HTTP returns stdout only).
+Wasm is loaded as a **CompiledWasm** module import in `_worker.js`
+(`import wasm from "./wit_snapshot.wasm"`). Cloudflare Workers disallow
+`WebAssembly.instantiate` from arbitrary ArrayBuffers; the browser page still
+fetches `/wit_snapshot.wasm` normally.
 
 ### Browser
 
