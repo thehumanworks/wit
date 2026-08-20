@@ -159,10 +159,60 @@ jobs:
           path: wit-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.archive }}
           if-no-files-found: error
 
+  build-wasm:
+    name: build wit_snapshot.wasm
+    needs: validate_ref
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build wit-snapshot wasm (release, no reqwest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features
+
+      - name: Ensure reqwest is not a wasm32 dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree -p wit-snapshot --target wasm32-unknown-unknown --no-default-features -i reqwest >/dev/null 2>&1; then
+            echo "reqwest must not appear in wit-snapshot wasm32 dependency tree" >&2
+            cargo tree -p wit-snapshot --target wasm32-unknown-unknown --no-default-features -i reqwest || true
+            exit 1
+          fi
+          echo "reqwest: not present (ok)"
+
+      - name: Stage wit_snapshot.wasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          wasm="target/wasm32-unknown-unknown/release/wit_snapshot.wasm"
+          if [[ ! -f "$wasm" ]]; then
+            echo "missing $wasm" >&2
+            exit 1
+          fi
+          cp "$wasm" wit_snapshot.wasm
+
+      - name: Upload wit_snapshot.wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: wit_snapshot.wasm
+          path: wit_snapshot.wasm
+          if-no-files-found: error
+
   release:
     name: publish release
     runs-on: ubuntu-latest
-    needs: build
+    needs:
+      - build
+      - build-wasm
     permissions:
       actions: read
       contents: write
@@ -176,12 +226,21 @@ jobs:
           pattern: dist-*
           merge-multiple: true
 
+      - name: Download wit_snapshot.wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: wit_snapshot.wasm
+          path: dist
+
       - name: Build checksum manifest
         shell: bash
         run: |
           set -euo pipefail
           cd dist
-          sha256sum wit-* > wit-checksums.txt
+          test -f wit_snapshot.wasm
+          # wit-* covers native archives; wit_snapshot.wasm uses underscore and must be listed explicitly.
+          sha256sum wit-* wit_snapshot.wasm > wit-checksums.txt
+          grep -F 'wit_snapshot.wasm' wit-checksums.txt
 
       - name: Build SPDX dependency SBOM
         uses: anchore/sbom-action@v0.20.6
@@ -198,6 +257,7 @@ jobs:
           files: |
             dist/wit-*.tar.gz
             dist/wit-*.zip
+            dist/wit_snapshot.wasm
             dist/wit-checksums.txt
             dist/wit-sbom.spdx.json
             THIRD-PARTY-LICENSES.md

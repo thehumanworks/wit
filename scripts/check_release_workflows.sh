@@ -117,5 +117,22 @@ assert_contains "$ci_workflow" 'tar -C "target/${{ matrix.target }}/release" -cz
 assert_contains "$ci_workflow" 'Compress-Archive -Path $files -DestinationPath $artifact -Force' \
   "pull-request Windows package gate must include wit.exe and wit-mcp.exe"
 
+assert_contains "$release_workflow" 'sha256sum wit-* wit_snapshot.wasm > wit-checksums.txt' \
+  "release checksums must include wit_snapshot.wasm alongside native wit-* archives"
+assert_contains "$release_workflow" 'cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features' \
+  "release workflow must build wit_snapshot.wasm without default features"
+assert_contains "$release_workflow" 'name: wit_snapshot.wasm' \
+  "release workflow must upload wit_snapshot.wasm as an artifact"
+assert_contains "$release_workflow" 'dist/wit_snapshot.wasm' \
+  "release workflow must attach wit_snapshot.wasm to the GitHub release"
+assert_contains "$release_workflow" 'needs:'$'\n''      - build'$'\n''      - build-wasm' \
+  "publish release must wait for native build and build-wasm"
+assert_contains "$ci_workflow" 'cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features' \
+  "CI must build the release wit_snapshot.wasm artifact"
+assert_contains "$ci_workflow" 'name: wit_snapshot.wasm' \
+  "CI must upload artifact named wit_snapshot.wasm"
+assert_contains "$ci_workflow" 'path: wit_snapshot.wasm' \
+  "CI must upload path wit_snapshot.wasm"
+
 target_count="$(grep -c '"id":' "$npm_targets")"
 [ "$target_count" -eq 6 ] || fail "npm targets must contain exactly six release targets"

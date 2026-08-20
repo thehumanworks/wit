@@ -24,7 +24,30 @@ cargo build -p wit-snapshot --target wasm32-unknown-unknown --no-default-feature
 Artifact: `target/wasm32-unknown-unknown/debug/wit_snapshot.wasm`.
 
 CI runs the same check and a **wasmtime + fixture** smoke (module runs; not
-browser-ready certification).
+browser-ready certification). On every green PR/main run, CI also builds the
+**release** module and uploads artifact `wit_snapshot.wasm`. Semver GitHub
+releases attach the same file and list it in `wit-checksums.txt`.
+
+Release / CI command (no reqwest):
+
+```bash
+cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features
+```
+
+Release artifact path: `target/wasm32-unknown-unknown/release/wit_snapshot.wasm`.
+
+### mise (native CLI + optional wasm)
+
+```bash
+mise x github:thehumanworks/wit -- wit tree owner/repo
+```
+
+To also pull `wit_snapshot.wasm` from the GitHub release:
+
+```toml
+[tools]
+"github:thehumanworks/wit" = { version = "latest", additional_asset_patterns = ["wit_snapshot.wasm"] }
+```
 
 ## Host-supplied fetch
 
