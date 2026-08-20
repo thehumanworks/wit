@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wit URL API showcase</title>
+    <style>
+      :root {
+        --bg: #0f1419;
+        --fg: #e7ecf1;
+        --muted: #8b9aab;
+        --accent: #3d9a6a;
+        --err: #d96b6b;
+        --mono: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+        --sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: var(--sans);
+        color: var(--fg);
+        background:
+          radial-gradient(1200px 600px at 10% -10%, #1a2a22 0%, transparent 55%),
+          radial-gradient(900px 500px at 100% 0%, #1a2230 0%, transparent 50%),
+          var(--bg);
+      }
+      main {
+        max-width: 52rem;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 4rem;
+      }
+      h1 {
+        font-size: 1.75rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin: 0 0 0.35rem;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0 0 1.5rem;
+        line-height: 1.45;
+        max-width: 40rem;
+      }
+      label {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+      input {
+        width: 100%;
+        padding: 0.55rem 0.7rem;
+        border: 1px solid #2a3542;
+        border-radius: 6px;
+        background: #121820;
+        color: var(--fg);
+        font-family: var(--mono);
+        font-size: 0.9rem;
+      }
+      .row {
+        display: grid;
+        gap: 0.75rem;
+        margin-bottom: 0.9rem;
+      }
+      @media (min-width: 640px) {
+        .row.two { grid-template-columns: 1fr 1fr; }
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 1rem 0 1.25rem;
+      }
+      button {
+        font-family: var(--sans);
+        font-size: 0.9rem;
+        padding: 0.45rem 0.85rem;
+        border-radius: 6px;
+        border: 1px solid #2f6b4d;
+        background: #1a3d2c;
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:hover { background: #214a36; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      pre {
+        margin: 0;
+        padding: 1rem;
+        border-radius: 8px;
+        background: #0a0e13;
+        border: 1px solid #243040;
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-word;
+        min-height: 8rem;
+      }
+      pre.err { color: var(--err); }
+      .hint {
+        margin-top: 1rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      code { font-family: var(--mono); font-size: 0.85em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>wit URL API</h1>
+      <p class="sub">
+        Client-side MemoryBackend showcase: <code>/tree</code>, <code>/ls</code>,
+        <code>/cat</code> return the same plaintext as the CLI. Path is a query
+        param. Auth via <code>Authorization</code> (preferred) or <code>?token=</code>
+        (leaks — avoid).
+      </p>
+
+      <div class="row two">
+        <div>
+          <label for="owner">owner</label>
+          <input id="owner" value="octocat" autocomplete="off" />
+        </div>
+        <div>
+          <label for="repo">repo</label>
+          <input id="repo" value="Hello-World" autocomplete="off" />
+        </div>
+      </div>
+      <div class="row two">
+        <div>
+          <label for="path">path (query)</label>
+          <input id="path" value="" placeholder="e.g. README" autocomplete="off" />
+        </div>
+        <div>
+          <label for="branch">branch / ref</label>
+          <input id="branch" value="" placeholder="default branch" autocomplete="off" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="token">GitHub PAT (optional; kept in memory, never logged)</label>
+          <input id="token" type="password" value="" autocomplete="off" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="button" data-verb="tree">GET /tree</button>
+        <button type="button" data-verb="ls">GET /ls</button>
+        <button type="button" data-verb="cat">GET /cat</button>
+      </div>
+
+      <pre id="out">Ready. Routes run in-page via wit-snapshot wasm (open/list/read).</pre>
+      <p class="hint">
+        Pure static hosts cannot execute wasm for <code>curl</code> — use the
+        Pages Function / worker host adapter for <code>text/plain</code>. See
+        <code>docs/adr/0005-url-api-howto.md</code>.
+      </p>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

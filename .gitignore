@@ -27,3 +27,5 @@ Thumbs.db
 
 # Staged wit-snapshot wasm demo artifact
 crates/wit-snapshot/demo/browser/wit_snapshot.wasm
+showcase/url-api/public/wit_snapshot.wasm
+showcase/url-api/public/lib/
