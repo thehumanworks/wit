@@ -1,8 +1,8 @@
 /**
- * CLI plaintext for tree / ls / cat.
+ * CLI plaintext for tree / ls / cat / rg / sed / head / tail.
  *
  * Matches the memory-backend printers in crates/wit/src/cli.rs
- * (`print_snapshot_tree`, `print_snapshot_ls`, and cat stdout).
+ * (`print_snapshot_tree`, `print_snapshot_ls`, cat, rg, sed, head, tail).
  * There is no showcase/url-api/lib/format.js in this tree — do not invent
  * a second box-drawing / brochure style.
  */
@@ -72,10 +72,142 @@ export function formatLs(entries, opts = {}) {
  * @param {{ text?: string } | string} file
  */
 export function formatCat(file) {
-  if (typeof file === "string") {
-    return file;
+  return fileText(file);
+}
+
+/**
+ * `head_from_text` in crates/wit/src/snapshot/memory_ops.rs
+ * @param {string} content
+ * @param {number} count
+ * @param {boolean} [number]
+ */
+export function headFromText(content, count, number = false) {
+  return formatNumbered(rustLines(content).slice(0, count), 1, number);
+}
+
+/**
+ * `tail_from_text` in crates/wit/src/snapshot/memory_ops.rs
+ * @param {string} content
+ * @param {number} count
+ * @param {number | null} [fromLine]
+ * @param {boolean} [number]
+ */
+export function tailFromText(content, count, fromLine = null, number = false) {
+  const all = rustLines(content);
+  const total = all.length;
+  let selected;
+  let startLineNum;
+  if (fromLine != null) {
+    const skip = Math.max(0, fromLine - 1);
+    selected = all.slice(skip);
+    startLineNum = fromLine;
+  } else {
+    const skip = Math.max(0, total - count);
+    selected = all.slice(skip);
+    startLineNum = skip + 1;
   }
-  return file?.text ?? "";
+  return formatNumbered(selected, startLineNum, number);
+}
+
+/**
+ * Documented sed subset: print-range, /re/p, and simple s/a/b/[g].
+ * Matches native plaintext for those scripts only — not full POSIX.
+ * @param {string} content
+ * @param {string} script
+ * @param {{ quiet?: boolean }} [opts]
+ */
+export function formatSed(content, script, opts = {}) {
+  const quiet = Boolean(opts.quiet);
+  const text = String(script ?? "").trim();
+  const lines = rustLines(content);
+
+  const range = text.match(/^(\d+),(\d+)p$/);
+  if (range) {
+    if (!quiet) {
+      throw unsupportedSed(text);
+    }
+    const start = Number(range[1]);
+    const end = Number(range[2]);
+    return printSedLines(lines, (index) => index >= start && index <= end);
+  }
+
+  const one = text.match(/^(\d+)p$/);
+  if (one) {
+    if (!quiet) {
+      throw unsupportedSed(text);
+    }
+    const target = Number(one[1]);
+    return printSedLines(lines, (index) => index === target);
+  }
+
+  const rePrint = text.match(/^\/(.+)\/p$/);
+  if (rePrint) {
+    if (!quiet) {
+      throw unsupportedSed(text);
+    }
+    const re = compileSedRegex(rePrint[1]);
+    return printSedLines(lines, (_index, line) => re.test(line));
+  }
+
+  const subst = text.match(/^s\/((?:\\\/|[^/])*)\/((?:\\\/|[^/])*)\/(g)?$/);
+  if (subst) {
+    const re = compileSedRegex(unescapeSedDelim(subst[1]), Boolean(subst[3]));
+    const replacement = unescapeSedDelim(subst[2]);
+    const out = lines.map((line) => line.replace(re, replacement));
+    if (quiet) {
+      return "";
+    }
+    return printSedLines(out, () => true);
+  }
+
+  throw unsupportedSed(text);
+}
+
+/**
+ * @param {{ path: string, line: number, text: string }[]} matches
+ * @param {{ filesWithMatches?: boolean }} [opts]
+ */
+export function formatRg(matches, opts = {}) {
+  if (!matches.length) {
+    return "";
+  }
+  if (opts.filesWithMatches) {
+    const seen = [];
+    for (const match of matches) {
+      if (!seen.includes(match.path)) {
+        seen.push(match.path);
+      }
+    }
+    return seen.join("\n");
+  }
+  return matches.map((match) => `${match.path}:${match.line}:${match.text}`).join("\n");
+}
+
+/**
+ * Stars + repo names, same columns as `wits::print_search_results`.
+ * @param {{ items?: { full_name?: string, name?: string, stargazers_count?: number }[] }} body
+ * @param {{ limit?: number }} [opts]
+ */
+export function formatSearch(body, opts = {}) {
+  const limit = opts.limit ?? 10;
+  const items = Array.isArray(body?.items) ? body.items.slice(0, limit) : [];
+  if (!items.length) {
+    return "No repositories found.";
+  }
+  const repos = items.map((item) => ({
+    name: item.full_name || item.name || "",
+    stars: Number(item.stargazers_count) || 0,
+  }));
+  const maxName = repos.reduce((max, repo) => Math.max(max, repo.name.length), 0);
+  const lines = ["", `Found ${repos.length} repositories:`, ""];
+  for (let i = 0; i < repos.length; i += 1) {
+    const rank = `${String(i + 1).padStart(3, " ")}.`;
+    const name = repos[i].name.padEnd(maxName, " ");
+    const stars = String(repos[i].stars).padStart(6, " ");
+    lines.push(`  ${rank} ${name} ${stars} stars`);
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 export function normalizePath(value) {
@@ -93,4 +225,61 @@ export function normalizePath(value) {
 function basename(path) {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
+}
+
+export function fileText(file) {
+  if (typeof file === "string") {
+    return file;
+  }
+  return file?.text ?? "";
+}
+
+/** Rust `str::lines()` — split on `\n`/`\r\n`, drop a trailing empty line. */
+export function rustLines(content) {
+  const text = String(content ?? "");
+  if (text === "") {
+    return [];
+  }
+  const lines = text.split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+function formatNumbered(lines, startLineNum, number) {
+  if (!number) {
+    return lines.join("\n");
+  }
+  return lines
+    .map((line, i) => `${String(startLineNum + i).padStart(6, " ")}  ${line}`)
+    .join("\n");
+}
+
+function printSedLines(lines, keep) {
+  let out = "";
+  for (let i = 0; i < lines.length; i += 1) {
+    if (keep(i + 1, lines[i])) {
+      out += `${lines[i]}\n`;
+    }
+  }
+  return out;
+}
+
+function compileSedRegex(source, global = false) {
+  try {
+    return new RegExp(source, global ? "g" : "");
+  } catch (err) {
+    throw new Error(`unsupported sed regex: ${err.message || err}`);
+  }
+}
+
+function unescapeSedDelim(value) {
+  return String(value ?? "").replace(/\\([/\\])/g, "$1");
+}
+
+function unsupportedSed(script) {
+  return new Error(
+    `unsupported sed script ${JSON.stringify(script)} (this page prints ranges, /re/p, and s/a/b/[g] only)`,
+  );
 }

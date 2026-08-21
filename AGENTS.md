@@ -34,7 +34,7 @@ This is a Cargo workspace with several crates:
 ### Top-level
 - `tasks/`: Task/planning files (e.g., `sed.txt`).
 - `README.md`: User-facing installation and usage examples.
-- `docs/index.html` + `docs/try/`: static GitHub Pages try-it (`wit tree|ls|cat` via existing `wit_snapshot.wasm`).
+- `docs/index.html` + `docs/try/`: static GitHub Pages try-it (`tree|ls|cat|rg|sed|head|tail` as host JS views over wasm open/list/read; `search` via thin wasm `get_json` wrap for `/search/repositories`).
 - `target/`: Build artifacts (ignored via `.gitignore`).
 
 ## CLI Subcommands

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>wit — try tree / ls / cat</title>
+  <title>wit — try reading a repo</title>
   <style>
     :root {
       --bg: #12171c;
@@ -127,8 +127,8 @@
   <main>
     <h1>wit</h1>
     <p class="lede">
-      GitHub for AI agents. Try <code>tree</code>, <code>ls</code>, and
-      <code>cat</code> here without installing — same
+      GitHub for AI agents. Try the repo-reading verbs here without
+      installing — host JS views over the same
       <code>wit_snapshot.wasm</code> exports (<code>open</code> /
       <code>list</code> / <code>read</code>), fixture-backed so this page
       always works with no disk.
@@ -150,23 +150,34 @@
       <button type="button" data-fill="wit tree demo/repo">wit tree demo/repo</button>
       <button type="button" data-fill="wit ls demo/repo">wit ls demo/repo</button>
       <button type="button" data-fill="wit cat demo/repo README.md">wit cat demo/repo README.md</button>
+      <button type="button" data-fill="wit rg Hello demo/repo">wit rg Hello demo/repo</button>
+      <button type="button" data-fill="wit sed -n '1,2p' demo/repo README.md">wit sed -n '1,2p' demo/repo README.md</button>
+      <button type="button" data-fill="wit head demo/repo README.md">wit head demo/repo README.md</button>
+      <button type="button" data-fill="wit tail demo/repo README.md">wit tail demo/repo README.md</button>
+      <button type="button" data-fill="wit search -p ratatui">wit search -p ratatui</button>
       <button type="button" data-fill="wit tree missing/repo">wit tree missing/repo</button>
       <button type="button" data-fill="wit tree openai/codex">wit tree openai/codex</button>
     </div>
     <p class="note">
-      Allowed: <code>wit tree|ls|cat owner/repo</code> with an optional path
-      (<code>wit cat owner/repo README.md</code>, <code>wit tree -r owner/repo</code>).
-      Submit paints <code>$ cmd</code> and <code>processing…</code> before any
-      host fetch. <code>demo/repo</code> stays fixture-only. Live
-      <code>owner/repo</code> prints CLI plaintext or a host/CORS error — the
-      prompt does not freeze.
+      Allowed: <code>tree</code> <code>ls</code> <code>cat</code>
+      <code>rg</code> <code>sed</code> <code>head</code> <code>tail</code>
+      on <code>owner/repo</code> (optional path), plus
+      <code>wit search -p PATTERN</code> through wasm
+      <code>get_json</code> (<code>/search/repositories</code>, cassette for
+      <code>-p ratatui</code>). Submit paints
+      <code>$ cmd</code> and <code>processing…</code> before any host fetch.
+      <code>demo/repo</code> stays fixture-only. Live prints CLI plaintext
+      or a host/CORS/<code>rate_limit</code> error — the prompt does not
+      freeze. <code>skill</code>, <code>mcp</code>, <code>cache</code>, and
+      <code>branches</code> print that they are not available and do not run.
     </p>
 
     <h2>Install</h2>
     <p>
       One-page path to a real <code>wit</code> binary. The terminal above is
-      wasm <code>tree</code>/<code>ls</code>/<code>cat</code> only — not the
-      full CLI.
+      host JS views over wasm <code>open</code>/<code>list</code>/<code>read</code>
+      plus a thin <code>search_repositories</code> <code>get_json</code> wrap
+      — not a second wasm, not a new snapshot backend, and not the full CLI.
     </p>
     <pre class="block"># mise (no global install)
 mise x github:thehumanworks/wit -- wit tree owner/repo

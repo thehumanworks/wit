@@ -11,6 +11,7 @@
 
 mod error;
 pub mod memory;
+mod search_path;
 mod types;
 
 #[cfg(target_arch = "wasm32")]
@@ -27,6 +28,7 @@ pub use memory::{
     GitHubHttpClient, MemoryBackend, MemoryBackendLimits, MemorySnapshot, WalkEntry,
     snapshot_from_tree_json,
 };
+pub use search_path::{DEFAULT_SEARCH_PER_PAGE, form_encode, search_repositories_path};
 pub use types::{DirEntry, EntryKind, FileContent, SnapshotProvenance, TreeEntry, TreeView};
 
 /// Open a repository into an immutable snapshot, then list/tree/read against it.

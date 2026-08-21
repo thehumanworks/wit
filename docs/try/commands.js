@@ -1,25 +1,73 @@
 /**
- * Parse the try-it subset: `wit tree|ls|cat` with CLI owner/repo + path shapes.
- * Rejects rg/sed/head/tail and unknown flags. `-r`/`--repo` and `--` match CLI.
+ * Parse the try-it subset: repo-reading verbs as host JS views, plus
+ * `search` (repo find via wasm get_json). Extra verbs print "not available".
  */
 
-export const USAGE = `usage: wit tree|ls|cat owner/repo [path]
+export const USAGE = `usage: wit tree|ls|cat|rg|sed|head|tail owner/repo [path]
        wit tree owner/repo
        wit ls owner/repo
        wit cat owner/repo PATH
+       wit rg PATTERN owner/repo [path]
+       wit rg -i|-l PATTERN owner/repo
+       wit sed -n '1,5p' owner/repo PATH
+       wit sed -n '/pattern/p' owner/repo PATH
+       wit head [-n N] [-N] owner/repo PATH
+       wit tail [-n N] [-p LINE] owner/repo PATH
+       wit search -p PATTERN [-l LANG]
        wit tree -r owner/repo [path]
-       wit cat -r owner/repo PATH
 
-This page only runs tree, ls, and cat through wit_snapshot.wasm
-(open / list / read). Fixture repo: demo/repo`;
+This page runs tree, ls, cat, rg, sed, head, and tail as host JS views
+over wit_snapshot.wasm (open / list / read). search uses the same host
+http_get Map via wasm get_json (/search/repositories). Fixture repo: demo/repo`;
 
-const ALLOWED = new Set(["tree", "ls", "cat"]);
+const ALLOWED = new Set(["tree", "ls", "cat", "rg", "sed", "head", "tail", "search"]);
+const NOT_AVAILABLE = new Set(["skill", "mcp", "cache", "branches"]);
+
+const SEARCH_VALUE = {
+  "-p": "pattern",
+  "--pattern": "pattern",
+  "-l": "lang",
+  "--lang": "lang",
+};
+
+const RG_BOOL = {
+  "-i": "ignoreCase",
+  "--ignore-case": "ignoreCase",
+  "-l": "filesWithMatches",
+  "--files-with-matches": "filesWithMatches",
+};
+const RG_VALUE = { "-r": "repo", "--repo": "repo" };
+
+const SED_BOOL = {
+  "-n": "quiet",
+  "--quiet": "quiet",
+  "--silent": "quiet",
+};
+const SED_VALUE = { "-r": "repo", "--repo": "repo" };
+
+const HEAD_BOOL = { "-N": "number", "--number": "number" };
+const HEAD_VALUE = {
+  "-n": "lines",
+  "--lines": "lines",
+  "-r": "repo",
+  "--repo": "repo",
+};
+
+const TAIL_BOOL = { "-N": "number", "--number": "number" };
+const TAIL_VALUE = {
+  "-n": "lines",
+  "--lines": "lines",
+  "-p": "fromLine",
+  "--plus": "fromLine",
+  "-r": "repo",
+  "--repo": "repo",
+};
 
 /**
  * @param {string} line
  * @returns {{
  *   kind: 'empty' | 'help' | 'clear' | 'run' | 'error',
- *   command?: 'tree' | 'ls' | 'cat',
+ *   command?: string,
  *   repo?: string,
  *   path?: string | null,
  *   message?: string,
@@ -49,7 +97,7 @@ export function parseCommand(line) {
   if (tokens[0] !== "wit") {
     return {
       kind: "error",
-      message: `bad command: expected 'wit tree|ls|cat ...', got ${JSON.stringify(line.trim())}`,
+      message: `bad command: expected 'wit tree|ls|cat|rg|sed|head|tail|search ...', got ${JSON.stringify(line.trim())}`,
     };
   }
 
@@ -60,12 +108,12 @@ export function parseCommand(line) {
 
   let repoFlag = null;
   let command = null;
-  const args = [];
+  const after = [];
 
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i];
     if (token === "--") {
-      args.push(...rest.slice(i + 1));
+      after.push(...rest.slice(i + 1));
       break;
     }
     if (token === "-r" || token === "--repo") {
@@ -73,41 +121,59 @@ export function parseCommand(line) {
       if (!value || value.startsWith("-")) {
         return {
           kind: "error",
-          message: "missing repository: pass owner/repo as a positional argument or with -r/--repo",
+          message:
+            "missing repository: pass owner/repo as a positional argument or with -r/--repo",
         };
       }
       repoFlag = value;
       i += 1;
       continue;
     }
-    if (token.startsWith("-")) {
-      return {
-        kind: "error",
-        message: `unknown flag ${token} (this page accepts only wit tree|ls|cat; no -l/-n/rg/sed/head/tail)`,
-      };
-    }
     if (!command) {
+      if (token.startsWith("-")) {
+        return {
+          kind: "error",
+          message: unknownFlagMessage(token, null),
+        };
+      }
       command = token;
       continue;
     }
-    args.push(token);
+    after.push(token);
   }
 
   if (!command) {
     return { kind: "error", message: USAGE };
   }
-  if (!ALLOWED.has(command)) {
+  if (NOT_AVAILABLE.has(command) || !ALLOWED.has(command)) {
     return {
       kind: "error",
-      message: `bad command: '${command}' is not available here (only tree, ls, cat)`,
+      message: `bad command: '${command}' is not available here (only tree, ls, cat, rg, sed, head, tail, search)`,
     };
   }
 
   try {
+    if (command === "search") {
+      return parseSearch(after);
+    }
+    if (command === "rg") {
+      return parseRg(repoFlag, after);
+    }
+    if (command === "sed") {
+      return parseSed(repoFlag, after);
+    }
+    if (command === "head") {
+      return parseHead(repoFlag, after);
+    }
+    if (command === "tail") {
+      return parseTail(repoFlag, after);
+    }
+    const parsed = parseFlagArgs(after, {}, { "-r": "repo", "--repo": "repo" });
+    const resolvedRepo = parsed.flags.repo ?? repoFlag;
     const resolved =
       command === "cat"
-        ? resolveRepoAndRequiredPath(repoFlag, args)
-        : resolveRepoAndOptionalPath(repoFlag, args);
+        ? resolveRepoAndRequiredPath(resolvedRepo, parsed.args)
+        : resolveRepoAndOptionalPath(resolvedRepo, parsed.args);
     return {
       kind: "run",
       command,
@@ -158,6 +224,209 @@ export function tokenize(line) {
     out.push(current);
   }
   return out;
+}
+
+function parseRg(repoFlag, tokens) {
+  const parsed = parseFlagArgs(tokens, RG_BOOL, RG_VALUE);
+  const repo = parsed.flags.repo ?? repoFlag;
+  if (parsed.args.length === 0) {
+    throw new Error("missing arguments: expected PATTERN owner/repo [path]");
+  }
+  const pattern = parsed.args[0];
+  const resolved = resolveRepoAndOptionalPath(repo, parsed.args.slice(1));
+  return {
+    kind: "run",
+    command: "rg",
+    repo: resolved.repo,
+    path: resolved.path,
+    pattern,
+    ignoreCase: Boolean(parsed.flags.ignoreCase),
+    filesWithMatches: Boolean(parsed.flags.filesWithMatches),
+  };
+}
+
+function parseSed(repoFlag, tokens) {
+  const parsed = parseFlagArgs(tokens, SED_BOOL, SED_VALUE);
+  const repo = parsed.flags.repo ?? repoFlag;
+  if (!repo) {
+    if (parsed.args.length < 3) {
+      throw new Error(
+        "missing arguments: expected SCRIPT owner/repo PATH (or -r owner/repo SCRIPT PATH)",
+      );
+    }
+    if (parsed.args.length > 3) {
+      throw new Error("too many arguments: expected SCRIPT owner/repo PATH");
+    }
+    return {
+      kind: "run",
+      command: "sed",
+      repo: parsed.args[1],
+      path: parsed.args[2],
+      script: parsed.args[0],
+      quiet: Boolean(parsed.flags.quiet),
+    };
+  }
+  if (parsed.args.length === 2) {
+    return {
+      kind: "run",
+      command: "sed",
+      repo,
+      path: parsed.args[1],
+      script: parsed.args[0],
+      quiet: Boolean(parsed.flags.quiet),
+    };
+  }
+  if (parsed.args.length === 3) {
+    if (parsed.args[0] !== repo) {
+      throw new Error(
+        `conflicting repository arguments: -r/--repo '${repo}' vs positional '${parsed.args[0]}'`,
+      );
+    }
+    return {
+      kind: "run",
+      command: "sed",
+      repo,
+      path: parsed.args[2],
+      script: parsed.args[1],
+      quiet: Boolean(parsed.flags.quiet),
+    };
+  }
+  throw new Error("missing arguments: expected SCRIPT owner/repo PATH");
+}
+
+function parseHead(repoFlag, tokens) {
+  const parsed = parseFlagArgs(tokens, HEAD_BOOL, HEAD_VALUE);
+  const repo = parsed.flags.repo ?? repoFlag;
+  const resolved = resolveRepoAndRequiredPath(repo, parsed.args);
+  return {
+    kind: "run",
+    command: "head",
+    repo: resolved.repo,
+    path: resolved.path,
+    lines: parseCount(parsed.flags.lines, 10, "-n"),
+    number: Boolean(parsed.flags.number),
+  };
+}
+
+function parseTail(repoFlag, tokens) {
+  const parsed = parseFlagArgs(tokens, TAIL_BOOL, TAIL_VALUE);
+  const repo = parsed.flags.repo ?? repoFlag;
+  const resolved = resolveRepoAndRequiredPath(repo, parsed.args);
+  return {
+    kind: "run",
+    command: "tail",
+    repo: resolved.repo,
+    path: resolved.path,
+    lines: parseCount(parsed.flags.lines, 10, "-n"),
+    number: Boolean(parsed.flags.number),
+    fromLine:
+      parsed.flags.fromLine == null
+        ? null
+        : parseCount(parsed.flags.fromLine, null, "-p"),
+  };
+}
+
+function parseSearch(tokens) {
+  const parsed = parseFlagArgs(tokens, {}, SEARCH_VALUE);
+  if (parsed.args.length) {
+    throw new Error("too many arguments: wit search takes -p PATTERN and optional -l LANG");
+  }
+  const pattern = parsed.flags.pattern ?? null;
+  const lang = parsed.flags.lang ?? null;
+  if (!stringOrEmpty(pattern) && !stringOrEmpty(lang)) {
+    throw new Error(
+      "repository search requires at least one search filter (--pattern or --lang)",
+    );
+  }
+  return {
+    kind: "run",
+    command: "search",
+    pattern: stringOrEmpty(pattern) ? pattern.trim() : null,
+    lang: stringOrEmpty(lang) ? lang.trim() : null,
+  };
+}
+
+function parseFlagArgs(tokens, boolFlags, valueFlags) {
+  const flags = {};
+  const args = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === "--") {
+      args.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (boolFlags[token]) {
+      flags[boolFlags[token]] = true;
+      continue;
+    }
+    if (valueFlags[token]) {
+      const value = tokens[i + 1];
+      if (value == null || value.startsWith("-")) {
+        throw new Error(`missing value for ${token}`);
+      }
+      flags[valueFlags[token]] = value;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      throw new Error(unknownFlagMessage(token, currentCommandFromFlags(boolFlags, valueFlags)));
+    }
+    args.push(token);
+  }
+  return { flags, args };
+}
+
+function currentCommandFromFlags(boolFlags, valueFlags) {
+  if (boolFlags === RG_BOOL) {
+    return "rg";
+  }
+  if (boolFlags === SED_BOOL) {
+    return "sed";
+  }
+  if (boolFlags === HEAD_BOOL) {
+    return "head";
+  }
+  if (boolFlags === TAIL_BOOL) {
+    return "tail";
+  }
+  if (valueFlags === SEARCH_VALUE) {
+    return "search";
+  }
+  return "tree|ls|cat";
+}
+
+function unknownFlagMessage(token, command) {
+  if (command === "rg") {
+    return `unknown flag ${token} (this page accepts -i/-l for rg)`;
+  }
+  if (command === "sed") {
+    return `unknown flag ${token} (this page accepts -n for sed)`;
+  }
+  if (command === "head") {
+    return `unknown flag ${token} (this page accepts -n/-N for head)`;
+  }
+  if (command === "tail") {
+    return `unknown flag ${token} (this page accepts -n/-p/-N for tail)`;
+  }
+  if (command === "search") {
+    return `unknown flag ${token} (this page accepts -p/-l for search)`;
+  }
+  return `unknown flag ${token} (this page accepts tree|ls|cat|rg|sed|head|tail|search; rg -i/-l, sed -n, head -n/-N, tail -n/-p/-N, search -p/-l)`;
+}
+
+function parseCount(value, fallback, flag) {
+  if (value == null || value === "") {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`invalid ${flag} value: expected a non-negative integer`);
+  }
+  return parsed;
+}
+
+function stringOrEmpty(value) {
+  return Boolean(value && String(value).trim());
 }
 
 function resolveRepoAndOptionalPath(repoFlag, args) {
