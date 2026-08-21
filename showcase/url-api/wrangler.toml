@@ -1,0 +1,11 @@
+# Optional Pages project config. Run from this directory:
+#   npx wrangler pages dev public --port=8787
+name = "wit-url-api"
+compatibility_date = "2024-11-12"
+pages_build_output_dir = "public"
+
+# Allow `import module from "./wit_snapshot.wasm"` in _worker.js
+[[rules]]
+globs = ["**/*.wasm"]
+type = "CompiledWasm"
+fallthrough = true
