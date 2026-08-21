@@ -44,6 +44,23 @@ jobs:
       - name: release workflow guard
         run: bash scripts/check_release_workflows.sh
 
+  docs-site:
+    name: docs try-it site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: docs try-it parser, formatters, and wasm smoke
+        run: bash scripts/check_docs_site.sh
+
   wit-snapshot-wasm:
     name: wit_snapshot.wasm (release)
     runs-on: ubuntu-latest

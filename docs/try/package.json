@@ -1,0 +1,6 @@
+{
+  "name": "wit-docs-try",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Pages try-it host for wit_snapshot.wasm (not published)"
+}

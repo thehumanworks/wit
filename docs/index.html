@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wit — try tree / ls / cat</title>
+  <style>
+    :root {
+      --bg: #12171c;
+      --fg: #e8eef2;
+      --muted: #8b9aab;
+      --accent: #3d9a78;
+      --err: #d36b6b;
+      --panel: #1c242c;
+      --term: #0d1114;
+      --border: #2c3844;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
+      background: radial-gradient(1000px 520px at 8% -12%, #24343d, var(--bg));
+      color: var(--fg);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 54rem;
+      margin: 0 auto;
+      padding: 1.75rem 1.25rem 3rem;
+    }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 0.4rem; }
+    h2 {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin: 1.6rem 0 0.45rem;
+      letter-spacing: 0.02em;
+    }
+    p, li { color: var(--muted); line-height: 1.55; }
+    a { color: var(--accent); }
+    .lede { margin: 0 0 1rem; }
+    .term-wrap {
+      background: var(--term);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .term-bar {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.45rem 0.7rem;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 0.78rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #term-out {
+      margin: 0;
+      padding: 0.75rem 0.85rem 0.25rem;
+      min-height: 16rem;
+      max-height: 28rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+    #term-out .cmd { color: var(--accent); }
+    #term-out .err { color: var(--err); }
+    #term-out .muted { color: var(--muted); }
+    #term-form {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.35rem 0.7rem 0.65rem;
+    }
+    #term-form span { color: var(--accent); }
+    #term-in {
+      flex: 1;
+      background: transparent;
+      border: 0;
+      color: var(--fg);
+      font: inherit;
+      padding: 0.35rem 0;
+      outline: none;
+    }
+    #term-in:disabled { opacity: 0.5; }
+    pre.block {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 0.75rem 0.85rem;
+      overflow: auto;
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .examples {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin: 0.65rem 0 0;
+    }
+    .examples a, .examples button {
+      background: var(--panel);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      padding: 0.28rem 0.5rem;
+      font: inherit;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    .note {
+      border-left: 3px solid var(--accent);
+      padding: 0.5rem 0.75rem;
+      background: var(--panel);
+      margin: 0.85rem 0 0;
+      font-size: 0.82rem;
+    }
+    footer {
+      margin-top: 2rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>wit</h1>
+    <p class="lede">
+      GitHub for AI agents. Try <code>tree</code>, <code>ls</code>, and
+      <code>cat</code> here without installing — same
+      <code>wit_snapshot.wasm</code> exports (<code>open</code> /
+      <code>list</code> / <code>read</code>), fixture-backed so this page
+      always works with no disk.
+    </p>
+
+    <div class="term-wrap">
+      <div class="term-bar">
+        <span>try-it</span>
+        <span id="wasm-status">Loading…</span>
+      </div>
+      <pre id="term-out"></pre>
+      <form id="term-form" autocomplete="off">
+        <span>$</span>
+        <input id="term-in" type="text" spellcheck="false" disabled
+               placeholder="wit tree demo/repo" aria-label="wit command" />
+      </form>
+    </div>
+    <div class="examples">
+      <button type="button" data-fill="wit tree demo/repo">wit tree demo/repo</button>
+      <button type="button" data-fill="wit ls demo/repo">wit ls demo/repo</button>
+      <button type="button" data-fill="wit cat demo/repo README.md">wit cat demo/repo README.md</button>
+      <button type="button" data-fill="wit tree missing/repo">wit tree missing/repo</button>
+    </div>
+    <p class="note">
+      Allowed: <code>wit tree|ls|cat owner/repo</code> with an optional path
+      (<code>wit cat owner/repo README.md</code>, <code>wit tree -r owner/repo</code>).
+      Bad commands, missing repos, and typed wasm errors print in the terminal.
+    </p>
+
+    <h2>Install</h2>
+    <p>
+      One-page path to a real <code>wit</code> binary. The terminal above is
+      wasm <code>tree</code>/<code>ls</code>/<code>cat</code> only — not the
+      full CLI.
+    </p>
+    <pre class="block"># mise (no global install)
+mise x github:thehumanworks/wit -- wit tree owner/repo
+
+# npm
+npm install -g @nothumanwork/wit
+npx @nothumanwork/wit --help
+
+# installer
+curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh | sh</pre>
+
+    <h2>wit_snapshot.wasm</h2>
+    <p>
+      This page loads the existing no-reqwest module (not a second wasm, not
+      the CLI). Prefer the v0.1.33 release asset, then a same-origin copy
+      shipped with Pages:
+    </p>
+    <p>
+      <a href="https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm">
+        https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm
+      </a>
+    </p>
+    <pre class="block">[tools]
+"github:thehumanworks/wit" = { version = "latest", additional_asset_patterns = ["wit_snapshot.wasm"] }</pre>
+    <p>
+      Build the same module locally:
+      <code>cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features</code>
+    </p>
+
+    <footer>
+      <a href="https://github.com/thehumanworks/wit">github.com/thehumanworks/wit</a>
+      · static GitHub Pages · no PTY, no docs framework, no Worker API
+    </footer>
+  </main>
+  <script type="module" src="./try/app.js"></script>
+</body>
+</html>
