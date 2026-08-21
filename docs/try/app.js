@@ -1,11 +1,11 @@
-import { USAGE } from "./commands.js";
+import { USAGE, parseCommand } from "./commands.js";
 import {
   FIXTURE_FILES,
   RELEASE_WASM_URL,
   buildFixtureMap,
   instantiateFirstWasm,
-  liveGithubGetSync,
   makeImports,
+  prefetchLiveGithub,
   wasmCandidates,
 } from "./host.js";
 import { runLine } from "./run.js";
@@ -17,8 +17,11 @@ const form = document.getElementById("term-form");
 
 /** @type {WebAssembly.Exports | null} */
 let api = null;
+/** @type {Map<string, { status: number, body: string }> | null} */
+let fixtures = null;
 const history = [];
 let historyIdx = -1;
+let busy = false;
 
 function appendLine(text, className) {
   const row = document.createElement("div");
@@ -28,24 +31,41 @@ function appendLine(text, className) {
   row.textContent = text;
   out.appendChild(row);
   out.scrollTop = out.scrollHeight;
+  return row;
 }
 
 function appendBlock(text, className) {
   if (text == null || text === "") {
     return;
   }
-  const row = document.createElement("div");
-  if (className) {
-    row.className = className;
-  }
-  row.textContent = text;
-  out.appendChild(row);
-  out.scrollTop = out.scrollHeight;
+  return appendLine(text, className);
 }
 
 function setStatus(text, isErr = false) {
   statusEl.textContent = text;
   statusEl.classList.toggle("err", isErr);
+}
+
+function setBusy(next) {
+  busy = next;
+  input.disabled = next;
+  input.setAttribute("aria-busy", next ? "true" : "false");
+}
+
+/**
+ * Yield so `$ <cmd>` and `processing…` paint before any host fetch / wasm.
+ * Double rAF waits until after the next frame; setTimeout(0) is the Node /
+ * no-rAF fallback.
+ */
+function yieldToPaint() {
+  if (typeof requestAnimationFrame === "function") {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(resolve);
+      });
+    });
+  }
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function loadFixtures() {
@@ -62,12 +82,9 @@ async function loadFixtures() {
 
 async function boot() {
   setStatus("Loading wit_snapshot.wasm…");
-  const fixtures = await loadFixtures();
+  fixtures = await loadFixtures();
   let exports = null;
-  const imports = makeImports(() => exports, {
-    fixtures,
-    liveGet: liveGithubGetSync,
-  });
+  const imports = makeImports(() => exports, { fixtures });
   const { instance, url } = await instantiateFirstWasm(
     wasmCandidates(import.meta.url),
     imports,
@@ -87,37 +104,62 @@ async function boot() {
   appendBlock("wit try-it — fixture repo demo/repo always works (no disk).");
   appendBlock("Live api.github.com is best-effort; CORS errors print here.");
   appendBlock(USAGE, "muted");
-  input.disabled = false;
-  input.focus();
-  runAndRender("wit tree demo/repo");
+  await runAndRender("wit tree demo/repo");
+  if (!busy) {
+    input.disabled = false;
+    input.focus();
+  }
 }
 
-function runAndRender(line) {
+async function runAndRender(line) {
+  if (busy) {
+    return;
+  }
   appendLine(`$ ${line}`, "cmd");
-  if (!api) {
-    appendBlock("wasm not loaded", "err");
-    return;
+  const processing = appendLine("processing…", "muted");
+  setBusy(true);
+  try {
+    await yieldToPaint();
+    if (!api || !fixtures) {
+      processing.remove();
+      appendBlock("wasm not loaded", "err");
+      return;
+    }
+    const parsed = parseCommand(line);
+    if (parsed.kind === "run") {
+      await prefetchLiveGithub(fixtures, parsed);
+    }
+    const result = runLine(api, line);
+    processing.remove();
+    if (result.kind === "clear") {
+      out.replaceChildren();
+      return;
+    }
+    if (result.kind === "empty") {
+      return;
+    }
+    appendBlock(result.text, result.error ? "err" : "");
+  } catch (err) {
+    processing.remove();
+    appendBlock(String(err.message || err), "err");
+  } finally {
+    setBusy(false);
+    input.focus();
   }
-  const result = runLine(api, line);
-  if (result.kind === "clear") {
-    out.replaceChildren();
-    return;
-  }
-  if (result.kind === "empty") {
-    return;
-  }
-  appendBlock(result.text, result.error ? "err" : "");
 }
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (busy || input.disabled) {
+    return;
+  }
   const line = input.value;
   if (line.trim()) {
     history.push(line);
     historyIdx = history.length;
   }
   input.value = "";
-  runAndRender(line);
+  void runAndRender(line);
 });
 
 input.addEventListener("keydown", (event) => {

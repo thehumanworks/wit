@@ -2,13 +2,18 @@
  * Browser / Node host for the existing wit_snapshot.wasm module.
  *
  * Supplies synchronous `wit_snapshot_host.http_get` the same way
- * crates/wit-snapshot/demo/browser/demo.js does. Fixtures first so the
- * page always works with no disk. Live api.github.com is best-effort
- * (sync XHR); CORS is the host's problem — not a new backend.
+ * crates/wit-snapshot/demo/browser/demo.js does. The import only reads
+ * the fixture Map — never XMLHttpRequest. `demo/repo` is cassette-only
+ * (no network). Live owner/repo is best-effort: async `fetch` prefetches
+ * repo → commit → recursive tree (and a blob for `cat`) into that map
+ * before wasm `open` / `list` / `read`. CORS is the host's problem —
+ * not a new backend.
  *
- * Does not import the 641-line IndexedDB repo cache. Fixture hits are
- * enough for demo/repo.
+ * Does not import the 641-line IndexedDB repo cache.
  */
+
+export const FIXTURE_REPO = "demo/repo";
+export const GITHUB_API = "https://api.github.com";
 
 export const ERR_NAMES = {
   0: "ok",
@@ -39,16 +44,139 @@ export const FIXTURE_FILES = [
  */
 export function buildFixtureMap(texts) {
   const map = new Map();
-  const put = (path, body) => {
-    map.set(path, { status: 200, body });
-    map.set(`https://api.github.com${path}`, { status: 200, body });
-  };
-  put("/repos/demo/repo", texts["demo_repo.json"]);
-  put("/repos/demo/repo/commits/main", texts["demo_commit.json"]);
-  put("/repos/demo/repo/git/trees/treesha?recursive=1", texts["demo_tree.json"]);
-  put("/repos/demo/repo/git/blobs/blob-readme", texts["demo_blob.json"]);
-  put("/repos/demo/repo/git/blobs/blob-main", texts["demo_blob_main.json"]);
+  putGithubJson(map, "/repos/demo/repo", 200, texts["demo_repo.json"]);
+  putGithubJson(map, "/repos/demo/repo/commits/main", 200, texts["demo_commit.json"]);
+  putGithubJson(
+    map,
+    "/repos/demo/repo/git/trees/treesha?recursive=1",
+    200,
+    texts["demo_tree.json"],
+  );
+  putGithubJson(map, "/repos/demo/repo/git/blobs/blob-readme", 200, texts["demo_blob.json"]);
+  putGithubJson(map, "/repos/demo/repo/git/blobs/blob-main", 200, texts["demo_blob_main.json"]);
   return map;
+}
+
+/**
+ * Store a GitHub JSON response under the relative path wasm requests and
+ * the absolute api.github.com URL (same keys as the cassette map).
+ * @param {Map<string, { status: number, body: string }>} map
+ * @param {string} path
+ * @param {number} status
+ * @param {string} body
+ */
+export function putGithubJson(map, path, status, body) {
+  const entry = { status, body };
+  map.set(path, entry);
+  if (path.startsWith("/")) {
+    map.set(`${GITHUB_API}${path}`, entry);
+  }
+}
+
+export function isFixtureRepo(repo) {
+  return repo === FIXTURE_REPO;
+}
+
+function githubUrl(path) {
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path;
+  }
+  return `${GITHUB_API}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/**
+ * Async GET for prefetch only. Throws a host/CORS error on network failure.
+ * @param {string} path
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<{ status: number, body: string }>}
+ */
+export async function githubGetJson(path, fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("host error: fetch is not available");
+  }
+  const url = githubUrl(path);
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: "GET",
+      headers: { Accept: "application/vnd.github+json" },
+      credentials: "omit",
+    });
+  } catch (err) {
+    const detail = err && err.message ? err.message : String(err);
+    throw new Error(`host error: CORS or network failure fetching ${url}: ${detail}`);
+  }
+  const body = await response.text();
+  return { status: response.status, body };
+}
+
+async function ensureGithubJson(fixtures, path, fetchImpl) {
+  const hit = fixtures.get(path);
+  if (hit) {
+    return hit;
+  }
+  const result = await githubGetJson(path, fetchImpl);
+  putGithubJson(fixtures, path, result.status, result.body);
+  return result;
+}
+
+/**
+ * Prefetch live GitHub JSON into the fixture Map before wasm runs.
+ * `demo/repo` is a no-op (cassette only). Tree/ls need repo → commit →
+ * recursive tree; cat also needs the blob for `path`.
+ * @param {Map<string, { status: number, body: string }>} fixtures
+ * @param {{ kind?: string, command?: string, repo?: string, path?: string | null }} parsed
+ * @param {typeof fetch} [fetchImpl]
+ */
+export async function prefetchLiveGithub(fixtures, parsed, fetchImpl = globalThis.fetch) {
+  if (!parsed || parsed.kind !== "run" || !parsed.repo || isFixtureRepo(parsed.repo)) {
+    return;
+  }
+  const ownerRepo = parsed.repo;
+  const repoPath = `/repos/${ownerRepo}`;
+  const repoRes = await ensureGithubJson(fixtures, repoPath, fetchImpl);
+  if (repoRes.status !== 200) {
+    return;
+  }
+  let repoMeta;
+  try {
+    repoMeta = JSON.parse(repoRes.body);
+  } catch {
+    throw new Error("host error: GitHub repo response was not JSON");
+  }
+  const ref = String(repoMeta.default_branch || "main");
+  const commitPath = `/repos/${ownerRepo}/commits/${ref}`;
+  const commitRes = await ensureGithubJson(fixtures, commitPath, fetchImpl);
+  if (commitRes.status !== 200) {
+    return;
+  }
+  let commit;
+  try {
+    commit = JSON.parse(commitRes.body);
+  } catch {
+    throw new Error("host error: GitHub commit response was not JSON");
+  }
+  const treeSha = commit?.commit?.tree?.sha;
+  if (!treeSha) {
+    throw new Error("host error: commit response missing tree sha");
+  }
+  const treePath = `/repos/${ownerRepo}/git/trees/${treeSha}?recursive=1`;
+  const treeRes = await ensureGithubJson(fixtures, treePath, fetchImpl);
+  if (treeRes.status !== 200 || parsed.command !== "cat" || !parsed.path) {
+    return;
+  }
+  let tree;
+  try {
+    tree = JSON.parse(treeRes.body);
+  } catch {
+    throw new Error("host error: GitHub tree response was not JSON");
+  }
+  const want = String(parsed.path).replace(/^\/+|\/+$/g, "");
+  const row = (tree.tree || []).find((entry) => entry.type === "blob" && entry.path === want);
+  if (!row?.sha) {
+    return;
+  }
+  await ensureGithubJson(fixtures, `/repos/${ownerRepo}/git/blobs/${row.sha}`, fetchImpl);
 }
 
 export function readAscii(memory, ptr, len) {
@@ -63,47 +191,16 @@ export function writeAscii(memory, ptr, text) {
 }
 
 /**
- * Sync GET used as a best-effort live fallback. Returns null on CORS / network.
- * @param {string} path
- * @returns {{ status: number, body: string } | null}
- */
-export function liveGithubGetSync(path) {
-  if (typeof XMLHttpRequest === "undefined") {
-    return null;
-  }
-  const url =
-    path.startsWith("http://") || path.startsWith("https://")
-      ? path
-      : `https://api.github.com${path.startsWith("/") ? path : `/${path}`}`;
-  const xhr = new XMLHttpRequest();
-  try {
-    xhr.open("GET", url, false);
-    xhr.setRequestHeader("Accept", "application/vnd.github+json");
-    xhr.send(null);
-  } catch {
-    return null;
-  }
-  if (xhr.status === 0) {
-    return null;
-  }
-  return { status: xhr.status, body: xhr.responseText ?? "" };
-}
-
-/**
  * @param {() => WebAssembly.Exports} getExports
- * @param {{
- *   fixtures: Map<string, { status: number, body: string }>,
- *   liveGet?: (path: string) => { status: number, body: string } | null,
- * }} opts
+ * @param {{ fixtures: Map<string, { status: number, body: string }> }} opts
  */
 export function makeImports(getExports, opts) {
-  const liveGet = opts.liveGet;
   return {
     wit_snapshot_host: {
       wit_snapshot_host_http_get(pathPtr, pathLen, statusOut, bodyPtrOut, bodyLenOut) {
         const { memory, wit_snapshot_alloc } = getExports();
         const path = readAscii(memory, pathPtr, pathLen);
-        const result = opts.fixtures.get(path) ?? liveGet?.(path) ?? null;
+        const result = opts.fixtures.get(path) ?? null;
         if (!result) {
           return 3;
         }
