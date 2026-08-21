@@ -20,7 +20,8 @@ EOF
 }
 
 pick_tag() {
-  python3 - <<'PY'
+  # Program on -c so the releases JSON can use stdin.
+  python3 -c '
 import json
 import sys
 
@@ -48,7 +49,7 @@ for rel in data:
         print(tag)
         sys.exit(0)
 sys.exit(1)
-PY
+'
 }
 
 # gh --paginate concatenates JSON arrays as `][` across pages.
