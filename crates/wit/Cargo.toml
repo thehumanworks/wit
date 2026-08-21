@@ -1,6 +1,6 @@
 [package]
 name = "wit"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 
 [lib]
@@ -50,6 +50,7 @@ wit-quickjs-spike = { path = "../wit-quickjs-spike" }
 [dev-dependencies]
 wiremock = "0.6"
 rmcp = { version = "2", features = ["client", "transport-child-process"] }
+
 
 
 
