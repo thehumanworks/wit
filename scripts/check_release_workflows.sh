@@ -85,6 +85,8 @@ assert_contains "$npm_builder" 'archiveFileEntries' \
   "npm package validation must inspect full normalized archive entries"
 assert_contains "$npm_builder" 'entries must exactly match' \
   "npm package validation must reject nested, duplicate, or extra entries"
+assert_contains "$npm_builder" 'skipped missing artifact' \
+  "npm packer must skip a missing native archive instead of failing publish"
 assert_contains "$release_workflow" 'output-file: dist/wit-sbom.spdx.json' \
   "release workflow must generate the Code Mode dependency SBOM"
 assert_contains "$release_workflow" 'THIRD-PARTY-LICENSES.md' \
@@ -148,3 +150,5 @@ assert_contains "$ci_workflow" 'path: wit_snapshot.wasm' \
 
 target_count="$(grep -c '"id":' "$npm_targets")"
 [ "$target_count" -eq 6 ] || fail "npm targets must contain exactly six release targets"
+
+node --test scripts/npm/build-packages.test.mjs
