@@ -77,7 +77,7 @@ function checksumEntries(rawManifest) {
   );
 }
 
-async function assertArtifactsExist(artifactsDir, targets) {
+async function selectPresentTargets(artifactsDir, targets) {
   const checksumsPath = path.join(artifactsDir, CHECKSUM_FILE);
   let rawChecksums;
 
@@ -88,13 +88,16 @@ async function assertArtifactsExist(artifactsDir, targets) {
   }
 
   const checksums = checksumEntries(rawChecksums);
+  const present = [];
 
   for (const target of targets) {
     const artifactPath = path.join(artifactsDir, target.artifact);
     try {
       await fs.access(artifactPath);
     } catch {
-      fail(`artifact missing for ${target.id}: ${artifactPath}`);
+      // A missing GitHub release archive is a skipped platform, not a failed publish.
+      console.log(`skipped missing artifact for ${target.id}: ${artifactPath}`);
+      continue;
     }
 
     if (!checksums.has(target.artifact)) {
@@ -116,7 +119,15 @@ async function assertArtifactsExist(artifactsDir, targets) {
         `artifact ${target.artifact} entries must exactly match ${expectedFiles.join(", ")}; found ${archivedFiles.join(", ")}`,
       );
     }
+
+    present.push(target);
   }
+
+  if (present.length === 0) {
+    fail("no native archives present; nothing to publish");
+  }
+
+  return present;
 }
 
 function runCapture(command, args) {
@@ -527,7 +538,7 @@ async function main() {
   const outputDir = path.resolve(args.outputDir);
   const config = await readTargetsConfig();
 
-  await assertArtifactsExist(artifactsDir, config.targets);
+  const presentTargets = await selectPresentTargets(artifactsDir, config.targets);
   await fs.rm(outputDir, { recursive: true, force: true });
   await ensureDir(outputDir);
 
@@ -536,7 +547,7 @@ async function main() {
     outputDir,
     version: args.version,
     config,
-    targets: config.targets,
+    targets: presentTargets,
   });
 
   await writeManifest({
