@@ -133,6 +133,8 @@ assert_contains "$release_workflow" 'needs:'$'\n''      - build'$'\n''      - bu
   "publish release must still list needs for native build and build-wasm"
 assert_contains "$release_workflow" 'if: ${{ !cancelled() && needs.build-wasm.result == '\''success'\'' }}' \
   "publish must run when build-wasm succeeds even if the native matrix has a failed cell"
+assert_contains "$release_workflow" 'if: ${{ !cancelled() && needs.release.result == '\''success'\'' }}' \
+  "npm publish must run when the GitHub release job succeeds even if a native matrix cell is red"
 assert_contains "$release_workflow" 'if-no-files-found: ignore' \
   "publish must tolerate missing native dist-* artifacts from failed matrix cells"
 assert_not_contains "$release_workflow" 'needs.build.result' \
