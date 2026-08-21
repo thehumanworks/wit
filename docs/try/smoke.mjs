@@ -80,18 +80,35 @@ const sed = runLine(exports, "wit sed -n '1,2p' demo/repo README.md");
 assert.equal(sed.kind, "ok", sed.text);
 assert.equal(sed.text, "Hello, memory!\n");
 
-let openCalls = 0;
-const origOpen = exports.wit_snapshot_open;
-exports.wit_snapshot_open = (...args) => {
-  openCalls += 1;
-  return origOpen(...args);
-};
-const search = runLine(exports, "wit search -p ratatui");
+function wrapApi(api) {
+  const openCalls = { n: 0 };
+  const wrapped = {};
+  for (const key of Object.keys(api)) {
+    const value = api[key];
+    if (key === "wit_snapshot_open") {
+      wrapped[key] = (...args) => {
+        openCalls.n += 1;
+        return value(...args);
+      };
+    } else if (typeof value === "function") {
+      wrapped[key] = (...args) => value(...args);
+    } else {
+      Object.defineProperty(wrapped, key, {
+        get() {
+          return api[key];
+        },
+      });
+    }
+  }
+  return { wrapped, openCalls };
+}
+
+const { wrapped: searchApi, openCalls } = wrapApi(exports);
+const search = runLine(searchApi, "wit search -p ratatui");
 assert.equal(search.kind, "ok", search.text);
 assert.match(search.text, /ratatui\/ratatui/);
 assert.match(search.text, /stars/);
-assert.equal(openCalls, 0, "search must not call wasm open");
-exports.wit_snapshot_open = origOpen;
+assert.equal(openCalls.n, 0, "search must not call wasm open");
 
 putGithubJson(
   fixtures,
