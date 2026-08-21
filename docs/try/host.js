@@ -27,8 +27,24 @@ export const ERR_NAMES = {
   8: "other",
 };
 
-export const RELEASE_WASM_URL =
-  "https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm";
+// Assemble replaces this placeholder with the tag of the copied wasm.
+export const RELEASE_TAG = "__WIT_RELEASE_TAG__";
+
+const STAMPED_RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
+
+export function isStampedReleaseTag(tag = RELEASE_TAG) {
+  return STAMPED_RELEASE_TAG.test(tag);
+}
+
+/** Release download URL only when assemble stamped a real vX.Y.Z tag. */
+export function releaseWasmUrl(tag = RELEASE_TAG) {
+  if (!isStampedReleaseTag(tag)) {
+    return "";
+  }
+  return `https://github.com/thehumanworks/wit/releases/download/${tag}/wit_snapshot.wasm`;
+}
+
+export const RELEASE_WASM_URL = releaseWasmUrl();
 
 export const FIXTURE_FILES = [
   "demo_repo.json",
@@ -322,11 +338,17 @@ export function listFilesRecursive(api, path) {
 
 /**
  * Published fetch order only: same-origin `try/wit_snapshot.wasm`, then
- * the v0.1.33 release asset. Pages does not own a cargo tree — never
- * list `../../target/` debug or release paths.
+ * the stamped GitHub release asset when assemble wrote a real tag.
+ * Pages does not own a cargo tree — never list `../../target/` debug
+ * or release paths.
  */
 export function wasmCandidates(fromMetaUrl = import.meta.url) {
-  return [new URL("./wit_snapshot.wasm", fromMetaUrl).href, RELEASE_WASM_URL];
+  const urls = [new URL("./wit_snapshot.wasm", fromMetaUrl).href];
+  const fallback = releaseWasmUrl();
+  if (fallback) {
+    urls.push(fallback);
+  }
+  return urls;
 }
 
 /**
@@ -350,8 +372,11 @@ export async function instantiateFirstWasm(urls, imports) {
     }
   }
   const detail = lastErr instanceof Error ? lastErr.message : String(lastErr || "");
+  const fallback = isStampedReleaseTag(RELEASE_TAG)
+    ? `the ${RELEASE_TAG} release`
+    : "a GitHub release";
   throw new Error(
-    `could not load wit_snapshot.wasm from this page or the v0.1.33 release${
+    `could not load wit_snapshot.wasm from this page or ${fallback}${
       detail ? `: ${detail}` : ""
     }`,
   );

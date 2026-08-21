@@ -3,25 +3,36 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   GITHUB_API,
+  RELEASE_TAG,
   RELEASE_WASM_URL,
   githubGetJson,
   isFixtureRepo,
   prefetchLiveGithub,
+  releaseWasmUrl,
   wasmCandidates,
 } from "./host.js";
 import * as host from "./host.js";
 
-test("wasmCandidates is same-origin then v0.1.33 only", () => {
+test("wasmCandidates is same-origin then stamped release URL only", () => {
   const urls = wasmCandidates("https://thehumanworks.github.io/try/host.js");
-  assert.deepEqual(urls, [
-    "https://thehumanworks.github.io/try/wit_snapshot.wasm",
-    RELEASE_WASM_URL,
-  ]);
-  assert.equal(urls.length, 2);
+  assert.ok(urls.length >= 1 && urls.length <= 2);
+  assert.equal(urls[0], "https://thehumanworks.github.io/try/wit_snapshot.wasm");
+  assert.equal(RELEASE_TAG, "__WIT_RELEASE_TAG__");
+  assert.equal(releaseWasmUrl("__WIT_RELEASE_TAG__"), "");
+  assert.equal(releaseWasmUrl("local"), "");
   assert.equal(
-    RELEASE_WASM_URL,
-    "https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm",
+    releaseWasmUrl("v9.9.9"),
+    "https://github.com/thehumanworks/wit/releases/download/v9.9.9/wit_snapshot.wasm",
   );
+  if (urls.length === 2) {
+    assert.equal(urls[1], RELEASE_WASM_URL);
+    assert.match(
+      urls[1],
+      /\/releases\/download\/(?:__WIT_RELEASE_TAG__|v\d+\.\d+\.\d+)\/wit_snapshot\.wasm$/,
+    );
+  } else {
+    assert.equal(RELEASE_WASM_URL, "");
+  }
   for (const url of urls) {
     assert.doesNotMatch(url, /\/target\//);
     assert.doesNotMatch(url, /\.\.\/\.\.\/target\//);

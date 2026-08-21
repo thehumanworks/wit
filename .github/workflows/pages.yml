@@ -28,23 +28,10 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Assemble static site
-        run: |
-          set -euo pipefail
-          dest="docs/try/wit_snapshot.wasm"
-          url="https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm"
-          if curl -fsSL -o "$dest" "$url"; then
-            echo "using release v0.1.33 wit_snapshot.wasm"
-          else
-            echo "release asset missing; building the same no-reqwest module"
-            cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features
-            cp target/wasm32-unknown-unknown/release/wit_snapshot.wasm "$dest"
-          fi
-          test -s "$dest"
-          mkdir -p _site/try/fixtures
-          cp docs/index.html docs/.nojekyll _site/
-          cp docs/try/*.js docs/try/*.mjs _site/try/
-          cp docs/try/fixtures/*.json _site/try/fixtures/
-          cp "$dest" _site/try/wit_snapshot.wasm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/pages_stamp_release.sh assemble
 
       - uses: actions/configure-pages@v5
 

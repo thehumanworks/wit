@@ -171,23 +171,27 @@
     <pre class="block"># mise (no global install)
 mise x github:thehumanworks/wit -- wit tree owner/repo
 
-# npm
-npm install -g @nothumanwork/wit
+# npm (unpinned)
+npm i @nothumanwork/wit
 npx @nothumanwork/wit --help
 
 # installer
 curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh | sh</pre>
+    <p>
+      Wasm on this page is GitHub <code>__WIT_RELEASE_TAG__</code>
+      — the module this page loaded, not the npm registry version.
+    </p>
 
     <h2>wit_snapshot.wasm</h2>
     <p>
       This page loads the existing no-reqwest module (not a second wasm, not
       the CLI). Same-origin <code>try/wit_snapshot.wasm</code> first, then
-      the v0.1.33 release asset. It does not fetch from a cargo
+      the <code>__WIT_RELEASE_TAG__</code> release asset. It does not fetch from a cargo
       <code>target/</code> tree:
     </p>
     <p>
-      <a href="https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm">
-        https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm
+      <a href="https://github.com/thehumanworks/wit/releases/download/__WIT_RELEASE_TAG__/wit_snapshot.wasm">
+        https://github.com/thehumanworks/wit/releases/download/__WIT_RELEASE_TAG__/wit_snapshot.wasm
       </a>
     </p>
     <pre class="block">[tools]
