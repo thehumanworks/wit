@@ -273,6 +273,9 @@ jobs:
 
   publish_npm:
     name: publish npm
+    # Same ancestor-skip escape as publish release: a failed native matrix cell
+    # must not skip npm after the GitHub attach job has already succeeded.
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     needs: release
     uses: ./.github/workflows/publish-npm.yml
     with:
