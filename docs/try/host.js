@@ -223,20 +223,13 @@ export function listFilesRecursive(api, path) {
   return files;
 }
 
-/** Module-relative wasm URLs plus the v0.1.33 release asset. */
+/**
+ * Published fetch order only: same-origin `try/wit_snapshot.wasm`, then
+ * the v0.1.33 release asset. Pages does not own a cargo tree — never
+ * list `../../target/` debug or release paths.
+ */
 export function wasmCandidates(fromMetaUrl = import.meta.url) {
-  return [
-    new URL("./wit_snapshot.wasm", fromMetaUrl).href,
-    RELEASE_WASM_URL,
-    new URL(
-      "../../target/wasm32-unknown-unknown/release/wit_snapshot.wasm",
-      fromMetaUrl,
-    ).href,
-    new URL(
-      "../../target/wasm32-unknown-unknown/debug/wit_snapshot.wasm",
-      fromMetaUrl,
-    ).href,
-  ];
+  return [new URL("./wit_snapshot.wasm", fromMetaUrl).href, RELEASE_WASM_URL];
 }
 
 /**
@@ -259,5 +252,10 @@ export async function instantiateFirstWasm(urls, imports) {
       lastErr = err;
     }
   }
-  throw lastErr || new Error("could not load wit_snapshot.wasm");
+  const detail = lastErr instanceof Error ? lastErr.message : String(lastErr || "");
+  throw new Error(
+    `could not load wit_snapshot.wasm from this page or the v0.1.33 release${
+      detail ? `: ${detail}` : ""
+    }`,
+  );
 }
