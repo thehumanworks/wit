@@ -6,7 +6,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildFixtureMap, FIXTURE_FILES, makeImports } from "./host.js";
+import {
+  buildFixtureMap,
+  FIXTURE_FILES,
+  makeImports,
+  prefetchLiveGithub,
+} from "./host.js";
 import { runLine } from "./run.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +64,38 @@ assert.match(bad.text, /not available/);
 const missing = runLine(exports, "wit tree missing/repo");
 assert.equal(missing.kind, "error");
 assert.match(missing.text, /failed: /);
+
+function cassetteFetch(bodies) {
+  const routes = {
+    "/repos/acme/demo": bodies["demo_repo.json"],
+    "/repos/acme/demo/commits/main": bodies["demo_commit.json"],
+    "/repos/acme/demo/git/trees/treesha?recursive=1": bodies["demo_tree.json"],
+    "/repos/acme/demo/git/blobs/blob-readme": bodies["demo_blob.json"],
+    "/repos/acme/demo/git/blobs/blob-main": bodies["demo_blob_main.json"],
+  };
+  return async (url) => {
+    const path = String(url).replace("https://api.github.com", "");
+    const body = routes[path];
+    if (body == null) {
+      throw new Error(`unexpected fetch ${url}`);
+    }
+    return { status: 200, text: async () => body };
+  };
+}
+
+await prefetchLiveGithub(
+  fixtures,
+  { kind: "run", command: "cat", repo: "acme/demo", path: "README.md" },
+  cassetteFetch(texts),
+);
+const liveTree = runLine(exports, "wit tree acme/demo");
+assert.equal(liveTree.kind, "ok", liveTree.text);
+assert.equal(liveTree.text, ".\n  README.md\n  src/main.rs");
+const liveCat = runLine(exports, "wit cat acme/demo README.md");
+assert.equal(liveCat.kind, "ok", liveCat.text);
+assert.equal(liveCat.text, "Hello, memory!");
+const treeAgain = runLine(exports, "wit tree demo/repo");
+assert.equal(treeAgain.text, ".\n  README.md\n  src/main.rs");
 
 console.log(`docs site smoke: ok (${wasmPath})`);
 console.log(tree.text);

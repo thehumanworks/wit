@@ -151,11 +151,15 @@
       <button type="button" data-fill="wit ls demo/repo">wit ls demo/repo</button>
       <button type="button" data-fill="wit cat demo/repo README.md">wit cat demo/repo README.md</button>
       <button type="button" data-fill="wit tree missing/repo">wit tree missing/repo</button>
+      <button type="button" data-fill="wit tree openai/codex">wit tree openai/codex</button>
     </div>
     <p class="note">
       Allowed: <code>wit tree|ls|cat owner/repo</code> with an optional path
       (<code>wit cat owner/repo README.md</code>, <code>wit tree -r owner/repo</code>).
-      Bad commands, missing repos, and typed wasm errors print in the terminal.
+      Submit paints <code>$ cmd</code> and <code>processing…</code> before any
+      host fetch. <code>demo/repo</code> stays fixture-only. Live
+      <code>owner/repo</code> prints CLI plaintext or a host/CORS error — the
+      prompt does not freeze.
     </p>
 
     <h2>Install</h2>
