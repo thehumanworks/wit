@@ -1,12 +1,15 @@
 //! wasm32 C ABI for `open` / `list` / `read` over [`MemoryBackend`] +
-//! [`FetchGitHubClient`].
+//! [`FetchGitHubClient`], plus a thin `get_json` wrap for repository search.
 //!
 //! Typed errors are returned as stable integer codes (see `ERR_*` constants).
 //! Detail text is available via [`wit_snapshot_last_error`].
 
 use crate::fetch::FetchGitHubClient;
-use crate::memory::{MemoryBackend, MemoryBackendLimits, MemorySnapshot};
-use crate::{RepoSnapshot, SnapshotBackend, SnapshotError, SnapshotResult, normalize_repo_path};
+use crate::memory::{GitHubHttpClient, MemoryBackend, MemoryBackendLimits, MemorySnapshot};
+use crate::{
+    RepoSnapshot, SnapshotBackend, SnapshotError, SnapshotResult, normalize_repo_path,
+    search_repositories_path,
+};
 use std::{
     future::Future,
     sync::Mutex,
@@ -237,6 +240,57 @@ pub extern "C" fn wit_snapshot_read(
         let json = serde_json::to_string(&file)
             .map_err(|err| SnapshotError::Other(format!("encode read json: {err}")))?;
         write_guest_string(&json, out_ptr, out_len)
+    })();
+    match result {
+        Ok(()) => ERR_OK,
+        Err(err) => map_err(err),
+    }
+}
+
+/// Thin `get_json` wrap for `GET /search/repositories?q=`.
+///
+/// Not a [`SnapshotBackend`] method, not code search, not a second HTTP stack.
+/// HTTP 403/429 map to [`ERR_RATE_LIMIT`]. Writes the GitHub JSON body.
+#[unsafe(no_mangle)]
+pub extern "C" fn wit_snapshot_search_repositories(
+    query_ptr: *const u8,
+    query_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    clear_error();
+    let result = (|| -> SnapshotResult<()> {
+        let query = read_guest_str(query_ptr, query_len)?;
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(SnapshotError::Other(
+                "github search query cannot be empty".into(),
+            ));
+        }
+        let path = search_repositories_path(query);
+        let client = FetchGitHubClient::from_host();
+        let (status, body) = block_on_ready(client.get_json(&path))?;
+        if status == 403 || status == 429 {
+            let detail = if body.trim().is_empty() {
+                format!("HTTP {status}")
+            } else {
+                body.chars().take(240).collect()
+            };
+            return Err(SnapshotError::RateLimited(detail));
+        }
+        if status != 200 {
+            return Err(SnapshotError::Api {
+                status,
+                message: if body.trim().is_empty() {
+                    format!("HTTP {status}")
+                } else {
+                    body.chars().take(240).collect()
+                },
+            });
+        }
+        let _: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|err| SnapshotError::Other(format!("search response was not JSON: {err}")))?;
+        write_guest_string(&body, out_ptr, out_len)
     })();
     match result {
         Ok(()) => ERR_OK,

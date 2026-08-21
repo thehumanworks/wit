@@ -4,6 +4,7 @@ import {
   formatCat,
   formatLs,
   formatRg,
+  formatSearch,
   formatSed,
   formatTree,
   headFromText,
@@ -62,4 +63,16 @@ test("formatRg prints path:line:text or files-with-matches", () => {
   const matches = [{ path: "README.md", line: 1, text: "Hello, memory!" }];
   assert.equal(formatRg(matches), "README.md:1:Hello, memory!");
   assert.equal(formatRg(matches, { filesWithMatches: true }), "README.md");
+});
+
+test("formatSearch prints stars and repo names", () => {
+  const text = formatSearch({
+    items: [
+      { full_name: "ratatui/ratatui", stargazers_count: 15000 },
+      { full_name: "ratatui/ratatui-website", stargazers_count: 80 },
+    ],
+  });
+  assert.match(text, /Found 2 repositories:/);
+  assert.match(text, /ratatui\/ratatui/);
+  assert.match(text, /15000 stars/);
 });

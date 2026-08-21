@@ -7,7 +7,9 @@ Companion to [0004-wasm-fetch-snapshot-client.md](./0004-wasm-fetch-snapshot-cli
 - One snapshot impl: `MemoryBackend<C: GitHubHttpClient>`
 - One new HTTP impl for wasm32: `FetchGitHubClient` (`get_json` → host `fetch`)
 - Native `ReqwestGitHubClient` stays behind the `http` feature (not linked on wasm32)
-- Wasm exports: `wit_snapshot_open`, `wit_snapshot_list`, `wit_snapshot_read`
+- Wasm exports: `wit_snapshot_open`, `wit_snapshot_list`, `wit_snapshot_read`,
+  and thin `wit_snapshot_search_repositories` (`get_json` for
+  `/search/repositories` only — not a new backend, not code search)
   plus typed error codes (`rate_limit`, `oversized`, `not_found`, `binary`,
   `private_repo`, `oom`, `api`, `other`)
 

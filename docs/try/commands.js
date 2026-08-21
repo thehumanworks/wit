@@ -1,7 +1,6 @@
 /**
- * Parse the try-it subset: repo-reading verbs as host JS views.
- * `-r`/`--repo` and `--` match CLI. Extra verbs print "not available".
- * `search` is out of this page (pending CPO cut) — print, do not run.
+ * Parse the try-it subset: repo-reading verbs as host JS views, plus
+ * `search` (repo find via wasm get_json). Extra verbs print "not available".
  */
 
 export const USAGE = `usage: wit tree|ls|cat|rg|sed|head|tail owner/repo [path]
@@ -14,13 +13,22 @@ export const USAGE = `usage: wit tree|ls|cat|rg|sed|head|tail owner/repo [path]
        wit sed -n '/pattern/p' owner/repo PATH
        wit head [-n N] [-N] owner/repo PATH
        wit tail [-n N] [-p LINE] owner/repo PATH
+       wit search -p PATTERN [-l LANG]
        wit tree -r owner/repo [path]
 
 This page runs tree, ls, cat, rg, sed, head, and tail as host JS views
-over wit_snapshot.wasm (open / list / read). Fixture repo: demo/repo`;
+over wit_snapshot.wasm (open / list / read). search uses the same host
+http_get Map via wasm get_json (/search/repositories). Fixture repo: demo/repo`;
 
-const ALLOWED = new Set(["tree", "ls", "cat", "rg", "sed", "head", "tail"]);
-const NOT_AVAILABLE = new Set(["skill", "mcp", "cache", "branches", "search"]);
+const ALLOWED = new Set(["tree", "ls", "cat", "rg", "sed", "head", "tail", "search"]);
+const NOT_AVAILABLE = new Set(["skill", "mcp", "cache", "branches"]);
+
+const SEARCH_VALUE = {
+  "-p": "pattern",
+  "--pattern": "pattern",
+  "-l": "lang",
+  "--lang": "lang",
+};
 
 const RG_BOOL = {
   "-i": "ignoreCase",
@@ -89,7 +97,7 @@ export function parseCommand(line) {
   if (tokens[0] !== "wit") {
     return {
       kind: "error",
-      message: `bad command: expected 'wit tree|ls|cat|rg|sed|head|tail ...', got ${JSON.stringify(line.trim())}`,
+      message: `bad command: expected 'wit tree|ls|cat|rg|sed|head|tail|search ...', got ${JSON.stringify(line.trim())}`,
     };
   }
 
@@ -140,11 +148,14 @@ export function parseCommand(line) {
   if (NOT_AVAILABLE.has(command) || !ALLOWED.has(command)) {
     return {
       kind: "error",
-      message: `bad command: '${command}' is not available here (only tree, ls, cat, rg, sed, head, tail)`,
+      message: `bad command: '${command}' is not available here (only tree, ls, cat, rg, sed, head, tail, search)`,
     };
   }
 
   try {
+    if (command === "search") {
+      return parseSearch(after);
+    }
     if (command === "rg") {
       return parseRg(repoFlag, after);
     }
@@ -315,6 +326,26 @@ function parseTail(repoFlag, tokens) {
   };
 }
 
+function parseSearch(tokens) {
+  const parsed = parseFlagArgs(tokens, {}, SEARCH_VALUE);
+  if (parsed.args.length) {
+    throw new Error("too many arguments: wit search takes -p PATTERN and optional -l LANG");
+  }
+  const pattern = parsed.flags.pattern ?? null;
+  const lang = parsed.flags.lang ?? null;
+  if (!stringOrEmpty(pattern) && !stringOrEmpty(lang)) {
+    throw new Error(
+      "repository search requires at least one search filter (--pattern or --lang)",
+    );
+  }
+  return {
+    kind: "run",
+    command: "search",
+    pattern: stringOrEmpty(pattern) ? pattern.trim() : null,
+    lang: stringOrEmpty(lang) ? lang.trim() : null,
+  };
+}
+
 function parseFlagArgs(tokens, boolFlags, valueFlags) {
   const flags = {};
   const args = [];
@@ -358,6 +389,9 @@ function currentCommandFromFlags(boolFlags, valueFlags) {
   if (boolFlags === TAIL_BOOL) {
     return "tail";
   }
+  if (valueFlags === SEARCH_VALUE) {
+    return "search";
+  }
   return "tree|ls|cat";
 }
 
@@ -374,7 +408,10 @@ function unknownFlagMessage(token, command) {
   if (command === "tail") {
     return `unknown flag ${token} (this page accepts -n/-p/-N for tail)`;
   }
-  return `unknown flag ${token} (this page accepts tree|ls|cat|rg|sed|head|tail; rg -i/-l, sed -n, head -n/-N, tail -n/-p/-N)`;
+  if (command === "search") {
+    return `unknown flag ${token} (this page accepts -p/-l for search)`;
+  }
+  return `unknown flag ${token} (this page accepts tree|ls|cat|rg|sed|head|tail|search; rg -i/-l, sed -n, head -n/-N, tail -n/-p/-N, search -p/-l)`;
 }
 
 function parseCount(value, fallback, flag) {
@@ -386,6 +423,10 @@ function parseCount(value, fallback, flag) {
     throw new Error(`invalid ${flag} value: expected a non-negative integer`);
   }
   return parsed;
+}
+
+function stringOrEmpty(value) {
+  return Boolean(value && String(value).trim());
 }
 
 function resolveRepoAndOptionalPath(repoFlag, args) {

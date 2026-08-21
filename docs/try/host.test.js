@@ -6,10 +6,14 @@ import {
   MAX_RG_PREFETCH_FILES,
   RELEASE_TAG,
   RELEASE_WASM_URL,
+  buildSearchQuery,
+  formEncode,
   githubGetJson,
+  isCassetteSearch,
   isFixtureRepo,
   prefetchLiveGithub,
   releaseWasmUrl,
+  searchRepositoriesPath,
   wasmCandidates,
 } from "./host.js";
 import * as host from "./host.js";
@@ -46,7 +50,28 @@ test("live path has no sync XHR helper", async () => {
   assert.doesNotMatch(src, /new XMLHttpRequest/);
   assert.doesNotMatch(src, /xhr\.open\s*\(/);
   assert.doesNotMatch(src, /open\(\s*["']GET["']\s*,[^,]+,\s*false/);
-  assert.doesNotMatch(src, /\/search\/repositories/);
+});
+
+test("run.js and app.js do not fetch GitHub search themselves", async () => {
+  const runSrc = await readFile(new URL("./run.js", import.meta.url), "utf8");
+  const appSrc = await readFile(new URL("./app.js", import.meta.url), "utf8");
+  assert.doesNotMatch(runSrc, /\/search\/repositories/);
+  assert.doesNotMatch(runSrc, /githubGetJson/);
+  assert.doesNotMatch(appSrc, /\/search\/repositories/);
+  assert.match(runSrc, /searchRepositories/);
+});
+
+test("search path encoding matches the wasm get_json key", () => {
+  assert.equal(formEncode("ratatui in:name"), "ratatui+in%3Aname");
+  assert.equal(buildSearchQuery("ratatui", null), "ratatui in:name");
+  assert.equal(
+    searchRepositoriesPath("ratatui in:name"),
+    "/search/repositories?q=ratatui+in%3Aname&sort=stars&order=desc&per_page=10",
+  );
+  assert.equal(
+    isCassetteSearch({ command: "search", pattern: "ratatui", lang: null }),
+    true,
+  );
 });
 
 test("app.js paints processing and disables input before prefetch", async () => {
@@ -61,6 +86,43 @@ test("app.js paints processing and disables input before prefetch", async () => 
   const prefetchAt = src.indexOf("await prefetchLiveGithub");
   assert.ok(processingAt > 0 && processingAt < yieldAt && yieldAt < prefetchAt);
   assert.match(src, /input\.disabled = next/);
+});
+
+test("cassette search never prefetches", async () => {
+  let fetches = 0;
+  const fetchImpl = async () => {
+    fetches += 1;
+    throw new Error("network should not run for cassette search");
+  };
+  const fixtures = new Map();
+  await prefetchLiveGithub(
+    fixtures,
+    { kind: "run", command: "search", pattern: "ratatui", lang: null },
+    fetchImpl,
+  );
+  assert.equal(fetches, 0);
+  assert.equal(fixtures.size, 0);
+});
+
+test("live search prefetches /search/repositories only", async () => {
+  const path = searchRepositoriesPath(buildSearchQuery("tui", null));
+  const { calls, fetchImpl } = mockGithubFetch({
+    [path]: jsonResponse(200, {
+      total_count: 1,
+      incomplete_results: false,
+      items: [{ full_name: "acme/tui", stargazers_count: 3 }],
+    }),
+  });
+  const fixtures = new Map();
+  await prefetchLiveGithub(
+    fixtures,
+    { kind: "run", command: "search", pattern: "tui", lang: null },
+    fetchImpl,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `${GITHUB_API}${path}`);
+  assert.ok(fixtures.has(path));
+  assert.equal(fixtures.has("/repos/tui"), false);
 });
 
 test("demo/repo is the fixture repo and never prefetches", async () => {

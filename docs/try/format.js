@@ -183,6 +183,33 @@ export function formatRg(matches, opts = {}) {
   return matches.map((match) => `${match.path}:${match.line}:${match.text}`).join("\n");
 }
 
+/**
+ * Stars + repo names, same columns as `wits::print_search_results`.
+ * @param {{ items?: { full_name?: string, name?: string, stargazers_count?: number }[] }} body
+ * @param {{ limit?: number }} [opts]
+ */
+export function formatSearch(body, opts = {}) {
+  const limit = opts.limit ?? 10;
+  const items = Array.isArray(body?.items) ? body.items.slice(0, limit) : [];
+  if (!items.length) {
+    return "No repositories found.";
+  }
+  const repos = items.map((item) => ({
+    name: item.full_name || item.name || "",
+    stars: Number(item.stargazers_count) || 0,
+  }));
+  const maxName = repos.reduce((max, repo) => Math.max(max, repo.name.length), 0);
+  const lines = ["", `Found ${repos.length} repositories:`, ""];
+  for (let i = 0; i < repos.length; i += 1) {
+    const rank = `${String(i + 1).padStart(3, " ")}.`;
+    const name = repos[i].name.padEnd(maxName, " ");
+    const stars = String(repos[i].stars).padStart(6, " ");
+    lines.push(`  ${rank} ${name} ${stars} stars`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 export function normalizePath(value) {
   if (!value) {
     return "";

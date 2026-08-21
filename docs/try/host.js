@@ -6,9 +6,10 @@
  * the fixture Map — never XMLHttpRequest. `demo/repo` is cassette-only
  * (no network). Live owner/repo is best-effort: async `fetch` prefetches
  * repo → commit → recursive tree (and a blob for cat/head/tail/sed, or
- * capped blobs for rg) into that map
- * before wasm `open` / `list` / `read`. CORS is the host's problem —
- * not a new backend.
+ * capped blobs for rg) into that map before wasm `open` / `list` / `read`.
+ * Search JSON is prefetched into the same Map; wasm
+ * `wit_snapshot_search_repositories` reads it via `get_json` / `http_get`.
+ * CORS is the host's problem — not a new backend.
  *
  * Does not import the 641-line IndexedDB repo cache.
  */
@@ -53,7 +54,11 @@ export const FIXTURE_FILES = [
   "demo_tree.json",
   "demo_blob.json",
   "demo_blob_main.json",
+  "demo_search_ratatui.json",
 ];
+
+export const CASSETTE_SEARCH_PATTERN = "ratatui";
+export const DEFAULT_SEARCH_PER_PAGE = 10;
 
 /** Same default as wit-snapshot MemoryBackendLimits::max_blob_bytes. */
 export const DEFAULT_MAX_BLOB_BYTES = 1_048_576;
@@ -79,7 +84,74 @@ export function buildFixtureMap(texts) {
   );
   putGithubJson(map, "/repos/demo/repo/git/blobs/blob-readme", 200, texts["demo_blob.json"]);
   putGithubJson(map, "/repos/demo/repo/git/blobs/blob-main", 200, texts["demo_blob_main.json"]);
+  putGithubJson(
+    map,
+    searchRepositoriesPath(buildSearchQuery(CASSETTE_SEARCH_PATTERN, null)),
+    200,
+    texts["demo_search_ratatui.json"],
+  );
   return map;
+}
+
+/** application/x-www-form-urlencoded; must match wit-snapshot `form_encode`. */
+export function formEncode(value) {
+  const bytes = new TextEncoder().encode(String(value ?? ""));
+  let out = "";
+  for (const byte of bytes) {
+    if (
+      (byte >= 0x30 && byte <= 0x39) ||
+      (byte >= 0x41 && byte <= 0x5a) ||
+      (byte >= 0x61 && byte <= 0x7a) ||
+      byte === 0x2d ||
+      byte === 0x5f ||
+      byte === 0x2e ||
+      byte === 0x7e
+    ) {
+      out += String.fromCharCode(byte);
+    } else if (byte === 0x20) {
+      out += "+";
+    } else {
+      out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return out;
+}
+
+/**
+ * Native `build_repository_query` subset: `-p` → `in:name`, `-l` → `language:`.
+ * @param {string | null | undefined} pattern
+ * @param {string | null | undefined} lang
+ */
+export function buildSearchQuery(pattern, lang) {
+  const parts = [];
+  const name = pattern && String(pattern).trim();
+  const language = lang && String(lang).trim();
+  if (name) {
+    parts.push(`${normalizeSearchTerm(name)} in:name`);
+  }
+  if (language) {
+    parts.push(`language:${normalizeSearchTerm(language)}`);
+  }
+  return parts.join(" ");
+}
+
+export function searchRepositoriesPath(query) {
+  return `/search/repositories?q=${formEncode(query)}&sort=stars&order=desc&per_page=${DEFAULT_SEARCH_PER_PAGE}`;
+}
+
+export function isCassetteSearch(parsed) {
+  return (
+    parsed?.command === "search" &&
+    parsed.pattern === CASSETTE_SEARCH_PATTERN &&
+    !parsed.lang
+  );
+}
+
+function normalizeSearchTerm(value) {
+  if ([...value].some((ch) => /\s/.test(ch))) {
+    return `"${value.replaceAll('"', '\\"')}"`;
+  }
+  return value;
 }
 
 /**
@@ -155,7 +227,21 @@ async function ensureGithubJson(fixtures, path, fetchImpl) {
  * @param {typeof fetch} [fetchImpl]
  */
 export async function prefetchLiveGithub(fixtures, parsed, fetchImpl = globalThis.fetch) {
-  if (!parsed || parsed.kind !== "run" || !parsed.repo || isFixtureRepo(parsed.repo)) {
+  if (!parsed || parsed.kind !== "run") {
+    return;
+  }
+  if (parsed.command === "search") {
+    if (isCassetteSearch(parsed)) {
+      return;
+    }
+    const query = buildSearchQuery(parsed.pattern, parsed.lang);
+    if (!query) {
+      return;
+    }
+    await ensureGithubJson(fixtures, searchRepositoriesPath(query), fetchImpl);
+    return;
+  }
+  if (!parsed.repo || isFixtureRepo(parsed.repo)) {
     return;
   }
   const ownerRepo = parsed.repo;
@@ -352,6 +438,35 @@ export function listPath(api, path) {
     } else {
       check(api, api.wit_snapshot_list(0, 0, outPtrSlot, outLenSlot), "list");
     }
+    return JSON.parse(readOutJson(api, outPtrSlot, outLenSlot));
+  } finally {
+    api.wit_snapshot_dealloc(outPtrSlot, 4);
+    api.wit_snapshot_dealloc(outLenSlot, 4);
+  }
+}
+
+/**
+ * Repo find through wasm `wit_snapshot_search_repositories` → get_json.
+ * The host Map must already hold the search JSON (cassette or prefetch).
+ * @param {WebAssembly.Exports} api
+ * @param {string} query
+ */
+export function searchRepositories(api, query) {
+  if (typeof api.wit_snapshot_search_repositories !== "function") {
+    throw new Error(
+      "wasm export missing: wit_snapshot_search_repositories (thin get_json wrap)",
+    );
+  }
+  const outPtrSlot = api.wit_snapshot_alloc(4);
+  const outLenSlot = api.wit_snapshot_alloc(4);
+  try {
+    withGuestString(api, query, (ptr, len) => {
+      check(
+        api,
+        api.wit_snapshot_search_repositories(ptr, len, outPtrSlot, outLenSlot),
+        "search",
+      );
+    });
     return JSON.parse(readOutJson(api, outPtrSlot, outLenSlot));
   } finally {
     api.wit_snapshot_dealloc(outPtrSlot, 4);

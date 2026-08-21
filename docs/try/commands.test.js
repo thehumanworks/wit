@@ -78,13 +78,27 @@ test("parses rg / sed / head / tail with the small native flag set", () => {
   });
 });
 
-test("rejects skill/mcp/cache/branches/search and unknown flags", () => {
+test("parses wit search -p / -l", () => {
+  assert.deepEqual(parseCommand("wit search -p ratatui"), {
+    kind: "run",
+    command: "search",
+    pattern: "ratatui",
+    lang: null,
+  });
+  assert.deepEqual(parseCommand("wit search -p ratatui -l Rust"), {
+    kind: "run",
+    command: "search",
+    pattern: "ratatui",
+    lang: "Rust",
+  });
+});
+
+test("rejects skill/mcp/cache/branches and unknown flags", () => {
   for (const line of [
     "wit skill load",
     "wit mcp",
     "wit cache demo/repo",
     "wit branches demo/repo",
-    "wit search -p ratatui",
   ]) {
     const parsed = parseCommand(line);
     assert.equal(parsed.kind, "error", line);

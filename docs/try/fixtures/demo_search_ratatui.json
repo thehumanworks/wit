@@ -1,0 +1,24 @@
+{
+  "total_count": 2,
+  "incomplete_results": false,
+  "items": [
+    {
+      "id": 1,
+      "name": "ratatui",
+      "full_name": "ratatui/ratatui",
+      "html_url": "https://github.com/ratatui/ratatui",
+      "description": "Rust library to build rich terminal user interfaces",
+      "language": "Rust",
+      "stargazers_count": 15000
+    },
+    {
+      "id": 2,
+      "name": "ratatui-website",
+      "full_name": "ratatui/ratatui-website",
+      "html_url": "https://github.com/ratatui/ratatui-website",
+      "description": "The ratatui website",
+      "language": "MDX",
+      "stargazers_count": 80
+    }
+  ]
+}

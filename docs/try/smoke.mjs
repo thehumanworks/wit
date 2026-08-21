@@ -11,6 +11,8 @@ import {
   FIXTURE_FILES,
   makeImports,
   prefetchLiveGithub,
+  putGithubJson,
+  searchRepositoriesPath,
 } from "./host.js";
 import { headFromText } from "./format.js";
 import { runLine } from "./run.js";
@@ -42,8 +44,12 @@ let exports = null;
 const imports = makeImports(() => exports, { fixtures });
 const { instance } = await WebAssembly.instantiate(bytes, imports);
 exports = instance.exports;
-if (!exports.memory || !exports.wit_snapshot_open) {
-  throw new Error("wasm exports missing");
+if (
+  !exports.memory ||
+  !exports.wit_snapshot_open ||
+  typeof exports.wit_snapshot_search_repositories !== "function"
+) {
+  throw new Error("wasm exports missing (open / list / read / search_repositories)");
 }
 
 const tree = runLine(exports, "wit tree demo/repo");
@@ -74,7 +80,30 @@ const sed = runLine(exports, "wit sed -n '1,2p' demo/repo README.md");
 assert.equal(sed.kind, "ok", sed.text);
 assert.equal(sed.text, "Hello, memory!\n");
 
-const unavailable = runLine(exports, "wit search -p ratatui");
+let openCalls = 0;
+const origOpen = exports.wit_snapshot_open;
+exports.wit_snapshot_open = (...args) => {
+  openCalls += 1;
+  return origOpen(...args);
+};
+const search = runLine(exports, "wit search -p ratatui");
+assert.equal(search.kind, "ok", search.text);
+assert.match(search.text, /ratatui\/ratatui/);
+assert.match(search.text, /stars/);
+assert.equal(openCalls, 0, "search must not call wasm open");
+exports.wit_snapshot_open = origOpen;
+
+putGithubJson(
+  fixtures,
+  searchRepositoriesPath("other in:name"),
+  403,
+  JSON.stringify({ message: "API rate limit exceeded" }),
+);
+const limited = runLine(exports, "wit search -p other");
+assert.equal(limited.kind, "error", limited.text);
+assert.match(limited.text, /rate_limit/);
+
+const unavailable = runLine(exports, "wit skill load");
 assert.equal(unavailable.kind, "error");
 assert.match(unavailable.text, /not available/);
 

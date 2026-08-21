@@ -4,13 +4,21 @@ import {
   formatCat,
   formatLs,
   formatRg,
+  formatSearch,
   formatSed,
   formatTree,
   headFromText,
   rustLines,
   tailFromText,
 } from "./format.js";
-import { listFilesRecursive, listPath, openRepo, readFile } from "./host.js";
+import {
+  buildSearchQuery,
+  listFilesRecursive,
+  listPath,
+  openRepo,
+  readFile,
+  searchRepositories,
+} from "./host.js";
 
 /**
  * @param {WebAssembly.Exports} api
@@ -44,6 +52,11 @@ export function runLine(api, line) {
  * @param {{ command: string, repo: string, path?: string | null }} parsed
  */
 export function execute(api, parsed) {
+  if (parsed.command === "search") {
+    const query = buildSearchQuery(parsed.pattern, parsed.lang);
+    const body = searchRepositories(api, query);
+    return formatSearch(body);
+  }
   openRepo(api, parsed.repo);
   if (parsed.command === "tree") {
     const files = listFilesRecursive(api, parsed.path);
