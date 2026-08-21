@@ -32,10 +32,64 @@ test("parses wit cat owner/repo PATH and -- / -r shapes", () => {
   });
 });
 
-test("rejects rg/sed and unknown flags in the terminal", () => {
-  const rg = parseCommand("wit rg TODO demo/repo");
-  assert.equal(rg.kind, "error");
-  assert.match(rg.message, /not available/);
+test("parses rg / sed / head / tail with the small native flag set", () => {
+  assert.deepEqual(parseCommand("wit rg Hello demo/repo"), {
+    kind: "run",
+    command: "rg",
+    repo: "demo/repo",
+    path: null,
+    pattern: "Hello",
+    ignoreCase: false,
+    filesWithMatches: false,
+  });
+  assert.deepEqual(parseCommand("wit rg -i -l Hello -r demo/repo src"), {
+    kind: "run",
+    command: "rg",
+    repo: "demo/repo",
+    path: "src",
+    pattern: "Hello",
+    ignoreCase: true,
+    filesWithMatches: true,
+  });
+  assert.deepEqual(parseCommand("wit sed -n '1,2p' demo/repo README.md"), {
+    kind: "run",
+    command: "sed",
+    repo: "demo/repo",
+    path: "README.md",
+    script: "1,2p",
+    quiet: true,
+  });
+  assert.deepEqual(parseCommand("wit head -n 2 demo/repo README.md"), {
+    kind: "run",
+    command: "head",
+    repo: "demo/repo",
+    path: "README.md",
+    lines: 2,
+    number: false,
+  });
+  assert.deepEqual(parseCommand("wit tail -n 2 -p 1 demo/repo README.md"), {
+    kind: "run",
+    command: "tail",
+    repo: "demo/repo",
+    path: "README.md",
+    lines: 2,
+    number: false,
+    fromLine: 1,
+  });
+});
+
+test("rejects skill/mcp/cache/branches/search and unknown flags", () => {
+  for (const line of [
+    "wit skill load",
+    "wit mcp",
+    "wit cache demo/repo",
+    "wit branches demo/repo",
+    "wit search -p ratatui",
+  ]) {
+    const parsed = parseCommand(line);
+    assert.equal(parsed.kind, "error", line);
+    assert.match(parsed.message, /not available/, line);
+  }
   const flag = parseCommand("wit tree -l demo/repo");
   assert.equal(flag.kind, "error");
   assert.match(flag.message, /unknown flag/);

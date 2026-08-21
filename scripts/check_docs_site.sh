@@ -46,7 +46,7 @@ if [[ ! -f "$same_origin" ]]; then
   fi
 fi
 
-echo "==> docs try-it wasm smoke (demo/repo tree/ls/cat)"
+echo "==> docs try-it wasm smoke (demo/repo tree/ls/cat/rg/sed/head/tail)"
 node "$root/docs/try/smoke.mjs"
 
 echo "check_docs_site: ok"

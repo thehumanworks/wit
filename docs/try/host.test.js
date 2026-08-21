@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   GITHUB_API,
+  MAX_RG_PREFETCH_FILES,
   RELEASE_TAG,
   RELEASE_WASM_URL,
   githubGetJson,
@@ -45,6 +46,7 @@ test("live path has no sync XHR helper", async () => {
   assert.doesNotMatch(src, /new XMLHttpRequest/);
   assert.doesNotMatch(src, /xhr\.open\s*\(/);
   assert.doesNotMatch(src, /open\(\s*["']GET["']\s*,[^,]+,\s*false/);
+  assert.doesNotMatch(src, /\/search\/repositories/);
 });
 
 test("app.js paints processing and disables input before prefetch", async () => {
@@ -151,7 +153,7 @@ test("prefetchLiveGithub fills repo → commit → tree for a live tree", async 
   );
 });
 
-test("prefetchLiveGithub also fetches the cat blob", async () => {
+test("prefetchLiveGithub also fetches the blob for cat/head/tail/sed", async () => {
   const { calls, fetchImpl } = mockGithubFetch({
     "/repos/acme/demo": jsonResponse(200, LIVE_REPO),
     "/repos/acme/demo/commits/main": jsonResponse(200, LIVE_COMMIT),
@@ -167,6 +169,70 @@ test("prefetchLiveGithub also fetches the cat blob", async () => {
   assert.equal(calls.length, 4);
   assert.equal(calls[3].url, `${GITHUB_API}/repos/acme/demo/git/blobs/blob-readme`);
   assert.equal(fixtures.get("/repos/acme/demo/git/blobs/blob-readme")?.status, 200);
+
+  const headFixtures = new Map();
+  const { calls: headCalls, fetchImpl: headFetch } = mockGithubFetch({
+    "/repos/acme/demo": jsonResponse(200, LIVE_REPO),
+    "/repos/acme/demo/commits/main": jsonResponse(200, LIVE_COMMIT),
+    "/repos/acme/demo/git/trees/treesha?recursive=1": jsonResponse(200, LIVE_TREE),
+    "/repos/acme/demo/git/blobs/blob-readme": jsonResponse(200, LIVE_BLOB),
+  });
+  await prefetchLiveGithub(
+    headFixtures,
+    { kind: "run", command: "head", repo: "acme/demo", path: "README.md" },
+    headFetch,
+  );
+  assert.equal(headCalls.length, 4);
+  assert.ok(headFixtures.has("/repos/acme/demo/git/blobs/blob-readme"));
+});
+
+test("prefetchLiveGithub fetches rg blobs and errors over the file cap", async () => {
+  const { calls, fetchImpl } = mockGithubFetch({
+    "/repos/acme/demo": jsonResponse(200, LIVE_REPO),
+    "/repos/acme/demo/commits/main": jsonResponse(200, LIVE_COMMIT),
+    "/repos/acme/demo/git/trees/treesha?recursive=1": jsonResponse(200, LIVE_TREE),
+    "/repos/acme/demo/git/blobs/blob-readme": jsonResponse(200, LIVE_BLOB),
+    "/repos/acme/demo/git/blobs/blob-main": jsonResponse(200, {
+      sha: "blob-main",
+      size: 20,
+      encoding: "base64",
+      content: "Zm4gbWFpbigpIHt9Cg==",
+    }),
+  });
+  const fixtures = new Map();
+  await prefetchLiveGithub(
+    fixtures,
+    { kind: "run", command: "rg", repo: "acme/demo", path: null, pattern: "Hello" },
+    fetchImpl,
+  );
+  assert.equal(calls.length, 5);
+  assert.ok(fixtures.has("/repos/acme/demo/git/blobs/blob-readme"));
+  assert.ok(fixtures.has("/repos/acme/demo/git/blobs/blob-main"));
+
+  const hugeTree = {
+    sha: "treesha",
+    truncated: false,
+    tree: Array.from({ length: MAX_RG_PREFETCH_FILES + 1 }, (_, i) => ({
+      path: `f${i}.txt`,
+      type: "blob",
+      sha: `blob-${i}`,
+      size: 1,
+    })),
+  };
+  const { fetchImpl: hugeFetch } = mockGithubFetch({
+    "/repos/huge/repo": jsonResponse(200, LIVE_REPO),
+    "/repos/huge/repo/commits/main": jsonResponse(200, LIVE_COMMIT),
+    "/repos/huge/repo/git/trees/treesha?recursive=1": jsonResponse(200, hugeTree),
+  });
+  await assert.rejects(
+    () =>
+      prefetchLiveGithub(
+        new Map(),
+        { kind: "run", command: "rg", repo: "huge/repo", path: null, pattern: "x" },
+        hugeFetch,
+      ),
+    /host error: repo has too many files for rg/,
+  );
 });
 
 test("prefetch reuses the fixture Map and does not refetch", async () => {

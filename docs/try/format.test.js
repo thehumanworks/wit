@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatCat, formatLs, formatTree } from "./format.js";
+import {
+  formatCat,
+  formatLs,
+  formatRg,
+  formatSed,
+  formatTree,
+  headFromText,
+  tailFromText,
+} from "./format.js";
 
 test("formatTree matches memory CLI plaintext for demo/repo", () => {
   const text = formatTree(null, [
@@ -30,4 +38,28 @@ test("formatLs empty directory uses the CLI sentence", () => {
 test("formatCat prints file text only", () => {
   assert.equal(formatCat({ text: "Hello, memory!" }), "Hello, memory!");
   assert.equal(formatCat("fn main() {}\n"), "fn main() {}\n");
+});
+
+test("headFromText and tailFromText match memory_ops.rs", () => {
+  const text = "a\nb\nc\nd\n";
+  assert.equal(headFromText(text, 2, false), "a\nb");
+  assert.equal(headFromText(text, 2, true), "     1  a\n     2  b");
+  assert.equal(tailFromText(text, 2, null, false), "c\nd");
+  assert.equal(tailFromText(text, 2, null, true), "     3  c\n     4  d");
+  assert.equal(tailFromText(text, 10, 2, false), "b\nc\nd");
+  assert.equal(headFromText("Hello, memory!", 10, false), "Hello, memory!");
+});
+
+test("formatSed print-range and /re/p match native plaintext", () => {
+  const input = "alpha\nbeta\ngamma\ndelta\n";
+  assert.equal(formatSed(input, "2,3p", { quiet: true }), "beta\ngamma\n");
+  assert.equal(formatSed(input, "/beta/p", { quiet: true }), "beta\n");
+  assert.equal(formatSed("Hello, memory!", "1,2p", { quiet: true }), "Hello, memory!\n");
+  assert.equal(formatSed("Hello, memory!", "s/Hello/Hi/"), "Hi, memory!\n");
+});
+
+test("formatRg prints path:line:text or files-with-matches", () => {
+  const matches = [{ path: "README.md", line: 1, text: "Hello, memory!" }];
+  assert.equal(formatRg(matches), "README.md:1:Hello, memory!");
+  assert.equal(formatRg(matches, { filesWithMatches: true }), "README.md");
 });

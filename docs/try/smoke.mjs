@@ -1,6 +1,6 @@
 /**
  * Node smoke: load the existing wit_snapshot.wasm with the fixture host
- * and assert CLI plaintext for `wit tree demo/repo`.
+ * and assert CLI plaintext for demo/repo read verbs.
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -12,6 +12,7 @@ import {
   makeImports,
   prefetchLiveGithub,
 } from "./host.js";
+import { headFromText } from "./format.js";
 import { runLine } from "./run.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,9 +58,25 @@ const cat = runLine(exports, "wit cat demo/repo README.md");
 assert.equal(cat.kind, "ok", cat.text);
 assert.equal(cat.text, "Hello, memory!");
 
-const bad = runLine(exports, "wit rg foo demo/repo");
-assert.equal(bad.kind, "error");
-assert.match(bad.text, /not available/);
+const rg = runLine(exports, "wit rg Hello demo/repo");
+assert.equal(rg.kind, "ok", rg.text);
+assert.equal(rg.text, "README.md:1:Hello, memory!");
+
+const head = runLine(exports, "wit head demo/repo README.md");
+assert.equal(head.kind, "ok", head.text);
+assert.equal(head.text, headFromText("Hello, memory!", 10, false));
+
+const tail = runLine(exports, "wit tail demo/repo README.md");
+assert.equal(tail.kind, "ok", tail.text);
+assert.equal(tail.text, "Hello, memory!");
+
+const sed = runLine(exports, "wit sed -n '1,2p' demo/repo README.md");
+assert.equal(sed.kind, "ok", sed.text);
+assert.equal(sed.text, "Hello, memory!\n");
+
+const unavailable = runLine(exports, "wit search -p ratatui");
+assert.equal(unavailable.kind, "error");
+assert.match(unavailable.text, /not available/);
 
 const missing = runLine(exports, "wit tree missing/repo");
 assert.equal(missing.kind, "error");

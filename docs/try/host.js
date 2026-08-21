@@ -5,7 +5,8 @@
  * crates/wit-snapshot/demo/browser/demo.js does. The import only reads
  * the fixture Map — never XMLHttpRequest. `demo/repo` is cassette-only
  * (no network). Live owner/repo is best-effort: async `fetch` prefetches
- * repo → commit → recursive tree (and a blob for `cat`) into that map
+ * repo → commit → recursive tree (and a blob for cat/head/tail/sed, or
+ * capped blobs for rg) into that map
  * before wasm `open` / `list` / `read`. CORS is the host's problem —
  * not a new backend.
  *
@@ -53,6 +54,14 @@ export const FIXTURE_FILES = [
   "demo_blob.json",
   "demo_blob_main.json",
 ];
+
+/** Same default as wit-snapshot MemoryBackendLimits::max_blob_bytes. */
+export const DEFAULT_MAX_BLOB_BYTES = 1_048_576;
+/** Cap live rg prefetch so the page does not freeze. */
+export const MAX_RG_PREFETCH_FILES = 200;
+export const MAX_RG_PREFETCH_BYTES = 8 * 1024 * 1024;
+
+const BLOB_COMMANDS = new Set(["cat", "head", "tail", "sed"]);
 
 /**
  * @param {Record<string, string>} texts cassette JSON by filename
@@ -139,7 +148,8 @@ async function ensureGithubJson(fixtures, path, fetchImpl) {
 /**
  * Prefetch live GitHub JSON into the fixture Map before wasm runs.
  * `demo/repo` is a no-op (cassette only). Tree/ls need repo → commit →
- * recursive tree; cat also needs the blob for `path`.
+ * recursive tree; cat/head/tail/sed also need the blob for `path`.
+ * Live rg prefetches tree plus blobs, capped by file count / byte budget.
  * @param {Map<string, { status: number, body: string }>} fixtures
  * @param {{ kind?: string, command?: string, repo?: string, path?: string | null }} parsed
  * @param {typeof fetch} [fetchImpl]
@@ -178,7 +188,14 @@ export async function prefetchLiveGithub(fixtures, parsed, fetchImpl = globalThi
   }
   const treePath = `/repos/${ownerRepo}/git/trees/${treeSha}?recursive=1`;
   const treeRes = await ensureGithubJson(fixtures, treePath, fetchImpl);
-  if (treeRes.status !== 200 || parsed.command !== "cat" || !parsed.path) {
+  if (treeRes.status !== 200) {
+    return;
+  }
+  if (parsed.command === "rg") {
+    await prefetchRgBlobs(fixtures, ownerRepo, treeRes.body, parsed.path, fetchImpl);
+    return;
+  }
+  if (!BLOB_COMMANDS.has(parsed.command) || !parsed.path) {
     return;
   }
   let tree;
@@ -193,6 +210,47 @@ export async function prefetchLiveGithub(fixtures, parsed, fetchImpl = globalThi
     return;
   }
   await ensureGithubJson(fixtures, `/repos/${ownerRepo}/git/blobs/${row.sha}`, fetchImpl);
+}
+
+/**
+ * @param {Map<string, { status: number, body: string }>} fixtures
+ * @param {string} ownerRepo
+ * @param {string} treeBody
+ * @param {string | null | undefined} path
+ * @param {typeof fetch} fetchImpl
+ */
+async function prefetchRgBlobs(fixtures, ownerRepo, treeBody, path, fetchImpl) {
+  let tree;
+  try {
+    tree = JSON.parse(treeBody);
+  } catch {
+    throw new Error("host error: GitHub tree response was not JSON");
+  }
+  const want = path ? String(path).replace(/^\/+|\/+$/g, "") : "";
+  const blobs = (tree.tree || []).filter((entry) => {
+    if (entry.type !== "blob" || !entry.path) {
+      return false;
+    }
+    if (!want) {
+      return true;
+    }
+    return entry.path === want || entry.path.startsWith(`${want}/`);
+  });
+  const totalBytes = blobs.reduce((sum, entry) => sum + (Number(entry.size) || 0), 0);
+  if (blobs.length > MAX_RG_PREFETCH_FILES || totalBytes > MAX_RG_PREFETCH_BYTES) {
+    throw new Error(
+      `host error: repo has too many files for rg in the try-it (${blobs.length} files, ${totalBytes} bytes); use a path or the native CLI`,
+    );
+  }
+  for (const entry of blobs) {
+    if (!entry.sha) {
+      continue;
+    }
+    if (Number(entry.size) > DEFAULT_MAX_BLOB_BYTES) {
+      continue;
+    }
+    await ensureGithubJson(fixtures, `/repos/${ownerRepo}/git/blobs/${entry.sha}`, fetchImpl);
+  }
 }
 
 export function readAscii(memory, ptr, len) {
