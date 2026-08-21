@@ -1,6 +1,7 @@
 import { USAGE, parseCommand } from "./commands.js";
 import {
   FIXTURE_FILES,
+  RELEASE_TAG,
   RELEASE_WASM_URL,
   buildFixtureMap,
   instantiateFirstWasm,
@@ -95,11 +96,9 @@ async function boot() {
   }
   api = exports;
   const source =
-    url === RELEASE_WASM_URL
-      ? "v0.1.33 release asset"
-      : url.endsWith("wit_snapshot.wasm")
-        ? url
-        : url;
+    RELEASE_WASM_URL && url === RELEASE_WASM_URL
+      ? `${RELEASE_TAG} release asset`
+      : url;
   setStatus(`Ready · ${source}`);
   appendBlock("wit try-it — fixture repo demo/repo always works (no disk).");
   appendBlock("Live api.github.com is best-effort; CORS errors print here.");
@@ -190,7 +189,9 @@ boot().catch((err) => {
   setStatus(String(err), true);
   appendBlock(String(err), "err");
   appendBlock(
-    `Could not load wit_snapshot.wasm. Tried this page's copy (try/wit_snapshot.wasm), then ${RELEASE_WASM_URL}.`,
+    RELEASE_WASM_URL
+      ? `Could not load wit_snapshot.wasm. Tried this page's copy (try/wit_snapshot.wasm), then ${RELEASE_WASM_URL}.`
+      : "Could not load wit_snapshot.wasm. Tried this page's copy (try/wit_snapshot.wasm).",
     "err",
   );
 });
