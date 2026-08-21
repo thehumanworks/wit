@@ -11,24 +11,18 @@ import { runLine } from "./run.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function wasmPaths() {
-  return [
-    resolve(here, "wit_snapshot.wasm"),
-    resolve(here, "../../target/wasm32-unknown-unknown/release/wit_snapshot.wasm"),
-    resolve(here, "../../target/wasm32-unknown-unknown/debug/wit_snapshot.wasm"),
-  ];
-}
-
 async function loadLocalWasmBytes() {
-  let lastErr = null;
-  for (const path of wasmPaths()) {
-    try {
-      return { bytes: await readFile(path), path };
-    } catch (err) {
-      lastErr = err;
-    }
+  // Same-origin file only. check_docs_site.sh / serve_docs_site.sh copy
+  // a built module next to this script; the published host never fetches
+  // from a cargo target/ tree.
+  const path = resolve(here, "wit_snapshot.wasm");
+  try {
+    return { bytes: await readFile(path), path };
+  } catch {
+    throw new Error(
+      "docs/try/wit_snapshot.wasm not found (copy the module next to this script)",
+    );
   }
-  throw lastErr || new Error("wit_snapshot.wasm not found (build or copy it)");
 }
 
 const texts = {};

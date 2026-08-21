@@ -148,7 +148,7 @@ boot().catch((err) => {
   setStatus(String(err), true);
   appendBlock(String(err), "err");
   appendBlock(
-    `Need the wasm module. Place wit_snapshot.wasm next to this script, or fetch ${RELEASE_WASM_URL}`,
+    `Could not load wit_snapshot.wasm. Tried this page's copy (try/wit_snapshot.wasm), then ${RELEASE_WASM_URL}.`,
     "err",
   );
 });

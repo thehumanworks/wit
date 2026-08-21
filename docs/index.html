@@ -177,8 +177,9 @@ curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh |
     <h2>wit_snapshot.wasm</h2>
     <p>
       This page loads the existing no-reqwest module (not a second wasm, not
-      the CLI). Prefer the v0.1.33 release asset, then a same-origin copy
-      shipped with Pages:
+      the CLI). Same-origin <code>try/wit_snapshot.wasm</code> first, then
+      the v0.1.33 release asset. It does not fetch from a cargo
+      <code>target/</code> tree:
     </p>
     <p>
       <a href="https://github.com/thehumanworks/wit/releases/download/v0.1.33/wit_snapshot.wasm">
