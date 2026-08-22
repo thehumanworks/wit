@@ -33,12 +33,12 @@
       font-size: 0.92rem;
       font-weight: 600;
       color: var(--muted);
-      margin: 1.6rem 0 0.45rem;
+      margin: 2.2rem 0 0.45rem;
       letter-spacing: 0.02em;
     }
-    p, li { color: var(--muted); line-height: 1.55; }
+    p { color: var(--muted); line-height: 1.55; }
     a { color: var(--accent); }
-    .lede { margin: 0 0 1rem; }
+    .lede { margin: 0 0 1.1rem; }
     .term-wrap {
       background: var(--term);
       border: 1px solid var(--border);
@@ -54,6 +54,14 @@
       color: var(--muted);
       font-size: 0.78rem;
       border-bottom: 1px solid var(--border);
+    }
+    /* Reserve one line so Loading… → Ready doesn't shift the page. */
+    #wasm-status {
+      min-height: 1.2em;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     #term-out {
       margin: 0;
@@ -86,38 +94,45 @@
       outline: none;
     }
     #term-in:disabled { opacity: 0.5; }
-    pre.block {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      padding: 0.75rem 0.85rem;
-      overflow: auto;
-      font-size: 0.82rem;
-      line-height: 1.45;
-    }
     .examples {
       display: flex;
       flex-wrap: wrap;
       gap: 0.4rem;
       margin: 0.65rem 0 0;
     }
-    .examples a, .examples button {
-      background: var(--panel);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      padding: 0.28rem 0.5rem;
+    .examples button {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      border-radius: 4px;
+      padding: 0.3rem 0.55rem;
       font: inherit;
       font-size: 0.78rem;
       cursor: pointer;
     }
-    .note {
-      border-left: 3px solid var(--accent);
-      padding: 0.5rem 0.75rem;
-      background: var(--panel);
-      margin: 0.85rem 0 0;
-      font-size: 0.82rem;
+    @media (prefers-reduced-motion: no-preference) {
+      .examples button { transition: background-color 120ms ease, color 120ms ease; }
     }
+    .examples button:hover {
+      background: var(--panel);
+      color: var(--fg);
+    }
+    .examples button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      color: var(--fg);
+    }
+    pre.block {
+      background: var(--panel);
+      border-radius: 6px;
+      padding: 0.75rem 0.85rem;
+      overflow: auto;
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .stamp { font-size: 0.78rem; }
     footer {
-      margin-top: 2rem;
+      margin-top: 2.2rem;
       color: var(--muted);
       font-size: 0.78rem;
     }
@@ -126,13 +141,7 @@
 <body>
   <main>
     <h1>wit</h1>
-    <p class="lede">
-      GitHub for AI agents. Try the repo-reading verbs here without
-      installing — host JS views over the same
-      <code>wit_snapshot.wasm</code> exports (<code>open</code> /
-      <code>list</code> / <code>read</code>), fixture-backed so this page
-      always works with no disk.
-    </p>
+    <p class="lede">GitHub for AI agents. Try the verbs — no install.</p>
 
     <div class="term-wrap">
       <div class="term-bar">
@@ -147,74 +156,28 @@
       </form>
     </div>
     <div class="examples">
-      <button type="button" data-fill="wit tree demo/repo">wit tree demo/repo</button>
-      <button type="button" data-fill="wit ls demo/repo">wit ls demo/repo</button>
-      <button type="button" data-fill="wit cat demo/repo README.md">wit cat demo/repo README.md</button>
-      <button type="button" data-fill="wit rg Hello demo/repo">wit rg Hello demo/repo</button>
-      <button type="button" data-fill="wit sed -n '1,2p' demo/repo README.md">wit sed -n '1,2p' demo/repo README.md</button>
-      <button type="button" data-fill="wit head demo/repo README.md">wit head demo/repo README.md</button>
-      <button type="button" data-fill="wit tail demo/repo README.md">wit tail demo/repo README.md</button>
-      <button type="button" data-fill="wit search -p ratatui">wit search -p ratatui</button>
-      <button type="button" data-fill="wit tree missing/repo">wit tree missing/repo</button>
-      <button type="button" data-fill="wit tree openai/codex">wit tree openai/codex</button>
+      <button type="button" data-fill="wit tree demo/repo">tree demo/repo</button>
+      <button type="button" data-fill="wit rg Hello demo/repo">rg Hello demo/repo</button>
+      <button type="button" data-fill="wit search -p ratatui">search -p ratatui</button>
+      <button type="button" data-fill="wit cat demo/repo README.md">cat demo/repo README.md</button>
     </div>
-    <p class="note">
-      Allowed: <code>tree</code> <code>ls</code> <code>cat</code>
-      <code>rg</code> <code>sed</code> <code>head</code> <code>tail</code>
-      on <code>owner/repo</code> (optional path), plus
-      <code>wit search -p PATTERN</code> through wasm
-      <code>get_json</code> (<code>/search/repositories</code>, cassette for
-      <code>-p ratatui</code>). Submit paints
-      <code>$ cmd</code> and <code>processing…</code> before any host fetch.
-      <code>demo/repo</code> stays fixture-only. Live prints CLI plaintext
-      or a host/CORS/<code>rate_limit</code> error — the prompt does not
-      freeze. <code>skill</code>, <code>mcp</code>, <code>cache</code>, and
-      <code>branches</code> print that they are not available and do not run.
-    </p>
 
     <h2>Install</h2>
-    <p>
-      One-page path to a real <code>wit</code> binary. The terminal above is
-      host JS views over wasm <code>open</code>/<code>list</code>/<code>read</code>
-      plus a thin <code>search_repositories</code> <code>get_json</code> wrap
-      — not a second wasm, not a new snapshot backend, and not the full CLI.
-    </p>
     <pre class="block"># mise (no global install)
 mise x github:thehumanworks/wit -- wit tree owner/repo
 
 # npm (unpinned)
 npm i @nothumanwork/wit
-npx @nothumanwork/wit --help
 
 # installer
 curl -fsSL https://raw.githubusercontent.com/thehumanworks/wit/main/install.sh | sh</pre>
-    <p>
+    <p class="stamp">
       Wasm on this page is GitHub <code>__WIT_RELEASE_TAG__</code>
       — the module this page loaded, not the npm registry version.
     </p>
 
-    <h2>wit_snapshot.wasm</h2>
-    <p>
-      This page loads the existing no-reqwest module (not a second wasm, not
-      the CLI). Same-origin <code>try/wit_snapshot.wasm</code> first, then
-      the <code>__WIT_RELEASE_TAG__</code> release asset. It does not fetch from a cargo
-      <code>target/</code> tree:
-    </p>
-    <p>
-      <a href="https://github.com/thehumanworks/wit/releases/download/__WIT_RELEASE_TAG__/wit_snapshot.wasm">
-        https://github.com/thehumanworks/wit/releases/download/__WIT_RELEASE_TAG__/wit_snapshot.wasm
-      </a>
-    </p>
-    <pre class="block">[tools]
-"github:thehumanworks/wit" = { version = "latest", additional_asset_patterns = ["wit_snapshot.wasm"] }</pre>
-    <p>
-      Build the same module locally:
-      <code>cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features</code>
-    </p>
-
     <footer>
       <a href="https://github.com/thehumanworks/wit">github.com/thehumanworks/wit</a>
-      · static GitHub Pages · no PTY, no docs framework, no Worker API
     </footer>
   </main>
   <script type="module" src="./try/app.js"></script>

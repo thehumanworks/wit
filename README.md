@@ -8,11 +8,16 @@ GitHub for AI Agents -- explore GitHub repositories without cloning. Repos are c
 
 ## Try without installing
 
-A static GitHub Pages page runs `wit tree`, `wit ls`, and `wit cat` in the
-browser through the existing `wit_snapshot.wasm` module (fixture-backed
-`demo/repo`; live `api.github.com` is best-effort). The published host
-loads same-origin `try/wit_snapshot.wasm`, then the GitHub release
-asset stamped at Pages assemble time — never a cargo `target/` path.
+A static GitHub Pages page runs `wit tree`, `ls`, `cat`, `rg`, `sed`,
+`head`, `tail`, and `wit search -p PATTERN` in the browser as host JS
+views over the existing `wit_snapshot.wasm` exports (`open` / `list` /
+`read`, plus a thin `get_json` wrap for search) — not a second wasm and
+not the full CLI. `demo/repo` is fixture-backed; live `api.github.com`
+is best-effort. The published host loads same-origin
+`try/wit_snapshot.wasm`, then the GitHub release asset stamped at Pages
+assemble time — never a cargo `target/` path. Build the same module
+locally with
+`cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features`.
 
 https://thehumanworks.github.io/wit/
 

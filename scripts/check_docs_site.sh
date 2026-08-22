@@ -26,6 +26,29 @@ for rel in "${guard_files[@]}"; do
   fi
 done
 
+echo "==> Pages HTML keeps try-it hooks and the four chips"
+index_html="$root/docs/index.html"
+required_markers=(
+  'id="term-out"'
+  'id="term-in"'
+  'id="term-form"'
+  'id="wasm-status"'
+  'data-fill="wit tree demo/repo"'
+  'data-fill="wit rg Hello demo/repo"'
+  'data-fill="wit search -p ratatui"'
+  'data-fill="wit cat demo/repo README.md"'
+)
+for marker in "${required_markers[@]}"; do
+  if ! grep -Fq "$marker" "$index_html"; then
+    echo "error: docs/index.html is missing required marker: $marker" >&2
+    exit 1
+  fi
+done
+if [[ "$(grep -c 'data-fill=' "$index_html")" -ne 4 ]]; then
+  echo "error: docs/index.html must have exactly four data-fill chips" >&2
+  exit 1
+fi
+
 # Stage the same module the published host fetches first (same-origin).
 # Local cargo output is a build input only — not a live Pages candidate.
 same_origin="$root/docs/try/wit_snapshot.wasm"
