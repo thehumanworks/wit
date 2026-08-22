@@ -33,6 +33,7 @@ required_markers=(
   'id="term-in"'
   'id="term-form"'
   'id="wasm-status"'
+  '#term-in:focus-visible'
   'data-fill="wit tree demo/repo"'
   'data-fill="wit rg Hello demo/repo"'
   'data-fill="wit search -p ratatui"'
