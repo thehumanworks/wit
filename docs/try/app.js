@@ -1,4 +1,4 @@
-import { USAGE, parseCommand } from "./commands.js";
+import { parseCommand } from "./commands.js";
 import {
   FIXTURE_FILES,
   RELEASE_TAG,
@@ -100,9 +100,7 @@ async function boot() {
       ? `${RELEASE_TAG} release asset`
       : url;
   setStatus(`Ready · ${source}`);
-  appendBlock("wit try-it — fixture repo demo/repo always works (no disk).");
-  appendBlock("Live api.github.com is best-effort; CORS errors print here.");
-  appendBlock(USAGE, "muted");
+  appendBlock("demo/repo always works. Chips fill commands. `help` for usage.", "muted");
   await runAndRender("wit tree demo/repo");
   if (!busy) {
     input.disabled = false;
