@@ -100,7 +100,6 @@ async function boot() {
       ? `${RELEASE_TAG} release asset`
       : url;
   setStatus(`Ready · ${source}`);
-  appendBlock("demo/repo always works. Chips fill commands. `help` for usage.", "muted");
   await runAndRender("wit tree demo/repo");
   if (!busy) {
     input.disabled = false;
