@@ -50,11 +50,27 @@ if [[ "$(grep -c 'data-fill=' "$index_html")" -ne 4 ]]; then
   exit 1
 fi
 
+echo "==> Pages host CSS stays a flat tool landing"
+if grep -Fq 'radial-gradient' "$index_html"; then
+  echo "error: docs/index.html must not use a radial-gradient wash" >&2
+  exit 1
+fi
+if grep -Fq 'pre.block' "$index_html"; then
+  echo "error: docs/index.html must not use a filled pre.block" >&2
+  exit 1
+fi
+if grep -nE '@import|rel=["'"'"']stylesheet' "$index_html"; then
+  echo "error: docs/index.html must not import external CSS" >&2
+  exit 1
+fi
+
 # Stage the same module the published host fetches first (same-origin).
 # Local cargo output is a build input only — not a live Pages candidate.
 same_origin="$root/docs/try/wit_snapshot.wasm"
 has_search_export() {
-  [[ -f "$1" ]] && strings "$1" | grep -Fq wit_snapshot_search_repositories
+  # grep the file directly: `strings | grep -q` dies with SIGPIPE under pipefail
+  # even when the export name is present, and then this script always rebuilds.
+  [[ -f "$1" ]] && grep -Faql wit_snapshot_search_repositories "$1"
 }
 if ! has_search_export "$same_origin"; then
   release_wasm="$root/target/wasm32-unknown-unknown/release/wit_snapshot.wasm"
