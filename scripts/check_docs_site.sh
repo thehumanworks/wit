@@ -64,6 +64,38 @@ if grep -nE '@import|rel=["'"'"']stylesheet' "$index_html"; then
   exit 1
 fi
 
+echo "==> Pages theme: #term-in caret focus, chips keep the ring"
+term_in_fv="$(awk '
+  /#term-in:focus-visible/ { grab=1 }
+  grab { buf = buf $0 ORS }
+  grab && /}/ { print buf; exit }
+' "$index_html")"
+if [[ -z "$term_in_fv" ]]; then
+  echo "error: docs/index.html is missing a #term-in:focus-visible rule" >&2
+  exit 1
+fi
+if ! grep -Fq 'outline: none' <<<"$term_in_fv"; then
+  echo "error: #term-in:focus-visible must set outline: none" >&2
+  exit 1
+fi
+if grep -Eq 'outline:[[:space:]]*2px|outline-offset|box-shadow' <<<"$term_in_fv"; then
+  echo "error: #term-in:focus-visible must not draw a ring or box" >&2
+  exit 1
+fi
+chip_fv="$(awk '
+  /\.examples button:focus-visible/ { grab=1 }
+  grab { buf = buf $0 ORS }
+  grab && /}/ { print buf; exit }
+' "$index_html")"
+if ! grep -Fq 'outline: 2px solid var(--accent);' <<<"$chip_fv"; then
+  echo "error: chip :focus-visible must keep the 2px accent ring" >&2
+  exit 1
+fi
+if ! grep -Fq 'outline-offset: 2px' <<<"$chip_fv"; then
+  echo "error: chip :focus-visible must keep outline-offset: 2px" >&2
+  exit 1
+fi
+
 # Stage the same module the published host fetches first (same-origin).
 # Local cargo output is a build input only — not a live Pages candidate.
 same_origin="$root/docs/try/wit_snapshot.wasm"
