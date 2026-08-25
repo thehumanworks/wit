@@ -50,6 +50,20 @@ if [[ "$(grep -c 'data-fill=' "$index_html")" -ne 4 ]]; then
   exit 1
 fi
 
+echo "==> Pages host CSS stays a flat tool landing"
+if grep -Fq 'radial-gradient' "$index_html"; then
+  echo "error: docs/index.html must not use a radial-gradient wash" >&2
+  exit 1
+fi
+if grep -Fq 'pre.block' "$index_html"; then
+  echo "error: docs/index.html must not use a filled pre.block" >&2
+  exit 1
+fi
+if grep -nE '@import|rel=["'"'"']stylesheet' "$index_html"; then
+  echo "error: docs/index.html must not import external CSS" >&2
+  exit 1
+fi
+
 # Stage the same module the published host fetches first (same-origin).
 # Local cargo output is a build input only — not a live Pages candidate.
 same_origin="$root/docs/try/wit_snapshot.wasm"
