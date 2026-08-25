@@ -68,7 +68,9 @@ fi
 # Local cargo output is a build input only — not a live Pages candidate.
 same_origin="$root/docs/try/wit_snapshot.wasm"
 has_search_export() {
-  [[ -f "$1" ]] && strings "$1" | grep -Fq wit_snapshot_search_repositories
+  # grep the file directly: `strings | grep -q` dies with SIGPIPE under pipefail
+  # even when the export name is present, and then this script always rebuilds.
+  [[ -f "$1" ]] && grep -Faql wit_snapshot_search_repositories "$1"
 }
 if ! has_search_export "$same_origin"; then
   release_wasm="$root/target/wasm32-unknown-unknown/release/wit_snapshot.wasm"
