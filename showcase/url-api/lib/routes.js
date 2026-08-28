@@ -6,12 +6,28 @@
  *   GET /ls/{owner}/{repo}?path=&branch=
  *   GET /cat/{owner}/{repo}?path=   (path required)
  *
+ * A leading `/api` is an alias prefix for the same three routes:
+ * `/api/tree/{owner}/{repo}` is the same request as `/tree/{owner}/{repo}`.
+ *
  * ?ref= aliases branch. Path is always a query param (never a path segment).
  */
 
 import { SafeError, scrubSecrets } from "./auth.js";
 
 const VERBS = new Set(["tree", "ls", "cat"]);
+const API_PREFIX = "api";
+
+/**
+ * Split a pathname into route segments, dropping one optional leading `api`
+ * alias segment so prefixed and unprefixed URLs share a single parse.
+ * @param {string} pathname
+ * @returns {string[]}
+ */
+function routeSegments(pathname) {
+  const parts = String(pathname).replace(/\/+$/, "").split("/").filter(Boolean);
+  if (parts.length > 0 && parts[0].toLowerCase() === API_PREFIX) return parts.slice(1);
+  return parts;
+}
 
 /** Known query keys per verb (unknown keys are ignored). */
 const KNOWN_KEYS = {
@@ -50,6 +66,7 @@ export function normalizePath(value) {
 /**
  * Parse request URL into a route action.
  * Returns null for non-API paths (static assets, `/`, etc.).
+ * An optional leading `/api` prefix resolves to the identical action.
  *
  * @param {string | URL} input
  * @returns {null | {
@@ -66,7 +83,7 @@ export function normalizePath(value) {
  */
 export function parseRoute(input) {
   const url = input instanceof URL ? input : new URL(String(input), "http://local");
-  const parts = url.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+  const parts = routeSegments(url.pathname);
   if (parts.length === 0) return null;
 
   const verb = parts[0].toLowerCase();
@@ -126,11 +143,12 @@ export function parseRoute(input) {
 }
 
 /**
- * Whether this pathname is one of the three API verbs (even if malformed).
+ * Whether this pathname is one of the three API verbs (even if malformed),
+ * with or without the `/api` prefix.
  * @param {string} pathname
  */
 export function isApiPath(pathname) {
-  const first = String(pathname).replace(/\/+$/, "").split("/").filter(Boolean)[0];
+  const first = routeSegments(pathname)[0];
   return first != null && VERBS.has(first.toLowerCase());
 }
 
