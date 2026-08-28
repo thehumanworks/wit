@@ -1,0 +1,110 @@
+name: url-api deploy
+
+# Live host for the ADR 0005 URL API Worker: Cloudflare Pages (Advanced Mode,
+# public/_worker.js), project `wit-url-api`. GitHub Pages (pages.yml) stays the
+# docs/try-it host and is not involved here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "showcase/url-api/**"
+      - "crates/wit-snapshot/**"
+      - ".github/workflows/url-api-deploy.yml"
+  workflow_dispatch:
+
+# No pull_request trigger: forks never get the Cloudflare secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: url-api-deploy
+  cancel-in-progress: false
+
+env:
+  PROJECT_NAME: wit-url-api
+
+jobs:
+  deploy:
+    name: cloudflare pages (wit-url-api)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Cloudflare deploy secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || missing+=("CLOUDFLARE_API_TOKEN")
+          [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || missing+=("CLOUDFLARE_ACCOUNT_ID")
+          if (( ${#missing[@]} > 0 )); then
+            echo "error: missing repository secret(s): ${missing[*]}" >&2
+            echo "Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID under" >&2
+            echo "Settings > Secrets and variables > Actions, then re-run this workflow." >&2
+            exit 1
+          fi
+          echo "Cloudflare deploy secrets are set (values never printed)."
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build wit_snapshot.wasm (release, no reqwest)
+        run: |
+          set -euo pipefail
+          cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features
+          cp target/wasm32-unknown-unknown/release/wit_snapshot.wasm \
+            showcase/url-api/public/wit_snapshot.wasm
+
+      - name: Stage worker lib into public/
+        working-directory: showcase/url-api
+        run: npm run sync-lib
+
+      - name: Host unit tests
+        working-directory: showcase/url-api
+        run: npm test
+
+      - name: Ensure the Pages project exists
+        working-directory: showcase/url-api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          listing="$RUNNER_TEMP/pages-projects.txt"
+          if ! npx --yes wrangler@4 pages project list > "$listing"; then
+            echo "error: could not list Cloudflare Pages projects." >&2
+            echo "CLOUDFLARE_API_TOKEN needs the Cloudflare Pages:Edit permission" >&2
+            echo "on the account in CLOUDFLARE_ACCOUNT_ID." >&2
+            exit 1
+          fi
+          if grep -Fq "$PROJECT_NAME" "$listing"; then
+            echo "$PROJECT_NAME already exists."
+          else
+            npx --yes wrangler@4 pages project create "$PROJECT_NAME" --production-branch=main
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        working-directory: showcase/url-api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 pages deploy public --branch=main
+
+      - name: Post-deploy QA reminder
+        run: |
+          set -euo pipefail
+          echo "QA gate (run against the deployed host):"
+          echo '  curl -sS https://<host>/tree/octocat/Hello-World'
+          echo '  curl -sS https://<host>/api/tree/octocat/Hello-World'
+          echo "Both must print identical CLI plaintext."

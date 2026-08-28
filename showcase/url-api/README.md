@@ -4,6 +4,9 @@ Client-side MemoryBackend URL surface for `tree` / `ls` / `cat`.
 
 See `docs/adr/0005-url-api-host.md` and `docs/adr/0005-url-api-howto.md`.
 
+Live deploy is Cloudflare Pages (project `wit-url-api`) via
+`.github/workflows/url-api-deploy.yml` — not GitHub Pages.
+
 ```bash
 npm run build:wasm
 npm test

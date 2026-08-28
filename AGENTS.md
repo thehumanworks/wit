@@ -64,6 +64,7 @@ This is a Cargo workspace with several crates:
 - `bash scripts/check_wit_search_migration.sh`: Enforce `wit search` stays GitHub-only and does not reintroduce grep.app wiring under `crates/wit/src`.
 - `bash scripts/check_wit_snapshot_wasm.sh`: Build `wit-snapshot` for `wasm32-unknown-unknown` without reqwest; run wasmtime fixture smoke.
 - `bash scripts/check_docs_site.sh`: Pages try-it parser/formatter tests plus fixture wasm smoke (`wit tree demo/repo`).
+- `bash scripts/check_url_api_deploy_workflow.sh`: Enforce that `showcase/url-api` deploys to Cloudflare Pages (`wit-url-api`) from `main` and never folds onto GitHub Pages.
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.
 - `cargo test -p wit --test search_github_live -- --ignored`: Optional live GitHub smoke test (`GITHUB_TOKEN` recommended).
@@ -112,5 +113,5 @@ This is a Cargo workspace with several crates:
 
 - Prefer `rg` / `rg --files` for repo search while working on changes.
 - Keep patches focused and avoid committing generated artifacts under `target/`.
-- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, and `bash scripts/check_docs_site.sh`.
+- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, `bash scripts/check_docs_site.sh`, and `bash scripts/check_url_api_deploy_workflow.sh`.
 - The `sed` subcommand aims for broad POSIX coverage; update tests and docs alongside behavior changes.
