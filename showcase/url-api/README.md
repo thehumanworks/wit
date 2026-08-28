@@ -22,3 +22,6 @@ Routes (path is a query param):
 
 A leading `/api` is an alias for the same three routes, so
 `GET /api/tree/{owner}/{repo}` is identical to `GET /tree/{owner}/{repo}`.
+
+Discovery lives under that prefix: `GET /api` is a plaintext list of the three
+curls and `GET /api/openapi.json` is the OpenAPI 3 document for them.

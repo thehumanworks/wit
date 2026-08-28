@@ -9,6 +9,10 @@
  * A leading `/api` is an alias prefix for the same three routes:
  * `/api/tree/{owner}/{repo}` is the same request as `/tree/{owner}/{repo}`.
  *
+ * The `/api` prefix also carries two discovery routes (prefix required):
+ *   GET /api               -> plaintext curl list
+ *   GET /api/openapi.json  -> OpenAPI 3 document
+ *
  * ?ref= aliases branch. Path is always a query param (never a path segment).
  */
 
@@ -17,16 +21,36 @@ import { SafeError, scrubSecrets } from "./auth.js";
 const VERBS = new Set(["tree", "ls", "cat"]);
 const API_PREFIX = "api";
 
+/** Discovery routes, keyed by the segment that follows `/api`. */
+const META_KINDS = new Map([
+  ["", "api-index"],
+  ["openapi.json", "openapi"],
+]);
+
 /**
  * Split a pathname into route segments, dropping one optional leading `api`
  * alias segment so prefixed and unprefixed URLs share a single parse.
  * @param {string} pathname
- * @returns {string[]}
+ * @returns {{ parts: string[], prefixed: boolean }}
  */
 function routeSegments(pathname) {
   const parts = String(pathname).replace(/\/+$/, "").split("/").filter(Boolean);
-  if (parts.length > 0 && parts[0].toLowerCase() === API_PREFIX) return parts.slice(1);
-  return parts;
+  if (parts.length > 0 && parts[0].toLowerCase() === API_PREFIX) {
+    return { parts: parts.slice(1), prefixed: true };
+  }
+  return { parts, prefixed: false };
+}
+
+/**
+ * Discovery kind for `/api`-prefixed segments, or null when these segments are
+ * not a discovery route. Discovery is never served without the prefix, so `/`
+ * and `/openapi.json` stay static.
+ * @param {{ parts: string[], prefixed: boolean }} segments
+ * @returns {'api-index' | 'openapi' | null}
+ */
+function metaKind({ parts, prefixed }) {
+  if (!prefixed || parts.length > 1) return null;
+  return META_KINDS.get((parts[0] ?? "").toLowerCase()) ?? null;
 }
 
 /** Known query keys per verb (unknown keys are ignored). */
@@ -66,10 +90,12 @@ export function normalizePath(value) {
 /**
  * Parse request URL into a route action.
  * Returns null for non-API paths (static assets, `/`, etc.).
- * An optional leading `/api` prefix resolves to the identical action.
+ * An optional leading `/api` prefix resolves to the identical repo action;
+ * `/api` and `/api/openapi.json` resolve to discovery actions.
  *
  * @param {string | URL} input
- * @returns {null | {
+ * @returns {null | { kind: 'api-index' | 'openapi' } | {
+ *   kind: 'repo',
  *   verb: 'tree'|'ls'|'cat',
  *   owner: string,
  *   repo: string,
@@ -83,7 +109,11 @@ export function normalizePath(value) {
  */
 export function parseRoute(input) {
   const url = input instanceof URL ? input : new URL(String(input), "http://local");
-  const parts = routeSegments(url.pathname);
+  const segments = routeSegments(url.pathname);
+  const meta = metaKind(segments);
+  if (meta) return { kind: meta };
+
+  const { parts } = segments;
   if (parts.length === 0) return null;
 
   const verb = parts[0].toLowerCase();
@@ -130,6 +160,7 @@ export function parseRoute(input) {
   void KNOWN_KEYS[verb];
 
   return {
+    kind: "repo",
     verb,
     owner,
     repo,
@@ -143,12 +174,14 @@ export function parseRoute(input) {
 }
 
 /**
- * Whether this pathname is one of the three API verbs (even if malformed),
- * with or without the `/api` prefix.
+ * Whether this pathname belongs to the API host: one of the three verbs (even
+ * if malformed) with or without the `/api` prefix, or a `/api` discovery route.
  * @param {string} pathname
  */
 export function isApiPath(pathname) {
-  const first = routeSegments(pathname)[0];
+  const segments = routeSegments(pathname);
+  if (metaKind(segments)) return true;
+  const first = segments.parts[0];
   return first != null && VERBS.has(first.toLowerCase());
 }
 

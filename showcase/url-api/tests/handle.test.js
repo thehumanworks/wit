@@ -184,6 +184,105 @@ describe("handleRequest fixtures", () => {
     assert.equal(seenAuth.includes("query-should-lose"), false);
   });
 
+  it("GET /api lists the three curls for the requested origin", async () => {
+    const res = await handleRequest(new Request("https://example.test/api"), {
+      cache: createHostCache({ ttlMs: 60_000 }),
+      loadWasmBytes: async () => wasmBytes,
+    });
+    assert.ok(res);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /text\/plain/);
+    const text = await res.text();
+    for (const line of [
+      "curl https://example.test/api/tree/{owner}/{repo}",
+      "curl https://example.test/api/ls/{owner}/{repo}",
+      "curl https://example.test/api/cat/{owner}/{repo}?path=",
+    ]) {
+      assert.ok(text.includes(line), `missing curl line: ${line}\n${text}`);
+    }
+    for (const absent of ["/rg/", "/head/", "/tail/", "swagger"]) {
+      assert.equal(text.includes(absent), false, `unexpected ${absent} in /api`);
+    }
+  });
+
+  it("GET /api/openapi.json documents only the six tree/ls/cat GETs", async () => {
+    const res = await handleRequest(
+      new Request("https://example.test/api/openapi.json"),
+      {
+        cache: createHostCache({ ttlMs: 60_000 }),
+        loadWasmBytes: async () => wasmBytes,
+      },
+    );
+    assert.ok(res);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /application\/(json|openapi\+json)/);
+
+    const raw = await res.text();
+    const doc = JSON.parse(raw);
+    assert.match(doc.openapi, /^3\./);
+    assert.deepEqual(doc.servers, [{ url: "https://example.test" }]);
+    assert.deepEqual(Object.keys(doc.paths).sort(), [
+      "/api/cat/{owner}/{repo}",
+      "/api/ls/{owner}/{repo}",
+      "/api/tree/{owner}/{repo}",
+      "/cat/{owner}/{repo}",
+      "/ls/{owner}/{repo}",
+      "/tree/{owner}/{repo}",
+    ]);
+    for (const [pathname, item] of Object.entries(doc.paths)) {
+      assert.deepEqual(Object.keys(item), ["get"], `${pathname} exposes non-GET methods`);
+    }
+
+    for (const prefix of ["", "/api"]) {
+      const catPath = doc.paths[`${prefix}/cat/{owner}/{repo}`].get.parameters;
+      const pathParam = catPath.find((p) => p.in === "query" && p.name === "path");
+      assert.ok(pathParam, `${prefix}/cat is missing the path query param`);
+      assert.equal(pathParam.required, true, `${prefix}/cat ?path= must be required`);
+      const treeParams = doc.paths[`${prefix}/tree/{owner}/{repo}`].get.parameters;
+      const names = treeParams.map((p) => p.name);
+      for (const expected of ["owner", "repo", "path", "branch", "ref", "depth"]) {
+        assert.ok(names.includes(expected), `${prefix}/tree missing ${expected}`);
+      }
+    }
+
+    // Header auth only: never advertise the leaky ?token= form, and never
+    // advertise verbs this host does not serve.
+    assert.equal(JSON.stringify(doc).includes('"name": "token"'), false);
+    assert.equal(raw.includes('"name":"token"'), false);
+    for (const absent of ["/rg/", "/search/", "/head/", "/tail/"]) {
+      assert.equal(raw.includes(absent), false, `unexpected ${absent} in openapi.json`);
+    }
+  });
+
+  it("HEAD on the discovery routes is 200 with an empty body", async () => {
+    for (const pathname of ["/api", "/api/openapi.json"]) {
+      const res = await handleRequest(
+        new Request(`https://example.test${pathname}`, { method: "HEAD" }),
+        {
+          cache: createHostCache({ ttlMs: 60_000 }),
+          loadWasmBytes: async () => wasmBytes,
+        },
+      );
+      assert.ok(res, `expected a response for HEAD ${pathname}`);
+      assert.equal(res.status, 200);
+      assert.equal(await res.text(), "");
+      assert.ok(Number(res.headers.get("content-length")) > 0);
+    }
+  });
+
+  it("still serves static for /, /api/foo and /api/rg", async () => {
+    for (const pathname of ["/", "/index.html", "/api/foo", "/api/rg/demo/repo"]) {
+      const res = await handleRequest(
+        new Request(`https://example.test${pathname}`),
+        {
+          cache: createHostCache({ ttlMs: 60_000 }),
+          loadWasmBytes: async () => wasmBytes,
+        },
+      );
+      assert.equal(res, null, `${pathname} should fall through to static`);
+    }
+  });
+
   it("token never appears in error bodies", async () => {
     const cache = createHostCache({ ttlMs: 60_000 });
     const errRes = await handleRequest(
