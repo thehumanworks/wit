@@ -68,6 +68,55 @@ describe("parseRoute", () => {
   });
 });
 
+describe("/api prefix alias", () => {
+  const suffixes = [
+    "tree/octocat/Hello-World?path=src&branch=main&depth=2",
+    "ls/octocat/Hello-World?ref=master",
+    "cat/octocat/Hello-World?path=README.md",
+  ];
+
+  for (const suffix of suffixes) {
+    it(`parses /api/${suffix} exactly like /${suffix}`, () => {
+      assert.deepEqual(
+        parseRoute(`https://h/api/${suffix}`),
+        parseRoute(`https://h/${suffix}`),
+      );
+    });
+  }
+
+  it("requires ?path= for /api/cat", () => {
+    assert.throws(
+      () => parseRoute("https://h/api/cat/octocat/Hello-World"),
+      (err) =>
+        err instanceof SafeError &&
+        err.status === 400 &&
+        err.code === "path_required",
+    );
+  });
+
+  it("rejects a missing owner/repo the same way as unprefixed", () => {
+    assert.throws(
+      () => parseRoute("https://h/api/tree"),
+      (err) => err instanceof SafeError && err.code === "bad_route",
+    );
+  });
+
+  it("treats /api and unknown /api verbs as non-API", () => {
+    assert.equal(isApiPath("/api"), false);
+    assert.equal(isApiPath("/api/foo"), false);
+    assert.equal(parseRoute("https://h/api"), null);
+    assert.equal(parseRoute("https://h/api/foo"), null);
+    // Only one prefix level is stripped.
+    assert.equal(isApiPath("/api/api/tree/o/r"), false);
+  });
+
+  it("marks prefixed verb paths as API paths", () => {
+    assert.equal(isApiPath("/api/tree/x/y"), true);
+    assert.equal(isApiPath("/api/ls/x/y"), true);
+    assert.equal(isApiPath("/api/cat/x/y"), true);
+  });
+});
+
 describe("errorBody", () => {
   it("never echoes tokens", () => {
     const { body } = errorBody(new SafeError("nope ?token=ghp_ZZZ"));

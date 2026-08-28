@@ -68,51 +68,53 @@ describe("console log scrubbing", () => {
     return parts.join("\n");
   }
 
-  it("failing GET with ?token= and Authorization never logs raw PATs", async () => {
-    const queryPat = "ghp_SHOULD_NOT_LEAK";
-    const headerPat = "ghp_HEADER_MUST_STAY_SECRET";
-    installConsoleSpies();
-    try {
-      const cache = createHostCache({ ttlMs: 60_000 });
-      const res = await handleRequest(
-        new Request(
-          `https://example.test/cat/demo/repo?path=README.md&token=${queryPat}`,
-          { headers: { Authorization: `Bearer ${headerPat}` } },
-        ),
-        {
-          cache,
-          loadWasmBytes: async () => wasmBytes,
-        },
-      );
-      assert.ok(res);
-      assert.ok(res.status >= 400);
+  for (const prefix of ["", "/api"]) {
+    it(`failing GET ${prefix}/cat with ?token= and Authorization never logs raw PATs`, async () => {
+      const queryPat = "ghp_SHOULD_NOT_LEAK";
+      const headerPat = "ghp_HEADER_MUST_STAY_SECRET";
+      installConsoleSpies();
+      try {
+        const cache = createHostCache({ ttlMs: 60_000 });
+        const res = await handleRequest(
+          new Request(
+            `https://example.test${prefix}/cat/demo/repo?path=README.md&token=${queryPat}`,
+            { headers: { Authorization: `Bearer ${headerPat}` } },
+          ),
+          {
+            cache,
+            loadWasmBytes: async () => wasmBytes,
+          },
+        );
+        assert.ok(res);
+        assert.ok(res.status >= 400);
 
-      const body = await res.text();
-      assert.equal(body.includes(queryPat), false);
-      assert.equal(body.includes(headerPat), false);
+        const body = await res.text();
+        assert.equal(body.includes(queryPat), false);
+        assert.equal(body.includes(headerPat), false);
 
-      // At least one console.error from the catch path (and it must be scrubbed).
-      assert.ok(captured.error.length > 0, "expected console.error during failure");
+        // At least one console.error from the catch path (and it must be scrubbed).
+        assert.ok(captured.error.length > 0, "expected console.error during failure");
 
-      const joined = flattenCaptured();
-      assert.equal(
-        joined.includes(queryPat),
-        false,
-        `query token leaked into logs:\n${joined}`,
-      );
-      assert.equal(
-        joined.includes(headerPat),
-        false,
-        `header token leaked into logs:\n${joined}`,
-      );
-      // Prefer explicit redaction markers when a token-bearing URL was logged.
-      if (joined.includes("token=")) {
-        assert.match(joined, /token=\[REDACTED\]/);
+        const joined = flattenCaptured();
+        assert.equal(
+          joined.includes(queryPat),
+          false,
+          `query token leaked into logs:\n${joined}`,
+        );
+        assert.equal(
+          joined.includes(headerPat),
+          false,
+          `header token leaked into logs:\n${joined}`,
+        );
+        // Prefer explicit redaction markers when a token-bearing URL was logged.
+        if (joined.includes("token=")) {
+          assert.match(joined, /token=\[REDACTED\]/);
+        }
+      } finally {
+        restoreConsole();
       }
-    } finally {
-      restoreConsole();
-    }
-  });
+    });
+  }
 
   it("safeConsole redacts active secrets across log/warn/error", async () => {
     installConsoleSpies();

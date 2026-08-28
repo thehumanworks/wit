@@ -129,6 +129,44 @@ describe("handleRequest fixtures", () => {
     assert.match(text, /Hello|memory|README/i);
   });
 
+  it("/api prefix returns the same status and plaintext as unprefixed", async () => {
+    const fetchRoute = async (pathname) => {
+      const res = await handleRequest(
+        new Request(`https://example.test${pathname}`),
+        {
+          cache: createHostCache({ ttlMs: 60_000 }),
+          loadWasmBytes: async () => wasmBytes,
+        },
+      );
+      assert.ok(res, `expected a response for ${pathname}`);
+      return {
+        status: res.status,
+        contentType: res.headers.get("content-type"),
+        text: await res.text(),
+      };
+    };
+
+    for (const suffix of ["tree/demo/repo", "ls/demo/repo", "cat/demo/repo?path=README.md"]) {
+      const plain = await fetchRoute(`/${suffix}`);
+      const prefixed = await fetchRoute(`/api/${suffix}`);
+      assert.equal(plain.status, 200);
+      assert.deepEqual(prefixed, plain, `/api/${suffix} diverged from /${suffix}`);
+    }
+  });
+
+  it("GET /api/cat/demo/repo without ?path= is 400 path_required", async () => {
+    const res = await handleRequest(
+      new Request("https://example.test/api/cat/demo/repo"),
+      {
+        cache: createHostCache({ ttlMs: 60_000 }),
+        loadWasmBytes: async () => wasmBytes,
+      },
+    );
+    assert.ok(res);
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /cat requires \?path=/);
+  });
+
   it("Authorization header wins over ?token=", async () => {
     seenAuth.length = 0;
     const cache = createHostCache({ ttlMs: 60_000 });
