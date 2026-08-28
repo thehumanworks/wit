@@ -4,8 +4,7 @@ name = "wit-url-api"
 compatibility_date = "2024-11-12"
 pages_build_output_dir = "public"
 
-# Allow `import module from "./wit_snapshot.wasm"` in _worker.js
-[[rules]]
-globs = ["**/*.wasm"]
-type = "CompiledWasm"
-fallthrough = true
+# No [[rules]] block here: `wrangler pages deploy` rejects `rules` in a Pages
+# config ("Configuration file for Pages projects does not support \"rules\"").
+# The Pages bundler already compiles `import wasmModule from "./wit_snapshot.wasm"`
+# in _worker.js into a WebAssembly.Module, so the rule was not needed.
