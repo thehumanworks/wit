@@ -10,6 +10,7 @@ import {
   scrubSecrets,
   withActiveSecrets,
 } from "./auth.js";
+import { apiIndexText, openApiDocument } from "./discovery.js";
 import { formatCat, formatLs, formatTree } from "./format.js";
 import {
   blobShaForPath,
@@ -82,6 +83,17 @@ async function handleRequestInner(request, deps, url, token) {
     const route = parseRoute(url);
     if (!route) return null;
 
+    if (route.kind === "api-index") {
+      return bodyResponse(request, apiIndexText(url));
+    }
+    if (route.kind === "openapi") {
+      return bodyResponse(
+        request,
+        `${JSON.stringify(openApiDocument(url), null, 2)}\n`,
+        "application/json; charset=utf-8",
+      );
+    }
+
     const ttl = ttlFromSearchParams(url.search);
     const cache = getCache(deps);
     if (ttl != null) cache.setTtlMs(ttl);
@@ -128,13 +140,7 @@ async function handleRequestInner(request, deps, url, token) {
       throw new SafeError("unknown verb", { status: 400, code: "bad_verb" });
     }
 
-    if (request.method === "HEAD") {
-      return new Response(null, {
-        status: 200,
-        headers: plaintextHeaders(body),
-      });
-    }
-    return textResponse(body.endsWith("\n") ? body : `${body}\n`, 200);
+    return bodyResponse(request, body.endsWith("\n") ? body : `${body}\n`);
   } catch (err) {
     const { status, body } = errorBody(err);
     // Never log raw token-bearing URLs / PATs (safeConsole scrubs every arg).
@@ -144,19 +150,32 @@ async function handleRequestInner(request, deps, url, token) {
 }
 
 /**
+ * 200 response for a successful body; HEAD gets the same headers, no body.
+ * @param {Request} request
  * @param {string} body
- * @param {number} status
+ * @param {string} [contentType]
  */
-function textResponse(body, status) {
-  return new Response(body, { status, headers: plaintextHeaders(body) });
+function bodyResponse(request, body, contentType) {
+  const headers = responseHeaders(body, contentType);
+  if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+  return new Response(body, { status: 200, headers });
 }
 
 /**
  * @param {string} body
+ * @param {number} status
  */
-function plaintextHeaders(body) {
+function textResponse(body, status) {
+  return new Response(body, { status, headers: responseHeaders(body) });
+}
+
+/**
+ * @param {string} body
+ * @param {string} [contentType]
+ */
+function responseHeaders(body, contentType = "text/plain; charset=utf-8") {
   return {
-    "content-type": "text/plain; charset=utf-8",
+    "content-type": contentType,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
     "content-length": String(new TextEncoder().encode(body).length),

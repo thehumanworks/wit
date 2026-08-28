@@ -101,11 +101,11 @@ describe("/api prefix alias", () => {
     );
   });
 
-  it("treats /api and unknown /api verbs as non-API", () => {
-    assert.equal(isApiPath("/api"), false);
+  it("treats unknown /api verbs as non-API", () => {
     assert.equal(isApiPath("/api/foo"), false);
-    assert.equal(parseRoute("https://h/api"), null);
     assert.equal(parseRoute("https://h/api/foo"), null);
+    assert.equal(isApiPath("/api/rg/o/r"), false);
+    assert.equal(parseRoute("https://h/api/rg/o/r"), null);
     // Only one prefix level is stripped.
     assert.equal(isApiPath("/api/api/tree/o/r"), false);
   });
@@ -114,6 +114,29 @@ describe("/api prefix alias", () => {
     assert.equal(isApiPath("/api/tree/x/y"), true);
     assert.equal(isApiPath("/api/ls/x/y"), true);
     assert.equal(isApiPath("/api/cat/x/y"), true);
+  });
+});
+
+describe("/api discovery routes", () => {
+  it("routes /api (with or without a trailing slash) to the index", () => {
+    assert.equal(isApiPath("/api"), true);
+    assert.equal(isApiPath("/api/"), true);
+    assert.deepEqual(parseRoute("https://h/api"), { kind: "api-index" });
+    assert.deepEqual(parseRoute("https://h/api/"), { kind: "api-index" });
+  });
+
+  it("routes /api/openapi.json to the OpenAPI document", () => {
+    assert.equal(isApiPath("/api/openapi.json"), true);
+    assert.deepEqual(parseRoute("https://h/api/openapi.json"), { kind: "openapi" });
+  });
+
+  it("keeps discovery behind the /api prefix", () => {
+    assert.equal(isApiPath("/"), false);
+    assert.equal(parseRoute("https://h/"), null);
+    assert.equal(isApiPath("/openapi.json"), false);
+    assert.equal(parseRoute("https://h/openapi.json"), null);
+    assert.equal(isApiPath("/api/api"), false);
+    assert.equal(isApiPath("/api/openapi.json/extra"), false);
   });
 });
 
