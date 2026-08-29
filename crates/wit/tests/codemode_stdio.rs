@@ -773,7 +773,11 @@ async fn start_code_client_inner(
                 .args(["--mode", "code"])
                 .env("TMPDIR", temp_root)
                 .env("TMP", temp_root)
-                .env("TEMP", temp_root);
+                .env("TEMP", temp_root)
+                // If an insteadOf rewrite ever misses, git must fail fast,
+                // not block on a credential prompt (hangs Windows CI).
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GCM_INTERACTIVE", "never");
             if let Some((cache, git_config)) = fixture {
                 command
                     .env("WIT_CACHE_DIR", cache)

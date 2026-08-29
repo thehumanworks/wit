@@ -1,0 +1,4 @@
+# codemode.wit.d.ts is embedded via include_str! and compared byte-for-byte
+# against generated LF text; a CRLF checkout (Windows autocrlf) must not
+# rewrite TypeScript sources.
+*.ts text eol=lf
