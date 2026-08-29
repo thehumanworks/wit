@@ -352,13 +352,20 @@ async fn start_with_handler(
     }
 
     let scratch = tempfile::tempdir().context("create isolated worker directory")?;
-    let mut child = isolated_worker_command(worker)
+    let mut command = isolated_worker_command(worker);
+    command
         .arg("__codemode-worker")
         .current_dir(scratch.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    // Let the worker drop phase-marker files into its scratch cwd so a
+    // wedged startup can be attributed to a phase at deadline.
+    if std::env::var_os("WIT_CODEMODE_SPAWN_TRACE").is_some() {
+        command.env("WIT_CODEMODE_SPAWN_TRACE", "1");
+    }
+    let mut child = command
         .spawn()
         .with_context(|| format!("spawn QuickJS worker {}", worker.display()))?;
     let pid = child.id().context("spawned worker has no process id")?;
@@ -385,7 +392,7 @@ async fn start_with_handler(
 
     let (cancel, cancelled) = oneshot::channel();
     let task = tokio::spawn(async move {
-        let _scratch = scratch;
+        let scratch = scratch;
         let diagnostic_task = tokio::spawn(capture_diagnostics(stderr, limits.max_log_bytes));
         let deadline = Duration::from_millis(limits.wall_time_ms.saturating_add(250));
         let outcome: Result<InvocationOutcome> = tokio::select! {
@@ -395,11 +402,28 @@ async fn start_with_handler(
             }
             result = time::timeout(
                 deadline,
-                drive_parent(stdout, stdin, invocation_id, &limits, handler),
+                drive_parent(stdout, stdin, invocation_id, pid, &limits, handler),
             ) => match result {
                 Err(_) => {
                     spawn_trace(|| {
-                        format!("worker {pid} deadline expired without a result frame")
+                        let mut markers = std::fs::read_dir(scratch.path())
+                            .map(|entries| {
+                                entries
+                                    .filter_map(|entry| entry.ok())
+                                    .filter_map(|entry| entry.file_name().into_string().ok())
+                                    .filter(|name| name.starts_with("worker-"))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        markers.sort();
+                        let markers = if markers.is_empty() {
+                            "none".to_string()
+                        } else {
+                            markers.join(",")
+                        };
+                        format!(
+                            "worker {pid} deadline expired without a result frame (phase markers: {markers})"
+                        )
                     });
                     let _ = terminate_and_reap(&mut child).await?;
                     Ok(InvocationOutcome::TimedOut)
@@ -486,6 +510,7 @@ async fn drive_parent<R, W>(
     mut stdout: R,
     stdin: Arc<Mutex<W>>,
     invocation_id: u64,
+    pid: u32,
     limits: &Limits,
     handler: HostHandler,
 ) -> Result<InvocationOutcome>
@@ -507,7 +532,7 @@ where
             Ok(Some(frame)) => {
                 if !first_frame_seen {
                     first_frame_seen = true;
-                    spawn_trace(|| format!("invocation {invocation_id} first worker frame"));
+                    spawn_trace(|| format!("worker {pid} first frame"));
                 }
                 frame
             }
@@ -555,7 +580,7 @@ where
                         )));
                     }
                 };
-                spawn_trace(|| format!("host call {call_id} received"));
+                spawn_trace(|| format!("worker {pid} host call {call_id} received"));
                 let stdin = Arc::clone(&stdin);
                 let semaphore = Arc::clone(&semaphore);
                 let active = Arc::clone(&active);
@@ -590,7 +615,7 @@ where
                         },
                     };
                     let result = write_frame(&mut *stdin.lock().await, &response).await;
-                    spawn_trace(|| format!("host call {call_id} response written"));
+                    spawn_trace(|| format!("worker {pid} host call {call_id} response written"));
                     active.fetch_sub(1, Ordering::SeqCst);
                     result
                 });
@@ -607,7 +632,7 @@ where
                         "result invocation id mismatch".into(),
                     ));
                 }
-                spawn_trace(|| format!("invocation {invocation_id} result frame received"));
+                spawn_trace(|| format!("worker {pid} result frame received"));
                 // A rejected Promise.all may produce a final value while sibling calls are still
                 // in flight. Once the worker has finalized, cancel those privileged futures and
                 // never let a late write to its closing stdin turn a contained rejection into a

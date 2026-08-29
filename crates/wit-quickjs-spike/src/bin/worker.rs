@@ -112,7 +112,17 @@ pub async fn run_worker_process() -> ! {
     }
 }
 
+/// Touch a phase marker file in the worker's scratch cwd when spawn tracing
+/// is enabled, so the parent can name a wedged startup's phase at deadline.
+/// Markers are empty files with fixed names — no content crosses the boundary.
+fn trace_marker(name: &str) {
+    if std::env::var_os("WIT_CODEMODE_SPAWN_TRACE").is_some() {
+        let _ = std::fs::write(name, b"");
+    }
+}
+
 async fn run() -> Result<()> {
+    trace_marker("worker-entered");
     let mut stdin = io::stdin();
     let request_frame = read_frame(&mut stdin)
         .await?
@@ -120,6 +130,7 @@ async fn run() -> Result<()> {
     let request: ExecuteRequest =
         serde_json::from_slice(&request_frame).context("malformed execute request")?;
     validate_request(&request)?;
+    trace_marker("worker-request-read");
 
     match request.test_action {
         TestAction::Crash => process::exit(86),
@@ -373,6 +384,7 @@ fn validate_request(request: &ExecuteRequest) -> Result<()> {
 }
 
 async fn execute_script(request: &ExecuteRequest, rpc: HostRpc) -> Result<Value> {
+    trace_marker("worker-js-start");
     let runtime = AsyncRuntime::new().context("create QuickJS runtime")?;
     runtime.set_memory_limit(request.limits.memory_bytes).await;
     runtime.set_max_stack_size(request.limits.stack_bytes).await;
