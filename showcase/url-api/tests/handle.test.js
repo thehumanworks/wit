@@ -194,9 +194,9 @@ describe("handleRequest fixtures", () => {
     assert.match(res.headers.get("content-type"), /text\/plain/);
     const text = await res.text();
     for (const line of [
-      "curl https://example.test/api/tree/{owner}/{repo}",
-      "curl https://example.test/api/ls/{owner}/{repo}",
-      "curl https://example.test/api/cat/{owner}/{repo}?path=",
+      'curl "https://example.test/api/tree/{owner}/{repo}"',
+      'curl "https://example.test/api/ls/{owner}/{repo}"',
+      'curl "https://example.test/api/cat/{owner}/{repo}?path="',
     ]) {
       assert.ok(text.includes(line), `missing curl line: ${line}\n${text}`);
     }
