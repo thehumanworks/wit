@@ -8,3 +8,17 @@ pages_build_output_dir = "public"
 # config ("Configuration file for Pages projects does not support \"rules\"").
 # The Pages bundler already compiles `import wasmModule from "./wit_snapshot.wasm"`
 # in _worker.js into a WebAssembly.Module, so the rule was not needed.
+
+# Persistent worker-level cache (ADR 0006): the worker reads/writes the repo
+# snapshot cache through the optional `WIT_REPO_CACHE` KV binding, so warm
+# reads survive isolate recycling. Without the binding it degrades to the
+# isolate-lifetime in-memory cache.
+#
+# Local dev: `npm run dev` passes `--kv=WIT_REPO_CACHE` (local simulated KV).
+# Production: bind a KV namespace named WIT_REPO_CACHE to the Pages project in
+# the Cloudflare dashboard (Settings > Bindings), or uncomment below with the
+# real namespace id before `wrangler pages deploy`:
+#
+# [[kv_namespaces]]
+# binding = "WIT_REPO_CACHE"
+# id = "<kv-namespace-id>"

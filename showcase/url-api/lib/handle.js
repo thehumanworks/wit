@@ -32,6 +32,8 @@ import { ttlFromSearchParams } from "./repo-cache.js";
  * @typedef {{
  *   loadWasmBytes: () => Promise<BufferSource | Response>,
  *   cache?: import('./repo-cache.js').RepoSnapshotCache,
+ *   persistentCache?: import('./persistent-cache.js').KvRepoCache,
+ *   waitUntil?: (promise: Promise<unknown>) => void,
  * }} HandlerDeps
  */
 
@@ -101,6 +103,16 @@ async function handleRequestInner(request, deps, url, token) {
     const wasmSource = await deps.loadWasmBytes();
     const api = await loadWasm(wasmSource, cache);
 
+    // Persistence is best-effort: a KV failure must never fail the read.
+    const persistent = deps.persistentCache ?? null;
+    if (persistent) {
+      try {
+        await persistent.hydrateOpen(cache, route.ownerRepo, route.branch);
+      } catch (err) {
+        safeConsole.error("persistent cache hydrate failed", err?.message || err);
+      }
+    }
+
     await prefetchOpen(cache, route.ownerRepo, route.branch, token);
     wasmOpen(api, route.ownerRepo, route.branch);
 
@@ -133,11 +145,28 @@ async function handleRequestInner(request, deps, url, token) {
           code: "not_found",
         });
       }
+      if (persistent) {
+        try {
+          await persistent.hydrateBlob(cache, route.ownerRepo, sha);
+        } catch (err) {
+          safeConsole.error("persistent blob hydrate failed", err?.message || err);
+        }
+      }
       await prefetchBlob(cache, route.ownerRepo, sha, token);
       const file = wasmRead(api, route.path);
       body = formatCat(file.text, { number: route.number });
     } else {
       throw new SafeError("unknown verb", { status: 400, code: "bad_verb" });
+    }
+
+    if (persistent) {
+      const persisted = persistent
+        .persistRepo(cache, route.ownerRepo)
+        .catch((err) => {
+          safeConsole.error("persistent cache write failed", err?.message || err);
+        });
+      if (deps.waitUntil) deps.waitUntil(persisted);
+      else await persisted;
     }
 
     return bodyResponse(request, body.endsWith("\n") ? body : `${body}\n`);

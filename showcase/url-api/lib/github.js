@@ -49,6 +49,17 @@ export async function githubGet(path, token) {
  * @param {string | null} token
  */
 export async function prefetchOpen(cache, ownerRepo, branch, token) {
+  // A live open entry (isolate-warm or hydrated from persistent cache) can
+  // serve the whole repo → commit → tree sequence; skip GitHub entirely.
+  const cached = cache.findOpenEntry(ownerRepo, branch ?? undefined);
+  if (cached) {
+    return {
+      ref: cached.requestedRef,
+      treeSha: cached.treeSha,
+      commitSha: cached.commitSha,
+    };
+  }
+
   const repoPath = `/repos/${ownerRepo}`;
   const repoRes = await githubGet(repoPath, token);
   if (repoRes.status === 404) {
