@@ -9,6 +9,8 @@ Companion to [0005-url-api-host.md](./0005-url-api-host.md).
 | `showcase/url-api/public/` | Static HTML + JS + `wit_snapshot.wasm` |
 | `showcase/url-api/public/_worker.js` | Cloudflare Pages `_worker` (host `get_json` adapter) |
 | `showcase/url-api/lib/` | Shared routing, auth scrubbing, plaintext format, wasm host |
+| `/wrangler.toml` | Pages Git integration (repo-root clone); `pages_build_output_dir` points at `showcase/url-api/public` |
+| `/public` | Symlink to `showcase/url-api/public` so a dashboard output dir of `public` still resolves |
 
 Same `MemoryBackend` as ADR 0004. Exports used: `open` / `list` / `read` only.
 

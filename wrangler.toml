@@ -1,0 +1,23 @@
+# Cloudflare Pages Git integration clones the repository root and reads
+# wrangler.toml here (v2 root directory strategy). The dashboard currently
+# looks for output directory "public" with no build command; without this
+# file the build fails: `Output directory "public" not found`.
+#
+# Local `wrangler pages dev` and GitHub Actions `wrangler pages deploy`
+# still run from showcase/url-api/ and use that directory's wrangler.toml
+# (`pages_build_output_dir = "public"`).
+name = "wit-url-api"
+compatibility_date = "2024-11-12"
+pages_build_output_dir = "showcase/url-api/public"
+
+# No [[rules]] block: `wrangler pages deploy` rejects `rules` in a Pages
+# config. The Pages bundler already compiles
+# `import wasmModule from "./wit_snapshot.wasm"` in _worker.js.
+
+# Persistent worker-level cache (ADR 0006): optional WIT_REPO_CACHE KV
+# binding. Bind the namespace in the Cloudflare dashboard, or uncomment
+# below with the real namespace id:
+#
+# [[kv_namespaces]]
+# binding = "WIT_REPO_CACHE"
+# id = "<kv-namespace-id>"
