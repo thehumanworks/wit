@@ -31,9 +31,9 @@ export function apiIndexText(input) {
   return [
     "wit url-api — three verbs; the repo path is always a query param.",
     "",
-    `curl ${origin}/api/tree/{owner}/{repo}`,
-    `curl ${origin}/api/ls/{owner}/{repo}`,
-    `curl ${origin}/api/cat/{owner}/{repo}?path=`,
+    `curl "${origin}/api/tree/{owner}/{repo}"`,
+    `curl "${origin}/api/ls/{owner}/{repo}"`,
+    `curl "${origin}/api/cat/{owner}/{repo}?path="`,
     "",
     "The same three verbs also answer without the /api prefix.",
     `OpenAPI: ${origin}/api/openapi.json`,
