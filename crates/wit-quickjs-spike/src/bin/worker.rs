@@ -77,6 +77,7 @@ impl HostRpc {
                 rquickjs::Error::new_from_js_message("hostCall", "Promise", error.to_string())
             })?;
         }
+        trace_marker("worker-host-call-written");
         receiver.await.map_err(|_| {
             rquickjs::Error::new_from_js_message(
                 "hostCall",
@@ -396,6 +397,7 @@ async fn execute_script(request: &ExecuteRequest, rpc: HostRpc) -> Result<Value>
     let context = AsyncContext::full(&runtime)
         .await
         .context("create QuickJS context")?;
+    trace_marker("worker-context-created");
     let source = format!(
         "(async () => {{\ntry {{\nconst __result = await (async () => {{\n{}\n}})();\n__validateFinal(__result);\nreturn JSON.stringify({{ ok: true, value: __result }});\n}} catch (error) {{\nreturn JSON.stringify({{ ok: false, error: {{ code: error && error.code || 'code_rejected', operation: error && error.operation || '', message: error && error.message || String(error) }} }});\n}}\n}})()",
         request.script
@@ -434,7 +436,9 @@ async fn execute_script(request: &ExecuteRequest, rpc: HostRpc) -> Result<Value>
                 );
                 return Err(error);
             }
+            trace_marker("worker-prelude-evaluated");
             let promise: Promise = ctx.eval(source.as_str())?;
+            trace_marker("worker-script-evaluated");
             let json = promise.into_future::<String>().await?;
             Ok::<String, rquickjs::Error>(json)
         })
