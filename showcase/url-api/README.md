@@ -7,6 +7,13 @@ See `docs/adr/0005-url-api-host.md` and `docs/adr/0005-url-api-howto.md`.
 Live deploy is Cloudflare Pages (project `wit-url-api`) via
 `.github/workflows/url-api-deploy.yml` — not GitHub Pages.
 
+The Pages project is Git-connected at the **repository root**. Cloudflare's
+v2 builder reads root `wrangler.toml` (`pages_build_output_dir =
+"showcase/url-api/public"`). A `public` → `showcase/url-api/public` symlink
+covers the dashboard fallback that looks for output directory `public` when
+no Wrangler file is found. GitHub Actions still deploys from
+`showcase/url-api/` after building a fresh wasm.
+
 ```bash
 npm run build:wasm
 npm test

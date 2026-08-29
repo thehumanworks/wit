@@ -11,6 +11,7 @@ on:
       - "showcase/url-api/**"
       - "crates/wit-snapshot/**"
       - ".github/workflows/url-api-deploy.yml"
+      - "wrangler.toml"
   workflow_dispatch:
 
 # No pull_request trigger: forks never get the Cloudflare secrets.

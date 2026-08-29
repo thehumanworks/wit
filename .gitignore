@@ -25,8 +25,8 @@ Thumbs.db
 *.log
 .grok
 
-# Staged wit-snapshot wasm demo artifact
+# Staged wit-snapshot wasm demo artifact (try-it / in-crate demo).
+# showcase/url-api/public/{wit_snapshot.wasm,lib/} are committed so
+# Cloudflare Pages Git builds (no build command) can deploy the worker.
 crates/wit-snapshot/demo/browser/wit_snapshot.wasm
 docs/try/wit_snapshot.wasm
-showcase/url-api/public/wit_snapshot.wasm
-showcase/url-api/public/lib/

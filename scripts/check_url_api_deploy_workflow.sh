@@ -9,6 +9,7 @@ cd "$root"
 deploy_workflow=".github/workflows/url-api-deploy.yml"
 pages_workflow=".github/workflows/pages.yml"
 wrangler_config="showcase/url-api/wrangler.toml"
+root_wrangler="wrangler.toml"
 showcase_readme="showcase/url-api/README.md"
 
 fail() {
@@ -21,7 +22,7 @@ assert_contains() {
   local needle="$2"
   local message="$3"
 
-  grep -Fq "$needle" "$file" || fail "$message"
+  grep -Fq -- "$needle" "$file" || fail "$message"
 }
 
 assert_not_contains() {
@@ -29,7 +30,7 @@ assert_not_contains() {
   local needle="$2"
   local message="$3"
 
-  if grep -Fq "$needle" "$file"; then
+  if grep -Fq -- "$needle" "$file"; then
     fail "$message"
   fi
 }
@@ -116,6 +117,34 @@ assert_contains "$wrangler_config" 'pages_build_output_dir = "public"' \
 if grep -qE '^[[:space:]]*\[\[rules\]\]' "$wrangler_config"; then
   fail "$wrangler_config must not declare a rules table: wrangler pages deploy rejects \"rules\" in a Pages config"
 fi
+
+# Cloudflare Pages Git integration clones the repo root (v2 strategy) and
+# looks for wrangler.toml + output dir "public" with no build command.
+[ -f "$root_wrangler" ] || fail "$root_wrangler must exist so Pages Git builds find a Wrangler config"
+assert_contains "$root_wrangler" 'name = "wit-url-api"' \
+  "$root_wrangler must keep the project name wit-url-api"
+assert_contains "$root_wrangler" 'pages_build_output_dir = "showcase/url-api/public"' \
+  "$root_wrangler must point Pages Git builds at showcase/url-api/public"
+if grep -qE '^[[:space:]]*\[\[rules\]\]' "$root_wrangler"; then
+  fail "$root_wrangler must not declare a rules table: wrangler pages deploy rejects \"rules\" in a Pages config"
+fi
+assert_contains "$deploy_workflow" '- "wrangler.toml"' \
+  "$deploy_workflow must redeploy when the repo-root wrangler.toml changes"
+
+if [ -L public ]; then
+  public_target="$(readlink public)"
+  [ "$public_target" = "showcase/url-api/public" ] \
+    || fail "public/ symlink must point at showcase/url-api/public (got ${public_target})"
+elif [ ! -d public ]; then
+  fail "repo root must have public/ (Cloudflare Pages Git output directory)"
+fi
+
+[ -f showcase/url-api/public/wit_snapshot.wasm ] \
+  || fail "showcase/url-api/public/wit_snapshot.wasm must be committed for Pages Git builds (no build command)"
+[ -d showcase/url-api/public/lib ] \
+  || fail "showcase/url-api/public/lib/ must be committed so the browser page can import ./lib/handle.js"
+diff -rq showcase/url-api/lib showcase/url-api/public/lib >/dev/null \
+  || fail "showcase/url-api/public/lib/ is out of date; run: (cd showcase/url-api && npm run sync-lib)"
 
 assert_contains "$showcase_readme" "$deploy_workflow" \
   "$showcase_readme must point the live deploy at $deploy_workflow"
