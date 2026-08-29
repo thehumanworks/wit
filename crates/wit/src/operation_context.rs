@@ -133,7 +133,13 @@ pub fn command_output(
 ) -> anyhow::Result<Output> {
     context.check().map_err(anyhow::Error::msg)?;
     configure_process_group(command);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stdin must not be inherited: under the stdio MCP server the parent's
+    // stdin is the JSON-RPC pipe, and a child that prompts (e.g. git asking
+    // for credentials) would swallow protocol frames and block forever.
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to invoke process to {action}"))?;
