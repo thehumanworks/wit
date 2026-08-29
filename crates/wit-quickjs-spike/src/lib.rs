@@ -555,6 +555,7 @@ where
                         )));
                     }
                 };
+                spawn_trace(|| format!("host call {call_id} received"));
                 let stdin = Arc::clone(&stdin);
                 let semaphore = Arc::clone(&semaphore);
                 let active = Arc::clone(&active);
@@ -589,6 +590,7 @@ where
                         },
                     };
                     let result = write_frame(&mut *stdin.lock().await, &response).await;
+                    spawn_trace(|| format!("host call {call_id} response written"));
                     active.fetch_sub(1, Ordering::SeqCst);
                     result
                 });
@@ -605,6 +607,7 @@ where
                         "result invocation id mismatch".into(),
                     ));
                 }
+                spawn_trace(|| format!("invocation {invocation_id} result frame received"));
                 // A rejected Promise.all may produce a final value while sibling calls are still
                 // in flight. Once the worker has finalized, cancel those privileged futures and
                 // never let a late write to its closing stdin turn a contained rejection into a
