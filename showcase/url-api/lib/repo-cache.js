@@ -517,6 +517,57 @@ export class RepoSnapshotCache {
   }
 
   /**
+   * A "complete open" entry for repo@ref: one that can serve the wasm open
+   * sequence (repo → commit → tree) without touching GitHub. Excludes the
+   * synthetic `_blobs` bucket and blob-only rows. With no requestedRef, only
+   * an entry for the repo's own default branch counts — a cached feature
+   * branch must not masquerade as the default.
+   *
+   * @param {string} ownerRepo
+   * @param {string} [requestedRef]
+   * @returns {RepoCacheEntry | null}
+   */
+  findOpenEntry(ownerRepo, requestedRef) {
+    this.invalidateExpired();
+    for (const entry of this.entries.values()) {
+      if (entry.ownerRepo !== ownerRepo) continue;
+      if (entry.requestedRef === "_blobs" || !entry.treeSha || !entry.commitSha) continue;
+      if (requestedRef == null) {
+        if (resolveRefName(entry.defaultBranch) === entry.resolvedRef) return entry;
+        continue;
+      }
+      if (
+        entry.requestedRef === requestedRef ||
+        entry.resolvedRef === requestedRef ||
+        entry.resolvedRef === resolveRefName(requestedRef) ||
+        entry.commitSha === requestedRef
+      ) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Insert or replace entries without clearing the rest (persistent-cache
+   * hydrate). Existing blobs for the same key are kept.
+   * @param {RepoCacheEntry[]} rows
+   */
+  upsertEntries(rows) {
+    for (const row of rows) {
+      if (!row?.ownerRepo || !row?.resolvedRef) continue;
+      const key = repoCacheKey(row.ownerRepo, row.resolvedRef);
+      const prev = this.entries.get(key);
+      const entry = { ...row, blobs: row.blobs ?? {}, tree: row.tree ?? [] };
+      if (prev && !this.isExpired(prev)) {
+        entry.blobs = { ...prev.blobs, ...entry.blobs };
+      }
+      this.entries.set(key, entry);
+    }
+    this.invalidateExpired();
+  }
+
+  /**
    * Replace in-memory entries (e.g. after IndexedDB hydrate).
    * @param {RepoCacheEntry[]} rows
    */
