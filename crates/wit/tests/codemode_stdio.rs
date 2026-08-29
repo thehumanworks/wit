@@ -777,7 +777,10 @@ async fn start_code_client_inner(
                 // If an insteadOf rewrite ever misses, git must fail fast,
                 // not block on a credential prompt (hangs Windows CI).
                 .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GCM_INTERACTIVE", "never");
+                .env("GCM_INTERACTIVE", "never")
+                // Worker lifecycle markers in CI logs, so a stalled spawn
+                // names its phase instead of a bare deadline error.
+                .env("WIT_CODEMODE_SPAWN_TRACE", "1");
             if let Some((cache, git_config)) = fixture {
                 command
                     .env("WIT_CACHE_DIR", cache)

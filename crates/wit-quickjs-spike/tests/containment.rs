@@ -290,8 +290,7 @@ async fn crashed_timed_out_and_cancelled_workers_are_replaceable() -> Result<()>
 #[tokio::test]
 async fn malformed_and_oversized_ipc_is_rejected_without_harming_parent() -> Result<()> {
     let _guard = TEST_LOCK.lock().await;
-    let mut child = Command::new(worker())
-        .env_clear()
+    let mut child = wit_quickjs_spike::isolated_worker_command(&worker())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -452,8 +451,7 @@ async fn near_limit_host_result_with_quotes_and_newlines_crosses_ipc_once() -> R
 #[tokio::test]
 async fn worker_diagnostics_stay_on_stderr_and_stdout_remains_framed() -> Result<()> {
     let _guard = TEST_LOCK.lock().await;
-    let mut child = Command::new(worker())
-        .env_clear()
+    let mut child = wit_quickjs_spike::isolated_worker_command(&worker())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -574,8 +572,7 @@ async fn worker_rejects_zero_unknown_and_duplicate_parent_call_ids() -> Result<(
         } else {
             "return await hostCall(1);"
         };
-        let mut child = Command::new(worker())
-            .env_clear()
+        let mut child = wit_quickjs_spike::isolated_worker_command(&worker())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

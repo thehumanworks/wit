@@ -312,6 +312,32 @@ where
         .await
 }
 
+/// A worker command with a cleared environment. On Windows the system
+/// variables survive the clear: process and DLL initialization (WinSock,
+/// CNG) read `SystemRoot` at startup, and a child spawned without it fails
+/// or stalls intermittently.
+pub fn isolated_worker_command(worker: &Path) -> Command {
+    let mut command = Command::new(worker);
+    command.env_clear();
+    if cfg!(windows) {
+        for key in ["SystemRoot", "SYSTEMDRIVE", "windir"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+    }
+    command
+}
+
+/// Parent-side worker lifecycle markers, enabled by `WIT_CODEMODE_SPAWN_TRACE`.
+/// Emits fixed phase labels only — never worker output, which can carry
+/// secrets and stays counted-and-discarded by design.
+fn spawn_trace(message: impl FnOnce() -> String) {
+    if std::env::var_os("WIT_CODEMODE_SPAWN_TRACE").is_some() {
+        eprintln!("codemode spawn trace: {}", message());
+    }
+}
+
 async fn start_with_handler(
     worker: &Path,
     script: &str,
@@ -326,9 +352,8 @@ async fn start_with_handler(
     }
 
     let scratch = tempfile::tempdir().context("create isolated worker directory")?;
-    let mut child = Command::new(worker)
+    let mut child = isolated_worker_command(worker)
         .arg("__codemode-worker")
-        .env_clear()
         .current_dir(scratch.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -337,6 +362,7 @@ async fn start_with_handler(
         .spawn()
         .with_context(|| format!("spawn QuickJS worker {}", worker.display()))?;
     let pid = child.id().context("spawned worker has no process id")?;
+    spawn_trace(|| format!("worker {pid} spawned"));
     #[cfg(debug_assertions)]
     record_adversarial_pid(pid)?;
 
@@ -355,6 +381,7 @@ async fn start_with_handler(
         test_action,
     };
     write_frame(&mut *stdin.lock().await, &request).await?;
+    spawn_trace(|| format!("worker {pid} request written"));
 
     let (cancel, cancelled) = oneshot::channel();
     let task = tokio::spawn(async move {
@@ -371,6 +398,9 @@ async fn start_with_handler(
                 drive_parent(stdout, stdin, invocation_id, &limits, handler),
             ) => match result {
                 Err(_) => {
+                    spawn_trace(|| {
+                        format!("worker {pid} deadline expired without a result frame")
+                    });
                     let _ = terminate_and_reap(&mut child).await?;
                     Ok(InvocationOutcome::TimedOut)
                 }
@@ -470,10 +500,17 @@ where
     let mut host_tasks = JoinSet::new();
     let mut observed_calls = 0_u32;
     let mut seen_call_ids = HashSet::new();
+    let mut first_frame_seen = false;
 
     loop {
         let frame = match read_frame(&mut stdout).await {
-            Ok(Some(frame)) => frame,
+            Ok(Some(frame)) => {
+                if !first_frame_seen {
+                    first_frame_seen = true;
+                    spawn_trace(|| format!("invocation {invocation_id} first worker frame"));
+                }
+                frame
+            }
             Ok(None) => {
                 return Ok(InvocationOutcome::ProtocolError(
                     "worker closed IPC without a result".into(),
