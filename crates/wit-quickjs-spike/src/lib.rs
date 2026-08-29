@@ -329,6 +329,73 @@ pub fn isolated_worker_command(worker: &Path) -> Command {
     command
 }
 
+/// Stream worker stdout frames from a dedicated blocking reader thread.
+///
+/// Async readiness for child stdio pipes proved lossy on Windows CI: a
+/// worker's written-and-flushed frame never woke the parent's async read
+/// while the same runtime's timers kept firing, wedging the invocation
+/// until its deadline. A blocking read on the owned pipe handle cannot
+/// miss a wakeup, and buffered reads replace the byte-at-a-time loop.
+///
+/// The channel yields complete frames without the trailing newline; an
+/// error ends the stream, and a closed channel is EOF.
+fn spawn_frame_reader(
+    stdout: tokio::process::ChildStdout,
+) -> Result<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>> {
+    use std::io::{BufRead, Read};
+
+    #[cfg(unix)]
+    let file: std::fs::File = stdout
+        .into_owned_fd()
+        .context("take ownership of worker stdout")?
+        .into();
+    #[cfg(windows)]
+    let file: std::fs::File = stdout
+        .into_owned_handle()
+        .context("take ownership of worker stdout")?
+        .into();
+
+    let (sender, frames) = tokio::sync::mpsc::channel(16);
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(file);
+        loop {
+            let mut frame = Vec::new();
+            let read = Read::by_ref(&mut reader)
+                .take(MAX_FRAME_BYTES as u64 + 2)
+                .read_until(b'\n', &mut frame);
+            match read {
+                Ok(0) => break,
+                Ok(_) if frame.last() == Some(&b'\n') => {
+                    frame.pop();
+                    let message = if frame.len() > MAX_FRAME_BYTES {
+                        Err(anyhow!("IPC frame exceeds {MAX_FRAME_BYTES}-byte limit"))
+                    } else {
+                        Ok(frame)
+                    };
+                    let failed = message.is_err();
+                    if sender.blocking_send(message).is_err() || failed {
+                        break;
+                    }
+                }
+                Ok(_) => {
+                    let message = if frame.len() > MAX_FRAME_BYTES {
+                        anyhow!("IPC frame exceeds {MAX_FRAME_BYTES}-byte limit")
+                    } else {
+                        anyhow!("truncated IPC frame")
+                    };
+                    let _ = sender.blocking_send(Err(message));
+                    break;
+                }
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(error.into()));
+                    break;
+                }
+            }
+        }
+    });
+    Ok(frames)
+}
+
 /// Parent-side worker lifecycle markers, enabled by `WIT_CODEMODE_SPAWN_TRACE`.
 /// Emits fixed phase labels only — never worker output, which can carry
 /// secrets and stays counted-and-discarded by design.
@@ -376,7 +443,7 @@ async fn start_with_handler(
     let stdin = Arc::new(Mutex::new(
         child.stdin.take().context("worker stdin was not piped")?,
     ));
-    let stdout = child.stdout.take().context("worker stdout was not piped")?;
+    let stdout = spawn_frame_reader(child.stdout.take().context("worker stdout was not piped")?)?;
     let stderr = child.stderr.take().context("worker stderr was not piped")?;
     let invocation_id = 1;
     let request = ExecuteRequest {
@@ -506,8 +573,8 @@ async fn terminate_and_reap(child: &mut tokio::process::Child) -> Result<ExitSta
         .context("reap killed worker")
 }
 
-async fn drive_parent<R, W>(
-    mut stdout: R,
+async fn drive_parent<W>(
+    mut stdout: tokio::sync::mpsc::Receiver<Result<Vec<u8>>>,
     stdin: Arc<Mutex<W>>,
     invocation_id: u64,
     pid: u32,
@@ -515,7 +582,6 @@ async fn drive_parent<R, W>(
     handler: HostHandler,
 ) -> Result<InvocationOutcome>
 where
-    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let semaphore = Arc::new(Semaphore::new(limits.max_concurrent_host_calls as usize));
@@ -528,20 +594,20 @@ where
     let mut first_frame_seen = false;
 
     loop {
-        let frame = match read_frame(&mut stdout).await {
-            Ok(Some(frame)) => {
+        let frame = match stdout.recv().await {
+            Some(Ok(frame)) => {
                 if !first_frame_seen {
                     first_frame_seen = true;
                     spawn_trace(|| format!("worker {pid} first frame"));
                 }
                 frame
             }
-            Ok(None) => {
+            None => {
                 return Ok(InvocationOutcome::ProtocolError(
                     "worker closed IPC without a result".into(),
                 ));
             }
-            Err(error) => return Ok(InvocationOutcome::ProtocolError(error.to_string())),
+            Some(Err(error)) => return Ok(InvocationOutcome::ProtocolError(error.to_string())),
         };
         let message: WorkerMessage = match serde_json::from_slice(&frame) {
             Ok(message) => message,
