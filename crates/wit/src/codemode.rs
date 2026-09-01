@@ -127,6 +127,10 @@ impl CodeModeMcpServer {
         let budget = Arc::new(InvocationBudget::new(&self.policy));
         let capacity = Arc::clone(&self.capacity);
         let operations = self.operations.clone();
+        // Name the host operation in flight when the wall clock expires; a
+        // bare deadline error from CI gives nothing to debug a platform hang.
+        let last_operation = Arc::new(std::sync::Mutex::new(None::<String>));
+        let last_operation_probe = Arc::clone(&last_operation);
         let outcome = wit_quickjs_spike::invoke_with_host_handler_and_action(
             &self.worker,
             source,
@@ -137,7 +141,9 @@ impl CodeModeMcpServer {
                 let operation_context = operation_context.clone();
                 let budget = Arc::clone(&budget);
                 let capacity = Arc::clone(&capacity);
+                let last_operation = Arc::clone(&last_operation_probe);
                 async move {
+                    *last_operation.lock().expect("last operation lock") = Some(operation.clone());
                     budget.reserve_operation(&operation).map_err(|error| {
                         wit_quickjs_spike::HostError {
                             code: error.code.into(),
@@ -157,6 +163,8 @@ impl CodeModeMcpServer {
                         .dispatch(&operation_context, &operation, arguments)
                         .await
                         .map_err(host_dispatch_error)?;
+                    *last_operation.lock().expect("last operation lock") =
+                        Some(format!("{operation} (returned)"));
                     Ok(sanitize_host_result(&operation, value))
                 }
             },
@@ -177,10 +185,17 @@ impl CodeModeMcpServer {
                 };
                 CallToolResult::structured_error(code_error(code, message))
             }
-            Ok(InvocationOutcome::TimedOut) => CallToolResult::structured_error(code_error(
-                "deadline_exceeded",
-                "code execution deadline exceeded",
-            )),
+            Ok(InvocationOutcome::TimedOut) => {
+                let last = last_operation
+                    .lock()
+                    .expect("last operation lock")
+                    .clone()
+                    .unwrap_or_else(|| "none started".to_string());
+                CallToolResult::structured_error(code_error(
+                    "deadline_exceeded",
+                    format!("code execution deadline exceeded (last host operation: {last})"),
+                ))
+            }
             Ok(InvocationOutcome::Cancelled { .. }) => CallToolResult::structured_error(
                 code_error("cancelled", "code execution was cancelled"),
             ),

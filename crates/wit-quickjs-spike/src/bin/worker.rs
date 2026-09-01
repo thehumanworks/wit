@@ -77,6 +77,7 @@ impl HostRpc {
                 rquickjs::Error::new_from_js_message("hostCall", "Promise", error.to_string())
             })?;
         }
+        trace_marker("worker-host-call-written");
         receiver.await.map_err(|_| {
             rquickjs::Error::new_from_js_message(
                 "hostCall",
@@ -112,7 +113,17 @@ pub async fn run_worker_process() -> ! {
     }
 }
 
+/// Touch a phase marker file in the worker's scratch cwd when spawn tracing
+/// is enabled, so the parent can name a wedged startup's phase at deadline.
+/// Markers are empty files with fixed names — no content crosses the boundary.
+fn trace_marker(name: &str) {
+    if std::env::var_os("WIT_CODEMODE_SPAWN_TRACE").is_some() {
+        let _ = std::fs::write(name, b"");
+    }
+}
+
 async fn run() -> Result<()> {
+    trace_marker("worker-entered");
     let mut stdin = io::stdin();
     let request_frame = read_frame(&mut stdin)
         .await?
@@ -120,6 +131,7 @@ async fn run() -> Result<()> {
     let request: ExecuteRequest =
         serde_json::from_slice(&request_frame).context("malformed execute request")?;
     validate_request(&request)?;
+    trace_marker("worker-request-read");
 
     match request.test_action {
         TestAction::Crash => process::exit(86),
@@ -373,6 +385,7 @@ fn validate_request(request: &ExecuteRequest) -> Result<()> {
 }
 
 async fn execute_script(request: &ExecuteRequest, rpc: HostRpc) -> Result<Value> {
+    trace_marker("worker-js-start");
     let runtime = AsyncRuntime::new().context("create QuickJS runtime")?;
     runtime.set_memory_limit(request.limits.memory_bytes).await;
     runtime.set_max_stack_size(request.limits.stack_bytes).await;
@@ -384,6 +397,7 @@ async fn execute_script(request: &ExecuteRequest, rpc: HostRpc) -> Result<Value>
     let context = AsyncContext::full(&runtime)
         .await
         .context("create QuickJS context")?;
+    trace_marker("worker-context-created");
     let source = format!(
         "(async () => {{\ntry {{\nconst __result = await (async () => {{\n{}\n}})();\n__validateFinal(__result);\nreturn JSON.stringify({{ ok: true, value: __result }});\n}} catch (error) {{\nreturn JSON.stringify({{ ok: false, error: {{ code: error && error.code || 'code_rejected', operation: error && error.operation || '', message: error && error.message || String(error) }} }});\n}}\n}})()",
         request.script
@@ -422,7 +436,9 @@ async fn execute_script(request: &ExecuteRequest, rpc: HostRpc) -> Result<Value>
                 );
                 return Err(error);
             }
+            trace_marker("worker-prelude-evaluated");
             let promise: Promise = ctx.eval(source.as_str())?;
+            trace_marker("worker-script-evaluated");
             let json = promise.into_future::<String>().await?;
             Ok::<String, rquickjs::Error>(json)
         })

@@ -1,10 +1,7 @@
 use rmcp::{
     ServiceExt,
-    model::{
-        CallToolRequestParams, ClientRequest, ReadResourceRequestParams, Request, ResourceContents,
-    },
+    model::{CallToolRequestParams, ReadResourceRequestParams, ResourceContents},
     object,
-    service::PeerRequestOptions,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde_json::{Value, json};
@@ -40,6 +37,10 @@ async fn shutdown_client(mut client: McpClient) -> anyhow::Result<()> {
 #[cfg(unix)]
 #[tokio::test]
 async fn stdio_cancel_notification_stops_dynamic_route_git_work() -> anyhow::Result<()> {
+    use rmcp::{
+        model::{ClientRequest, Request},
+        service::PeerRequestOptions,
+    };
     use std::os::unix::fs::PermissionsExt;
 
     let _serial = lock_stdio_child_tests().await;
@@ -176,6 +177,13 @@ fn wit_mcp_rejects_unknown_arguments_and_preserves_help_and_version() -> anyhow:
 #[tokio::test]
 async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Result<()> {
     let _serial = lock_stdio_child_tests().await;
+    // Name the step in flight so a timeout reports where the test blocked
+    // instead of a bare "timed out" (the only signal CI gives on a hang).
+    let step = std::sync::Arc::new(std::sync::Mutex::new("startup"));
+    let mark = {
+        let step = std::sync::Arc::clone(&step);
+        move |name: &'static str| *step.lock().unwrap() = name
+    };
     tokio::time::timeout(Duration::from_secs(120), async {
         let bin = env!("CARGO_BIN_EXE_wit-mcp");
         let cache = tempfile::tempdir()?;
@@ -185,10 +193,16 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
                 cmd.kill_on_drop(true)
                     .env("WIT_CACHE_DIR", cache.path())
                     .env("GIT_CONFIG_GLOBAL", &fixture.git_config)
-                    .env("GIT_CONFIG_NOSYSTEM", "1");
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    // If an insteadOf rewrite ever misses, git must fail fast,
+                    // not block on a credential prompt (hangs Windows CI).
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env("GCM_INTERACTIVE", "never");
             }))?;
+        mark("serve handshake");
         let client = ().serve(transport).await?;
 
+        mark("list_all_tools");
         let tools = client.list_all_tools().await?;
         let names = tools
             .iter()
@@ -208,6 +222,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         );
         assert!(!names.contains(&"wit_cat"));
 
+        mark("wit_refs");
         let refs = call_tool_json(
             &client,
             "wit_refs",
@@ -229,6 +244,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
                 .any(|item| { item["resolved_ref"] == "refs/tags/v-test" })
         );
 
+        mark("wit_open allow_stale");
         let opened = call_tool_json(
             &client,
             "wit_open",
@@ -238,6 +254,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
             }),
         )
         .await?;
+        mark("pagination and search");
         let snapshot_id = opened["snapshot_id"].as_str().unwrap().to_string();
         let original_sha = opened["commit_sha"].as_str().unwrap().to_string();
         assert_eq!(opened["api_version"], "2");
@@ -438,6 +455,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
                 >= 2
         );
 
+        mark("wit_open feature/mcp");
         let named = call_tool_json(
             &client,
             "wit_open",
@@ -459,6 +477,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         .await?;
         assert_eq!(named_read["items"][0]["text"], "feature alpha");
 
+        mark("move_main_branch and replay");
         let moved_sha = move_main_branch(&fixture, "changed after snapshot\n")?;
         assert_ne!(moved_sha, original_sha);
         let exact_replay = call_tool_json(
@@ -489,6 +508,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         assert_eq!(replay["items"][0]["text"], "alpha");
         assert_eq!(replay["items"][0]["commit_sha"], original_sha);
 
+        mark("wit_open require_fresh");
         let fresh = call_tool_json(
             &client,
             "wit_open",
@@ -502,6 +522,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         assert_eq!(fresh["commit_sha"], moved_sha);
         assert_eq!(fresh["cache"]["state"], "explicitly_refreshed");
 
+        mark("wit_open tag and sha");
         let tag = call_tool_json(
             &client,
             "wit_open",
@@ -517,12 +538,16 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         .await?;
         assert_eq!(by_sha["commit_sha"], tag["commit_sha"]);
 
+        mark("shutdown");
         shutdown_client(client).await?;
         Ok(())
     })
     .await
     .map_err(|_| {
-        anyhow::anyhow!("wit_mcp_v2_snapshot_provenance_pagination_and_replay timed out")
+        anyhow::anyhow!(
+            "wit_mcp_v2_snapshot_provenance_pagination_and_replay timed out at step '{}'",
+            step.lock().unwrap()
+        )
     })?
 }
 
@@ -648,8 +673,8 @@ fn seed_cached_repo(cache_dir: &Path) -> anyhow::Result<CachedRepoFixture> {
     std::fs::write(
         &git_config,
         format!(
-            "[url \"file://{}\"]\n\tinsteadOf = https://github.com/owner/repo\n\tinsteadOf = https://github.com/owner/repo.git\n",
-            remote.display()
+            "[url \"{}\"]\n\tinsteadOf = https://github.com/owner/repo\n\tinsteadOf = https://github.com/owner/repo.git\n",
+            file_url(&remote)
         ),
     )?;
 
@@ -679,6 +704,19 @@ fn move_main_branch(fixture: &CachedRepoFixture, content: &str) -> anyhow::Resul
     )?;
     run_git(&["push", "origin", "main"], Some(&fixture.worktree))?;
     git_stdout(&["rev-parse", "HEAD"], Some(&fixture.worktree))
+}
+
+/// A file URL git parses identically on every platform. `Path::display` on
+/// Windows yields backslashes, which git's config parser silently strips
+/// inside a quoted subsection (`\U` -> `U`), corrupting the insteadOf target
+/// so remote access escapes the fixture.
+fn file_url(path: &Path) -> String {
+    let path = path.display().to_string().replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
 }
 
 fn run_git(args: &[&str], workdir: Option<&Path>) -> anyhow::Result<()> {

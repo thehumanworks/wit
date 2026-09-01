@@ -312,6 +312,99 @@ where
         .await
 }
 
+/// A worker command with a cleared environment. On Windows the system
+/// variables survive the clear: process and DLL initialization (WinSock,
+/// CNG) read `SystemRoot` at startup, and a child spawned without it fails
+/// or stalls intermittently.
+pub fn isolated_worker_command(worker: &Path) -> Command {
+    let mut command = Command::new(worker);
+    command.env_clear();
+    if cfg!(windows) {
+        for key in ["SystemRoot", "SYSTEMDRIVE", "windir"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+    }
+    command
+}
+
+/// Stream worker stdout frames from a dedicated blocking reader thread.
+///
+/// Async readiness for child stdio pipes proved lossy on Windows CI: a
+/// worker's written-and-flushed frame never woke the parent's async read
+/// while the same runtime's timers kept firing, wedging the invocation
+/// until its deadline. A blocking read on the owned pipe handle cannot
+/// miss a wakeup, and buffered reads replace the byte-at-a-time loop.
+///
+/// The channel yields complete frames without the trailing newline; an
+/// error ends the stream, and a closed channel is EOF.
+fn spawn_frame_reader(
+    stdout: tokio::process::ChildStdout,
+) -> Result<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>> {
+    use std::io::{BufRead, Read};
+
+    #[cfg(unix)]
+    let file: std::fs::File = stdout
+        .into_owned_fd()
+        .context("take ownership of worker stdout")?
+        .into();
+    #[cfg(windows)]
+    let file: std::fs::File = stdout
+        .into_owned_handle()
+        .context("take ownership of worker stdout")?
+        .into();
+
+    let (sender, frames) = tokio::sync::mpsc::channel(16);
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(file);
+        loop {
+            let mut frame = Vec::new();
+            let read = Read::by_ref(&mut reader)
+                .take(MAX_FRAME_BYTES as u64 + 2)
+                .read_until(b'\n', &mut frame);
+            match read {
+                Ok(0) => break,
+                Ok(_) if frame.last() == Some(&b'\n') => {
+                    frame.pop();
+                    let message = if frame.len() > MAX_FRAME_BYTES {
+                        Err(anyhow!("IPC frame exceeds {MAX_FRAME_BYTES}-byte limit"))
+                    } else {
+                        Ok(frame)
+                    };
+                    let failed = message.is_err();
+                    if sender.blocking_send(message).is_err() || failed {
+                        break;
+                    }
+                }
+                Ok(_) => {
+                    let message = if frame.len() > MAX_FRAME_BYTES {
+                        anyhow!("IPC frame exceeds {MAX_FRAME_BYTES}-byte limit")
+                    } else {
+                        anyhow!("truncated IPC frame")
+                    };
+                    let _ = sender.blocking_send(Err(message));
+                    break;
+                }
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(error.into()));
+                    break;
+                }
+            }
+        }
+    });
+    Ok(frames)
+}
+
+/// Parent-side worker lifecycle markers, enabled by `WIT_CODEMODE_SPAWN_TRACE`.
+/// Emits fixed phase labels only — never worker output, which can carry
+/// secrets and stays counted-and-discarded by design.
+fn spawn_trace(message: impl FnOnce() -> String) {
+    if std::env::var_os("WIT_CODEMODE_SPAWN_TRACE").is_some() {
+        eprintln!("codemode spawn trace: {}", message());
+    }
+}
+
 async fn start_with_handler(
     worker: &Path,
     script: &str,
@@ -326,24 +419,31 @@ async fn start_with_handler(
     }
 
     let scratch = tempfile::tempdir().context("create isolated worker directory")?;
-    let mut child = Command::new(worker)
+    let mut command = isolated_worker_command(worker);
+    command
         .arg("__codemode-worker")
-        .env_clear()
         .current_dir(scratch.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    // Let the worker drop phase-marker files into its scratch cwd so a
+    // wedged startup can be attributed to a phase at deadline.
+    if std::env::var_os("WIT_CODEMODE_SPAWN_TRACE").is_some() {
+        command.env("WIT_CODEMODE_SPAWN_TRACE", "1");
+    }
+    let mut child = command
         .spawn()
         .with_context(|| format!("spawn QuickJS worker {}", worker.display()))?;
     let pid = child.id().context("spawned worker has no process id")?;
+    spawn_trace(|| format!("worker {pid} spawned"));
     #[cfg(debug_assertions)]
     record_adversarial_pid(pid)?;
 
     let stdin = Arc::new(Mutex::new(
         child.stdin.take().context("worker stdin was not piped")?,
     ));
-    let stdout = child.stdout.take().context("worker stdout was not piped")?;
+    let stdout = spawn_frame_reader(child.stdout.take().context("worker stdout was not piped")?)?;
     let stderr = child.stderr.take().context("worker stderr was not piped")?;
     let invocation_id = 1;
     let request = ExecuteRequest {
@@ -355,10 +455,11 @@ async fn start_with_handler(
         test_action,
     };
     write_frame(&mut *stdin.lock().await, &request).await?;
+    spawn_trace(|| format!("worker {pid} request written"));
 
     let (cancel, cancelled) = oneshot::channel();
     let task = tokio::spawn(async move {
-        let _scratch = scratch;
+        let scratch = scratch;
         let diagnostic_task = tokio::spawn(capture_diagnostics(stderr, limits.max_log_bytes));
         let deadline = Duration::from_millis(limits.wall_time_ms.saturating_add(250));
         let outcome: Result<InvocationOutcome> = tokio::select! {
@@ -368,9 +469,29 @@ async fn start_with_handler(
             }
             result = time::timeout(
                 deadline,
-                drive_parent(stdout, stdin, invocation_id, &limits, handler),
+                drive_parent(stdout, stdin, invocation_id, pid, &limits, handler),
             ) => match result {
                 Err(_) => {
+                    spawn_trace(|| {
+                        let mut markers = std::fs::read_dir(scratch.path())
+                            .map(|entries| {
+                                entries
+                                    .filter_map(|entry| entry.ok())
+                                    .filter_map(|entry| entry.file_name().into_string().ok())
+                                    .filter(|name| name.starts_with("worker-"))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        markers.sort();
+                        let markers = if markers.is_empty() {
+                            "none".to_string()
+                        } else {
+                            markers.join(",")
+                        };
+                        format!(
+                            "worker {pid} deadline expired without a result frame (phase markers: {markers})"
+                        )
+                    });
                     let _ = terminate_and_reap(&mut child).await?;
                     Ok(InvocationOutcome::TimedOut)
                 }
@@ -452,15 +573,15 @@ async fn terminate_and_reap(child: &mut tokio::process::Child) -> Result<ExitSta
         .context("reap killed worker")
 }
 
-async fn drive_parent<R, W>(
-    mut stdout: R,
+async fn drive_parent<W>(
+    mut stdout: tokio::sync::mpsc::Receiver<Result<Vec<u8>>>,
     stdin: Arc<Mutex<W>>,
     invocation_id: u64,
+    pid: u32,
     limits: &Limits,
     handler: HostHandler,
 ) -> Result<InvocationOutcome>
 where
-    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let semaphore = Arc::new(Semaphore::new(limits.max_concurrent_host_calls as usize));
@@ -470,16 +591,23 @@ where
     let mut host_tasks = JoinSet::new();
     let mut observed_calls = 0_u32;
     let mut seen_call_ids = HashSet::new();
+    let mut first_frame_seen = false;
 
     loop {
-        let frame = match read_frame(&mut stdout).await {
-            Ok(Some(frame)) => frame,
-            Ok(None) => {
+        let frame = match stdout.recv().await {
+            Some(Ok(frame)) => {
+                if !first_frame_seen {
+                    first_frame_seen = true;
+                    spawn_trace(|| format!("worker {pid} first frame"));
+                }
+                frame
+            }
+            None => {
                 return Ok(InvocationOutcome::ProtocolError(
                     "worker closed IPC without a result".into(),
                 ));
             }
-            Err(error) => return Ok(InvocationOutcome::ProtocolError(error.to_string())),
+            Some(Err(error)) => return Ok(InvocationOutcome::ProtocolError(error.to_string())),
         };
         let message: WorkerMessage = match serde_json::from_slice(&frame) {
             Ok(message) => message,
@@ -518,6 +646,7 @@ where
                         )));
                     }
                 };
+                spawn_trace(|| format!("worker {pid} host call {call_id} received"));
                 let stdin = Arc::clone(&stdin);
                 let semaphore = Arc::clone(&semaphore);
                 let active = Arc::clone(&active);
@@ -552,6 +681,7 @@ where
                         },
                     };
                     let result = write_frame(&mut *stdin.lock().await, &response).await;
+                    spawn_trace(|| format!("worker {pid} host call {call_id} response written"));
                     active.fetch_sub(1, Ordering::SeqCst);
                     result
                 });
@@ -568,6 +698,7 @@ where
                         "result invocation id mismatch".into(),
                     ));
                 }
+                spawn_trace(|| format!("worker {pid} result frame received"));
                 // A rejected Promise.all may produce a final value while sibling calls are still
                 // in flight. Once the worker has finalized, cancel those privileged futures and
                 // never let a late write to its closing stdin turn a contained rejection into a
