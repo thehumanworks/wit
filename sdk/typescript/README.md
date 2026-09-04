@@ -36,5 +36,11 @@ npm run check        # tsc --noEmit + node --test (Node 22+ strips types nativel
 npm run build        # emits dist/ for publishing
 ```
 
-The package is marked `private` until the first release; flip it and
-`npm publish` from `dist/` when ready.
+## Release
+
+`.github/workflows/publish-sdk.yml` publishes to npm on every push to `main`
+that touches `sdk/typescript/` when `package.json`'s `version` is not on the
+registry yet (it uses the repository's `NPM_TOKEN` secret). To release:
+bump `version`, merge, done. Pushes that leave the version unchanged run the
+checks and skip the publish. `workflow_dispatch` with `dry_run` rehearses a
+release without publishing.

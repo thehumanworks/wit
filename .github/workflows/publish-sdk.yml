@@ -1,0 +1,128 @@
+name: publish sdk
+
+# Publishes @nothumanwork/wit-sdk (sdk/typescript) to npm whenever the SDK
+# changes on main and its package.json version is not on the registry yet.
+# Bump `version` in sdk/typescript/package.json to release; a push that
+# leaves the version unchanged runs the checks and skips the publish.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/typescript/**"
+      - ".github/workflows/publish-sdk.yml"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run every step but `npm publish --dry-run` instead of publishing
+        required: false
+        default: false
+        type: boolean
+
+# No pull_request trigger: forks never get NPM_TOKEN.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-sdk
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: sdk/typescript
+
+jobs:
+  publish:
+    name: publish @nothumanwork/wit-sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Require the npm token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NPM_TOKEN:-}" ]]; then
+            echo "error: NPM_TOKEN repository secret is not set (Settings > Secrets and variables > Actions)." >&2
+            exit 1
+          fi
+          echo "NPM_TOKEN is set (value never printed)."
+
+      - name: Install pinned TypeScript compiler
+        run: npm install --global typescript@7.0.2
+
+      - name: Type check and test
+        run: npm run check
+
+      - name: Build dist/
+        run: npm run build
+
+      - name: Resolve package metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if node -p "require('./package.json').private === true" | grep -q true; then
+            echo "error: package.json is marked private; unset it to publish." >&2
+            exit 1
+          fi
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Publishing candidate: ${name}@${version}"
+
+      - name: Validate the tarball contents
+        run: |
+          set -euo pipefail
+          npm pack --dry-run 2>&1 | tee pack.log
+          grep -q "dist/index.js" pack.log || { echo "error: dist/index.js missing from the tarball" >&2; exit 1; }
+          grep -q "dist/index.d.ts" pack.log || { echo "error: dist/index.d.ts missing from the tarball" >&2; exit 1; }
+          grep -q "README.md" pack.log || { echo "error: README.md missing from the tarball" >&2; exit 1; }
+
+      - name: Check whether this version is already on npm
+        id: exists
+        run: |
+          set -euo pipefail
+          package="${{ steps.meta.outputs.name }}@${{ steps.meta.outputs.version }}"
+          if npm view "${package}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "${package} is already published; bump sdk/typescript/package.json to release again."
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish to npm
+        if: steps.exists.outputs.exists != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          set -euo pipefail
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            npm publish --access public --dry-run
+          else
+            npm publish --access public --provenance
+          fi
+
+      - name: Verify the published version resolves
+        if: steps.exists.outputs.exists != 'true' && github.event.inputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          package="${{ steps.meta.outputs.name }}@${{ steps.meta.outputs.version }}"
+          for attempt in $(seq 1 20); do
+            if npm view "${package}" version >/dev/null 2>&1; then
+              echo "${package} is live."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "error: ${package} did not appear on the registry" >&2
+          exit 1
