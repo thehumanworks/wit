@@ -1155,8 +1155,28 @@ async fn run_ast(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// Stack for the thread that runs the CLI. Windows gives the main thread
+/// 1 MiB, and the clap derive for this many subcommands builds every argument
+/// in one function whose debug-build frame alone exceeds that (observed as an
+/// immediate stack overflow in `wit --help` on Windows CI).
+const CLI_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn main() -> anyhow::Result<()> {
+    let worker = std::thread::Builder::new()
+        .name("wit-main".to_string())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async_main())
+        })?;
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+async fn async_main() -> anyhow::Result<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__codemode-worker")) {
         anyhow::ensure!(
             std::env::args_os().nth(2).is_none(),
