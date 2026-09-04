@@ -3,8 +3,8 @@
 //! These operate on an in-RAM [`MemorySnapshot`] and never write `WIT_CACHE_DIR`.
 
 use crate::gitops::ops::{
-    BranchCreatedSource, BranchMetadata, GrepMatch, GrepOptions, GrepResult, IgnoreMatcher,
-    matches_glob, search_blob_bytes,
+    BlobWalkOptions, BranchCreatedSource, BranchMetadata, GrepMatch, GrepOptions, GrepResult,
+    IgnoreMatcher, matches_glob, path_under_prefix, search_blob_bytes,
 };
 use wit_snapshot::{
     EntryKind, GitHubHttpClient, MemorySnapshot, ReqwestGitHubClient, SnapshotResult,
@@ -98,6 +98,43 @@ pub async fn read_memory_text<C: GitHubHttpClient + 'static>(
         .await
         .map_err(|err| anyhow::anyhow!(err))?;
     Ok(text)
+}
+
+/// Memory-backend twin of [`crate::gitops::ops::walk_text_blobs`]: visit every
+/// text blob under the filters in path order; `visit` returns `false` to stop.
+pub async fn walk_memory_text_blobs<C: GitHubHttpClient + 'static>(
+    snap: &MemorySnapshot<C>,
+    opts: &BlobWalkOptions,
+    mut visit: impl FnMut(&str, &str) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let ignore_matcher = IgnoreMatcher::new(&opts.ignore)?;
+    let max_blob = snap.limits().max_blob_bytes;
+    for entry in snap.walk_entries() {
+        if entry.kind != EntryKind::File
+            || !path_under_prefix(&entry.path, opts.path_prefix.as_deref().unwrap_or(""))
+            || ignore_matcher.is_ignored(&entry.path)
+            || opts
+                .glob
+                .as_ref()
+                .is_some_and(|glob| !matches_glob(&entry.path, glob))
+        {
+            continue;
+        }
+        if opts.max_bytes > 0
+            && entry
+                .size
+                .is_some_and(|size| size as usize > opts.max_bytes)
+        {
+            continue;
+        }
+        let Ok(text) = snap.blob_text_by_sha(&entry.sha, max_blob).await else {
+            continue; // binary / oversized / missing
+        };
+        if !visit(&entry.path, &text)? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 pub fn head_from_text(content: &str, count: usize, number: bool) -> String {

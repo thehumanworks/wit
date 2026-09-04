@@ -46,6 +46,15 @@ tempfile = "3.13.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] }
 wit-quickjs-spike = { path = "../wit-quickjs-spike" }
+tree-sitter = "0.27"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+streaming-iterator = "0.1"
 
 [dev-dependencies]
 wiremock = "0.6"

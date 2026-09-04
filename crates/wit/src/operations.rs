@@ -1,3 +1,4 @@
+use crate::ast::{self, AstCapture, AstLanguage, AstSymbol, SymbolFilter};
 use crate::{
     gitops::ops::{CacheAcquisitionMode, CacheBranchSelection, cache_github_repo_with_context},
     operation_context::command_output,
@@ -34,6 +35,8 @@ const DEFAULT_PAGE_ITEMS: usize = 100;
 const MAX_PAGE_ITEMS: usize = 1000;
 const DEFAULT_LIST_DEPTH: usize = 2;
 const MAX_LIST_DEPTH: usize = 32;
+const DEFAULT_AST_MAX_FILES: usize = 200;
+const MAX_AST_MAX_FILES: usize = 1000;
 const DEFAULT_CONTEXT_LINES: usize = 4;
 const MAX_CONTEXT_LINES: usize = 100;
 const DEFAULT_CONTEXT_RESULTS: usize = 20;
@@ -1184,6 +1187,91 @@ fn rank_context(mut matches: Vec<SearchItem>, queries: &[String]) -> Vec<Context
             .then_with(|| left.start_line.cmp(&right.start_line))
     });
     merged
+}
+
+fn ast_item_from_symbol(
+    snapshot: &SnapshotHandle,
+    path: &str,
+    oid: &str,
+    language: AstLanguage,
+    symbol: AstSymbol,
+) -> AstItem {
+    AstItem {
+        snapshot_id: snapshot.snapshot_id().to_string(),
+        repo: snapshot.repo().to_string(),
+        commit_sha: snapshot.commit_sha().to_string(),
+        path: path.to_string(),
+        blob_sha: oid.to_string(),
+        language: language.name().to_string(),
+        kind: symbol.kind,
+        name: symbol.name,
+        start_line: symbol.start_line,
+        end_line: symbol.end_line,
+        start_col: symbol.start_col,
+        end_col: symbol.end_col,
+        parent: symbol.parent,
+        depth: symbol.depth,
+        signature: symbol.signature,
+        capture: None,
+        pattern_index: None,
+        match_index: None,
+    }
+}
+
+fn ast_item_from_capture(
+    snapshot: &SnapshotHandle,
+    path: &str,
+    oid: &str,
+    language: AstLanguage,
+    capture: AstCapture,
+) -> AstItem {
+    AstItem {
+        snapshot_id: snapshot.snapshot_id().to_string(),
+        repo: snapshot.repo().to_string(),
+        commit_sha: snapshot.commit_sha().to_string(),
+        path: path.to_string(),
+        blob_sha: oid.to_string(),
+        language: language.name().to_string(),
+        kind: capture.node_kind,
+        name: capture.text.clone(),
+        start_line: capture.start_line,
+        end_line: capture.end_line,
+        start_col: capture.start_col,
+        end_col: capture.end_col,
+        parent: None,
+        depth: 0,
+        signature: capture.text,
+        capture: Some(capture.capture),
+        pattern_index: Some(capture.pattern_index),
+        match_index: Some(capture.match_index),
+    }
+}
+
+fn render_ast_items(items: &[AstItem]) -> String {
+    items
+        .iter()
+        .map(|item| match &item.capture {
+            Some(capture) => format!(
+                "{}:{}:{}: @{} ({}) {}",
+                item.path,
+                item.start_line,
+                item.start_col + 1,
+                capture,
+                item.kind,
+                item.name
+            ),
+            None => format!(
+                "{}:{}-{}: {}{} {}",
+                item.path,
+                item.start_line,
+                item.end_line,
+                "  ".repeat(item.depth),
+                item.kind,
+                item.name
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_search_items(items: &[SearchItem]) -> String {
@@ -2401,6 +2489,78 @@ pub struct ContextArgs {
     pub include_rendered_text: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AstMode {
+    /// Language-aware definition index (functions, types, methods, constants).
+    #[default]
+    Symbols,
+    /// Raw tree-sitter S-expression query with captures.
+    Query,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct AstArgs {
+    pub snapshot_id: String,
+    /// symbols (default) lists definitions; query runs a tree-sitter query.
+    #[serde(default)]
+    pub mode: AstMode,
+    /// Repository-relative file or directory to restrict the walk to.
+    pub path: Option<String>,
+    /// Optional git-style include globs such as **/*.rs.
+    #[serde(default)]
+    pub globs: Vec<String>,
+    /// Git-style globs to exclude after include filtering.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Restrict to one language (rust, python, javascript, typescript, tsx, go, java, c). Required for query mode unless path names a single file.
+    pub language: Option<String>,
+    /// tree-sitter query (query mode), e.g. (call_expression function: (identifier) @callee (#eq? @callee "helper")).
+    pub query: Option<String>,
+    /// symbols mode: keep only these kind labels (fn, struct, class, method, ...).
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// symbols mode: keep only names matching this regex.
+    pub name: Option<String>,
+    /// Maximum files parsed (default 200, max 1000).
+    pub max_files: Option<usize>,
+    pub cursor: Option<String>,
+    pub max_items: Option<usize>,
+    pub max_bytes: Option<usize>,
+    #[serde(default)]
+    pub include_rendered_text: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AstItem {
+    pub snapshot_id: String,
+    pub repo: String,
+    pub commit_sha: String,
+    pub path: String,
+    pub blob_sha: String,
+    pub language: String,
+    /// symbols: kind label (fn, struct, ...); query: the captured node kind.
+    pub kind: String,
+    /// symbols: definition name; query: first line of the captured text.
+    pub name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    /// symbols: enclosing definition, if any.
+    pub parent: Option<String>,
+    /// symbols: nesting depth (0 = top level).
+    pub depth: usize,
+    /// symbols: first line of the definition.
+    pub signature: String,
+    /// query: capture name without @.
+    pub capture: Option<String>,
+    /// query: index of the matching pattern.
+    pub pattern_index: Option<usize>,
+    /// query: match ordinal within the file, to regroup captures of one match.
+    pub match_index: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct OpenResponse {
     pub api_version: String,
@@ -3069,6 +3229,217 @@ impl WitOperations {
             max_bytes,
             args.include_rendered_text,
             render_search_items,
+        )?;
+        context.check()?;
+        Ok(page)
+    }
+
+    pub async fn ast(
+        &self,
+        context: &OperationContext,
+        args: AstArgs,
+    ) -> Result<Page<AstItem>, String> {
+        context.check()?;
+        let snapshot = self.snapshot(&args.snapshot_id)?;
+        let path_prefix = normalize_repo_path(args.path.as_deref().unwrap_or(""))?;
+        let includes = compile_globs(&args.globs)?;
+        let excludes = compile_globs(&args.exclude)?;
+        let language = match args
+            .language
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(name) => Some(AstLanguage::from_name(name).ok_or_else(|| {
+                format!(
+                    "unknown language '{name}'; supported: {}",
+                    ast::supported_languages_summary()
+                )
+            })?),
+            None => None,
+        };
+        let single_file_language = if language.is_none() && !path_prefix.is_empty() {
+            AstLanguage::from_path(&path_prefix)
+        } else {
+            None
+        };
+        let query = match args.mode {
+            AstMode::Query => {
+                let query = args
+                    .query
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|query| !query.is_empty())
+                    .ok_or_else(|| {
+                        "query mode requires a non-empty tree-sitter query".to_string()
+                    })?;
+                let target = language.or(single_file_language).ok_or_else(|| {
+                    "query mode needs language (rust, python, javascript, typescript, tsx, go, java, c) unless path names a single source file".to_string()
+                })?;
+                ast::validate_query(target, query).map_err(|err| err.to_string())?;
+                Some((target, query.to_string()))
+            }
+            AstMode::Symbols => {
+                if args
+                    .query
+                    .as_deref()
+                    .is_some_and(|query| !query.trim().is_empty())
+                {
+                    return Err("query is only accepted with mode: 'query'".to_string());
+                }
+                None
+            }
+        };
+        let filter = SymbolFilter {
+            kinds: args
+                .kinds
+                .iter()
+                .map(|kind| kind.trim().to_string())
+                .filter(|kind| !kind.is_empty())
+                .collect(),
+            name: match args
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                Some(pattern) => {
+                    Some(Regex::new(pattern).map_err(|err| format!("invalid name regex: {err}"))?)
+                }
+                None => None,
+            },
+        };
+        let max_files = validate_range(
+            args.max_files,
+            DEFAULT_AST_MAX_FILES,
+            MAX_AST_MAX_FILES,
+            "max_files",
+        )?;
+        let max_items = validate_range(
+            args.max_items,
+            DEFAULT_PAGE_ITEMS,
+            MAX_PAGE_ITEMS,
+            "max_items",
+        )?;
+        let max_bytes = validate_budget(args.max_bytes)?;
+        let fingerprint = fingerprint(&json!({
+            "snapshot_id": args.snapshot_id,
+            "mode": args.mode,
+            "path": path_prefix,
+            "globs": args.globs,
+            "exclude": args.exclude,
+            "language": language.map(AstLanguage::name),
+            "query": query.as_ref().map(|(_, text)| text.clone()),
+            "kinds": filter.kinds,
+            "name": args.name,
+            "max_files": max_files,
+            "max_items": max_items,
+            "include_rendered_text": args.include_rendered_text,
+        }))?;
+        let offset = cursor_offset(
+            "wit_ast",
+            Some(snapshot.snapshot_id()),
+            &fingerprint,
+            args.cursor.as_deref(),
+        )?;
+
+        // Phase 1: candidate files (both backends share the tree walk).
+        let mut candidates: Vec<(String, String, AstLanguage)> = Vec::new();
+        walk_tree(context, &snapshot, |entry| {
+            if entry.kind != "blob"
+                || !path_has_prefix(&entry.path, &path_prefix)
+                || includes
+                    .as_ref()
+                    .is_some_and(|set| !set.is_match(&entry.path))
+                || excludes
+                    .as_ref()
+                    .is_some_and(|set| set.is_match(&entry.path))
+                || entry
+                    .size
+                    .is_some_and(|size| size as usize > ast::MAX_AST_SOURCE_BYTES)
+            {
+                return Ok(true);
+            }
+            let Some(file_language) = AstLanguage::from_path(&entry.path) else {
+                return Ok(true);
+            };
+            if language.is_some_and(|wanted| wanted != file_language) {
+                return Ok(true);
+            }
+            if let Some((target, _)) = &query
+                && *target != file_language
+            {
+                return Ok(true);
+            }
+            candidates.push((entry.path.clone(), entry.oid.clone(), file_language));
+            Ok(candidates.len() < max_files)
+        })?;
+
+        // Phase 2: parse each candidate and window the items.
+        let limit = max_items + 1;
+        let mut seen = 0usize;
+        let mut items: Vec<AstItem> = Vec::new();
+        'files: for (path, oid, file_language) in candidates {
+            context.check()?;
+            let text = if let Some(memory) = snapshot.memory() {
+                match memory
+                    .blob_text_by_sha(&oid, ast::MAX_AST_SOURCE_BYTES as u64)
+                    .await
+                {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                }
+            } else {
+                match blob_text(context, &snapshot, &oid, ast::MAX_AST_SOURCE_BYTES) {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                }
+            };
+            let file_items: Vec<AstItem> = match &query {
+                Some((target, query_text)) => match ast::run_query(*target, &text, query_text) {
+                    Ok(captures) => captures
+                        .into_iter()
+                        .map(|capture| {
+                            ast_item_from_capture(&snapshot, &path, &oid, file_language, capture)
+                        })
+                        .collect(),
+                    Err(ast::AstError::Query(message)) => {
+                        return Err(format!("invalid tree-sitter query: {message}"));
+                    }
+                    Err(_) => continue,
+                },
+                None => match ast::symbols(file_language, &text, &filter) {
+                    Ok(symbols) => symbols
+                        .into_iter()
+                        .map(|symbol| {
+                            ast_item_from_symbol(&snapshot, &path, &oid, file_language, symbol)
+                        })
+                        .collect(),
+                    Err(_) => continue,
+                },
+            };
+            for item in file_items {
+                if seen < offset {
+                    seen += 1;
+                    continue;
+                }
+                if items.len() >= limit {
+                    break 'files;
+                }
+                items.push(item);
+                seen += 1;
+            }
+        }
+        let page = paginate_window(
+            "wit_ast",
+            Some(snapshot.snapshot_id()),
+            &fingerprint,
+            offset,
+            items,
+            max_items,
+            max_bytes,
+            args.include_rendered_text,
+            render_ast_items,
         )?;
         context.check()?;
         Ok(page)

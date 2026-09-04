@@ -44,7 +44,7 @@ fn bridged_operation_context(
 
 const WIT_WORKFLOW_GUIDE: &str = r#"# wit MCP workflow
 
-Direct mode is the default and current recommendation. Use it for a simple open, list, search, read, or other one-operation task. Experimental Code Mode is an explicit opt-in for bounded composition: start `wit mcp --transport stdio --mode code` or `wit-mcp --mode code`; it exposes one normal MCP `code` tool. Omitting `--mode` selects the seven-tool direct surface.
+Direct mode is the default and current recommendation. Use it for a simple open, list, search, read, or other one-operation task. Experimental Code Mode is an explicit opt-in for bounded composition: start `wit mcp --transport stdio --mode code` or `wit-mcp --mode code`; it exposes one normal MCP `code` tool. Omitting `--mode` selects the eight-tool direct surface.
 
 ## Direct mode
 
@@ -53,12 +53,13 @@ Direct mode is the default and current recommendation. Use it for a simple open,
 3. Call `wit_list` to orient with an explicit depth, or `wit_search_code` when symbols or text are known.
 4. Call `wit_read` with explicit one-based line ranges for precise evidence.
 5. Call `wit_context` when one deterministic operation should rank and merge evidence across files. It does not invoke a model or embeddings.
-6. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Changed arguments or snapshots invalidate a cursor.
-7. Responses are structured by default and bounded to 64 KiB. Set `include_rendered_text` only for compatibility with text-oriented consumers.
+6. Call `wit_ast` for structure instead of text: `mode: "symbols"` (default) returns every definition in a file or directory with exact one-based line ranges, nesting, and signatures, so the next `wit_read` can be precise; `mode: "query"` with `language` runs a raw tree-sitter query (for example `(call_expression function: (identifier) @callee (#eq? @callee "render"))`) for questions regex cannot express. Supported: rust, python, javascript, typescript, tsx, go, java, c.
+7. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Changed arguments or snapshots invalidate a cursor.
+8. Responses are structured by default and bounded to 64 KiB. Set `include_rendered_text` only for compatibility with text-oriented consumers.
 
 ## Experimental Code Mode
 
-Pass one async JavaScript function body to `code`. Start with `codemode.wit.help()` for all signatures and examples or `codemode.wit.help("read")` for one method. Use `await` with `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.read`, and `codemode.wit.context`; TypeScript syntax, imports, filesystem, network, environment, process, subprocess, shell, modules, and arbitrary host calls are unavailable. Unknown method errors suggest the nearest method. Credentials and privileged operations remain in the Rust parent.
+Pass one async JavaScript function body to `code`. Start with `codemode.wit.help()` for all signatures and examples or `codemode.wit.help("read")` for one method. Use `await` with `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.ast`, `codemode.wit.read`, and `codemode.wit.context`; TypeScript syntax, imports, filesystem, network, environment, process, subprocess, shell, modules, and arbitrary host calls are unavailable. Unknown method errors suggest the nearest method. Credentials and privileged operations remain in the Rust parent.
 
 When owner/repo is fuzzy, call `findRepositories({ pattern: "ratatuizilla", max_items: 5 })`. Open once and reuse the snapshot within the parent server lifetime. Snapshots do not survive restart. Follow explicit cursors with otherwise unchanged arguments. Code Mode read defaults to compact text with top-level provenance; it also supports lines and structured formats. List supports a paths-only format, and searchCode supports path_prefix, glob/globs, and exclude filters. Return one focused JSON-serializable value with repository, commit, snapshot, path, blob, and line provenance. Page budgets expose remaining bytes and a near-limit warning; oversized final results point to compact result formats. Fixed source/time/call/page/snapshot/result budgets fail explicitly; cancellation and deadlines use stable errors. A failed worker is killed and reaped and the next invocation starts fresh. Generated source and worker diagnostic content are not persisted or logged; only capped diagnostic byte counts and truncation state are retained.
 
@@ -67,7 +68,7 @@ The checked-in external model evaluation is unrun. Code Mode remains experimenta
 
 const WIT_TOOLS_GUIDE: &str = r#"# wit MCP tools
 
-Direct mode (the default and recommendation for simple calls) exposes these seven tools:
+Direct mode (the default and recommendation for simple calls) exposes these eight tools:
 
 - `wit_find_repositories`: discover owner/repo when unknown.
 - `wit_refs`: discover default branch, branches, and tags.
@@ -76,10 +77,11 @@ Direct mode (the default and recommendation for simple calls) exposes these seve
 - `wit_search_code`: bounded multi-query regex search with atomic context groups and provenance.
 - `wit_read`: explicit one-based inclusive line-range read with provenance.
 - `wit_context`: deterministic ranked and merged multi-file evidence.
+- `wit_ast`: tree-sitter structural search — `symbols` (definitions with exact line ranges, nesting, signatures) or `query` (raw tree-sitter query with captures) for rust, python, javascript, typescript, tsx, go, java, and c.
 
 Collection responses use `items`, `returned_items`, `has_more`, `next_cursor`, and whole-structured-response `budget` metadata. Cursors are opaque and bound to the tool, snapshot, and normalized query. Default responses are at most 64 KiB; the fixed MCP framing outside structured content is not included and is constrained to less than 1 KiB. Human CLI commands are unchanged.
 
-Experimental Code Mode instead exposes one normal MCP tool named `code`. Its input is an async JavaScript function body and its final result must be one JSON-serializable value no larger than 48 KiB. Call `codemode.wit.help()` to discover signatures and examples. The generated host methods are `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.read`, and `codemode.wit.context`. Read defaults to compact text and supports `format: "lines"`; list supports `format: "paths"`; searchCode supports `path_prefix`, `glob`/`globs`, and `exclude`. Their host results keep explicit cursors, budgets, snapshots, and provenance, including remaining bytes and near-limit warnings.
+Experimental Code Mode instead exposes one normal MCP tool named `code`. Its input is an async JavaScript function body and its final result must be one JSON-serializable value no larger than 48 KiB. Call `codemode.wit.help()` to discover signatures and examples. The generated host methods are `codemode.wit.findRepositories`, `codemode.wit.refs`, `codemode.wit.open`, `codemode.wit.list`, `codemode.wit.searchCode`, `codemode.wit.ast`, `codemode.wit.read`, and `codemode.wit.context`. Read defaults to compact text and supports `format: "lines"`; list supports `format: "paths"`; searchCode supports `path_prefix`, `glob`/`globs`, and `exclude`. Their host results keep explicit cursors, budgets, snapshots, and provenance, including remaining bytes and near-limit warnings.
 
 Default invocation limits are 32 KiB source, 10 seconds, 16 host calls with 4 concurrent, 8 page-producing calls, 2 snapshot opens, 64 KiB per host result, and 256 KiB cumulative host results. Resource, cancellation, deadline, worker, protocol, and invalid-final-result failures are explicit structured errors. Host-operation errors are catchable JavaScript errors with stable `code`, `operation`, and redacted `message`. There is no filesystem, network, environment, process, subprocess, shell, module loader, credential, or generic host-call capability.
 
@@ -184,7 +186,7 @@ impl ServerHandler for WitMcpServer {
         )
         .with_server_info(Implementation::new("wit-mcp", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "wit MCP v2 is snapshot-first and structured-first. Call wit_open once, reuse snapshot_id for immutable reads, use wit_list for structure, wit_search_code for exact matches, wit_read for explicit line ranges, and wit_context for deterministic multi-file evidence. Collection tools are byte-bounded and return next_cursor when has_more is true. Fetch wit://skill/SKILL.md for the full workflow.",
+            "wit MCP v2 is snapshot-first and structured-first. Call wit_open once, reuse snapshot_id for immutable reads, use wit_list for structure, wit_search_code for exact matches, wit_ast for definitions with exact line ranges or tree-sitter queries, wit_read for explicit line ranges, and wit_context for deterministic multi-file evidence. Collection tools are byte-bounded and return next_cursor when has_more is true. Fetch wit://skill/SKILL.md for the full workflow.",
         )
     }
 

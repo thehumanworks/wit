@@ -5,7 +5,7 @@ Model-written JavaScript and all worker output are untrusted. The MCP parent rem
 credentials, the repository cache, snapshots, and operation implementations. A fresh child runs
 one invocation through a hidden mode of the same installed executable, with an empty environment
 and an isolated temporary working directory. It receives
-only bounded stdin/stdout IPC, seven registered `codemode.wit` host methods, and a local `help()`
+only bounded stdin/stdout IPC, eight registered `codemode.wit` host methods, and a local `help()`
 method that performs no privileged call. QuickJS has no
 filesystem, network, environment, module loader, process, subprocess, cache, token, or generic host
 call API. There is no permissive fallback: an unknown operation, malformed frame, unavailable

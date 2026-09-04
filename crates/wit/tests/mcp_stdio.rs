@@ -81,7 +81,7 @@ async fn stdio_cancel_notification_stops_dynamic_route_git_work() -> anyhow::Res
     wait_for_path(&started, std::time::Duration::from_secs(2)).await?;
     handle.cancel(Some("test cancellation".to_string())).await?;
     wait_for_path(&terminated, std::time::Duration::from_secs(2)).await?;
-    assert_eq!(client.list_all_tools().await?.len(), 7);
+    assert_eq!(client.list_all_tools().await?.len(), 8);
 
     shutdown_client(client).await?;
     Ok(())
@@ -211,6 +211,7 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         assert_eq!(
             names,
             vec![
+                "wit_ast",
                 "wit_context",
                 "wit_find_repositories",
                 "wit_list",
@@ -447,6 +448,60 @@ async fn wit_mcp_v2_snapshot_provenance_pagination_and_replay() -> anyhow::Resul
         .await?;
         assert_eq!(context["items"][0]["path"], "README.md");
         assert!(context["items"][0]["score"].as_i64().unwrap() > 0);
+
+        mark("wit_ast symbols and query");
+        let symbols = call_tool_json(
+            &client,
+            "wit_ast",
+            object!({
+                "snapshot_id": snapshot_id,
+                "path": "src",
+                "max_bytes": 8192
+            }),
+        )
+        .await?;
+        assert_eq!(symbols["returned_items"], 1);
+        assert_eq!(symbols["items"][0]["path"], "src/lib.rs");
+        assert_eq!(symbols["items"][0]["language"], "rust");
+        assert_eq!(symbols["items"][0]["kind"], "fn");
+        assert_eq!(symbols["items"][0]["name"], "demo");
+        assert_eq!(symbols["items"][0]["start_line"], 1);
+        assert_eq!(symbols["items"][0]["end_line"], 1);
+        assert_eq!(symbols["items"][0]["commit_sha"], original_sha);
+        assert_eq!(symbols["items"][0]["capture"], serde_json::Value::Null);
+
+        let captures = call_tool_json(
+            &client,
+            "wit_ast",
+            object!({
+                "snapshot_id": snapshot_id,
+                "mode": "query",
+                "language": "rust",
+                "query": "(function_item name: (identifier) @fn_name)",
+                "max_bytes": 8192
+            }),
+        )
+        .await?;
+        assert_eq!(captures["returned_items"], 1);
+        assert_eq!(captures["items"][0]["capture"], "fn_name");
+        assert_eq!(captures["items"][0]["kind"], "identifier");
+        assert_eq!(captures["items"][0]["name"], "demo");
+        assert_eq!(captures["items"][0]["start_col"], 7);
+
+        let bad_query = client
+            .call_tool(
+                CallToolRequestParams::new("wit_ast".to_string()).with_arguments(object!({
+                    "snapshot_id": snapshot_id,
+                    "mode": "query",
+                    "language": "rust",
+                    "query": "(no_such_node) @x"
+                })),
+            )
+            .await?;
+        assert!(
+            bad_query.is_error.unwrap_or(false),
+            "invalid queries must be tool errors"
+        );
         assert!(
             context["items"][0]["ranking_reasons"]
                 .as_array()

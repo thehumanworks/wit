@@ -12,6 +12,7 @@ This is a Cargo workspace with several crates:
 - `src/gitops/`: Git operations module for bare-repo caching, file access, tree display, directory listing, head/tail, and ripgrep-style search (`ops.rs`, `mod.rs`).
 - `src/snapshot/`: Disk adapter + memory helpers (`memory_ops.rs`) for the shared `wit-snapshot` open/list/tree/read/search contract; CLI `--backend memory|disk` for tree/ls/cat/rg/sed/head/tail, cache pin, and branches.
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
+- `src/ast.rs`: tree-sitter AST search (`symbols` definition index with exact ranges and nesting; `run_query` raw queries) for rust/python/javascript/typescript/tsx/go/java/c. Backs `wit ast` and MCP `wit_ast`; grammars are native-only (ADR 0008). Adding a language = grammar crate + extension list + definition query + kind labels; `every_builtin_symbol_query_compiles` guards the queries.
 
 ### `crates/wit-snapshot/` — no-FS memory snapshots (+ wasm32 fetch client)
 - `src/lib.rs`: `SnapshotBackend` / `RepoSnapshot` traits and shared provenance types.
@@ -39,7 +40,7 @@ This is a Cargo workspace with several crates:
 - Tests: `tests/*.test.js` (node:test, fixture GitHub in `tests/helpers.js`, no network). Docs: `docs/adr/0005-*.md`, `0006-*.md`, `0007-url-api-agent-verbs.md`.
 
 ### `sdk/` — clients for the URL API
-- `sdk/typescript/src/index.ts`: `@nothumanwork/wit-sdk` (fetch-based, typed, `node --test tests/*.test.ts`, `tsc --noEmit`).
+- `sdk/typescript/src/index.ts`: `@nothumanwork/wit-sdk` (fetch-based, typed, `node --test tests/*.test.ts`, `tsc --noEmit`). Published by `.github/workflows/publish-sdk.yml` on pushes to `main` that touch `sdk/typescript/` when `package.json` `version` is new (`NPM_TOKEN` secret); bump the version to release.
 - `sdk/python/wit_api/__init__.py`: `wit-api` (urllib-based, `python -m unittest discover -s tests`).
 - Keep both SDKs' method surface identical (`stats`, `tree`, `ls`, `cat(lines)`, `head`, `tail`, `outline`, `rg*`, `refs`, `commits`, `search`, `readSymbol`/`read_symbol`, `context`).
 
@@ -62,6 +63,7 @@ This is a Cargo workspace with several crates:
 | `sed`      |       | POSIX-style sed on a file from a cached repo | `-r` / `--repo`, `-n`, `-e`, `-f` |
 | `head`     |       | First N lines of a file (default: 10) | `-r` / `--repo`, `-n`, `-N` |
 | `tail`     |       | Last N lines / from line N onward | `-r` / `--repo`, `-n`, `-p`, `-N` |
+| `ast`      |       | tree-sitter structural search: `symbols` (definitions with exact ranges) or `query` (raw tree-sitter query) | `-k/--kind`, `--name`, `-g`, `--lang`, `--json` |
 
 ## Build, Test, and Development Commands
 

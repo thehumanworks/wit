@@ -8,7 +8,7 @@ use wit::gitops::ops::{CacheBranchSelection, revalidate_github_repo};
     name = "wit-mcp",
     version,
     about = "Stdio wit MCP server (direct by default; Code Mode experimental)",
-    after_help = "Direct mode is recommended for simple calls and exposes seven typed snapshot-first tools. Experimental Code Mode exposes one bounded native JavaScript code tool. Neither requires an external JavaScript runtime. Protocol frames are written to stdout; diagnostics are written to stderr."
+    after_help = "Direct mode is recommended for simple calls and exposes eight typed snapshot-first tools. Experimental Code Mode exposes one bounded native JavaScript code tool. Neither requires an external JavaScript runtime. Protocol frames are written to stdout; diagnostics are written to stderr."
 )]
 struct ServeArgs {
     /// MCP tool surface to expose
@@ -18,7 +18,7 @@ struct ServeArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum McpMode {
-    /// Recommended default: seven snapshot-first repository tools
+    /// Recommended default: eight snapshot-first repository tools
     Direct,
     /// Experimental: one bounded native JavaScript code tool
     Code,
@@ -126,7 +126,7 @@ OPTIONS:
     -h, --help                Print help
     -V, --version             Print version
 
-Direct mode is recommended for simple calls and exposes seven typed snapshot-first tools. Experimental Code Mode exposes one bounded native JavaScript code tool. Neither requires an external JavaScript runtime. Protocol frames are written to stdout; diagnostics are written to stderr.",
+Direct mode is recommended for simple calls and exposes eight typed snapshot-first tools. Experimental Code Mode exposes one bounded native JavaScript code tool. Neither requires an external JavaScript runtime. Protocol frames are written to stdout; diagnostics are written to stderr.",
         env!("CARGO_PKG_VERSION")
     );
 }

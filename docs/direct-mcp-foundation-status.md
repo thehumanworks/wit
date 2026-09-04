@@ -20,7 +20,7 @@ Disposition: the runtime contract is delivered; update #8 to move peak-memory me
 
 ## Issue #9: agent-native semantic tools
 
-The direct server exposes exactly seven tools: `wit_find_repositories`, `wit_refs`, `wit_open`, `wit_list`, `wit_search_code`, `wit_read`, and `wit_context`. The default workflow is snapshot-first, structured, bounded, deterministic, and provenance-bearing. The human CLI remains separate and unchanged.
+The direct server exposes exactly eight tools: `wit_find_repositories`, `wit_refs`, `wit_open`, `wit_list`, `wit_search_code`, `wit_read`, `wit_context`, and `wit_ast` (tree-sitter structural search, added by ADR 0008). The default workflow is snapshot-first, structured, bounded, deterministic, and provenance-bearing. The human CLI remains separate and unchanged.
 
 The earlier acceptance language for retaining and benchmarking the removed Unix-shaped server is superseded by the decision to make the semantic server the only direct surface. Tests that required the removed server or its deleted benchmark fixture are therefore not valid current acceptance gates.
 

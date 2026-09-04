@@ -93,10 +93,11 @@ recommended workflow: `readSymbol(path, name)` (outline → cat range) and
 
 ## Non-goals (for now)
 
-- **AST-based search.** `outline` is a regex heuristic on purpose: it runs in
-  the Worker with no parser dependencies and covers the languages agents meet
-  most. A tree-sitter-backed `symbols`/`query` verb belongs in the Rust
-  backend (CLI + MCP + wasm) and is tracked as follow-up work.
+- **AST-based search in the Worker.** `outline` is a regex heuristic on
+  purpose: it runs in the Worker with no parser dependencies and covers the
+  languages agents meet most. The tree-sitter-backed `wit ast` / `wit_ast`
+  live in the Rust backend (CLI + MCP); see ADR 0008 for why the wasm host
+  does not carry grammars.
 - **Cross-repository code search.** GitHub's code-search API only indexes
   default branches, needs auth, and is throttled to 10 req/min; `rg` on a
   pinned snapshot is the honest primitive.

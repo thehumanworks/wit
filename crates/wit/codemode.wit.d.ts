@@ -1,5 +1,9 @@
 // Generated from Rust operation contracts. Do not edit by hand.
 
+export type AstItem = { blob_sha: string; capture?: string | null; commit_sha: string; depth: number; end_col: number; end_line: number; kind: string; language: string; match_index?: number | null; name: string; parent?: string | null; path: string; pattern_index?: number | null; repo: string; signature: string; snapshot_id: string; start_col: number; start_line: number };
+
+export type AstMode = "symbols" | "query";
+
 export type BudgetInfo = { remaining_bytes: number; requested_bytes: number; serialized_bytes: number; warning?: string | null };
 
 export type CacheProvenance = { last_checked_at?: number | null; last_error?: string | null; last_updated_at?: number | null; state: string };
@@ -66,6 +70,10 @@ export type ReadInput = { cursor?: string | null; end_line?: number | null; form
 
 export type ReadResult = StructuredReadPage | CompactReadTextPage | CompactReadLinesPage;
 
+export type AstInput = { cursor?: string | null; exclude?: Array<string>; globs?: Array<string>; include_rendered_text?: boolean; kinds?: Array<string>; language?: string | null; max_bytes?: number | null; max_files?: number | null; max_items?: number | null; mode?: AstMode; name?: string | null; path?: string | null; query?: string | null; snapshot_id: string };
+
+export type AstResult = { api_version: string; budget: BudgetInfo; has_more: boolean; items: Array<AstItem>; next_cursor?: string | null; rendered_text?: string | null; returned_items: number };
+
 export type ContextInput = { context_lines?: number | null; cursor?: string | null; globs?: Array<string>; include_rendered_text?: boolean; max_bytes?: number | null; max_results?: number | null; queries: Array<string>; snapshot_id: string };
 
 export type ContextResult = { api_version: string; budget: BudgetInfo; has_more: boolean; items: Array<ContextItem>; next_cursor?: string | null; rendered_text?: string | null; returned_items: number };
@@ -95,6 +103,8 @@ export interface WitCodeModeApi {
   read(arguments: ReadInput & { format: "structured" }): Promise<StructuredReadPage>;
   read(arguments: ReadInput & { format: "lines" }): Promise<CompactReadLinesPage>;
   read(arguments: ReadInput & { format?: "text" }): Promise<CompactReadTextPage>;
+  /** Structural search on a snapshot via tree-sitter: mode 'symbols' (default) indexes definitions with exact line ranges, nesting, and signatures for rust/python/javascript/typescript/tsx/go/java/c; mode 'query' runs a raw tree-sitter query with a required language */
+  ast(arguments: AstInput): Promise<AstResult>;
   /** Gather deterministic ranked multi-file evidence from a snapshot; use when one answer needs several bounded supporting snippets */
   context(arguments: ContextInput): Promise<ContextResult>;
 }
