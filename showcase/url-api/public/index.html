@@ -104,16 +104,18 @@
         color: var(--muted);
       }
       code { font-family: var(--mono); font-size: 0.85em; }
+      a { color: var(--accent); }
     </style>
   </head>
   <body>
     <main>
       <h1>wit URL API</h1>
       <p class="sub">
-        Client-side MemoryBackend showcase: <code>/tree</code>, <code>/ls</code>,
-        <code>/cat</code> return the same plaintext as the CLI. Path is a query
-        param. Auth via <code>Authorization</code> (preferred) or <code>?token=</code>
-        (leaks — avoid).
+        Client-side MemoryBackend showcase: every URL API verb returns the same
+        plaintext as the CLI (<code>?format=json</code> for JSON). The file path
+        is a query param. Auth via <code>Authorization</code> (preferred) or
+        <code>?token=</code> (leaks — avoid). Read
+        <a href="/api/llms.txt"><code>/api/llms.txt</code></a> for the agent guide.
       </p>
 
       <div class="row two">
@@ -132,11 +134,15 @@
           <input id="path" value="" placeholder="e.g. README" autocomplete="off" />
         </div>
         <div>
-          <label for="branch">branch / ref</label>
+          <label for="branch">ref (branch, tag, or commit SHA)</label>
           <input id="branch" value="" placeholder="default branch" autocomplete="off" />
         </div>
       </div>
-      <div class="row">
+      <div class="row two">
+        <div>
+          <label for="extra">extra query (e.g. <code>q=fn main&amp;glob=*.rs&amp;C=2</code> or <code>lines=10-40&amp;n=1</code>)</label>
+          <input id="extra" value="" placeholder="key=value&key=value" autocomplete="off" />
+        </div>
         <div>
           <label for="token">GitHub PAT (optional; kept in memory, never logged)</label>
           <input id="token" type="password" value="" autocomplete="off" />
@@ -144,16 +150,25 @@
       </div>
 
       <div class="actions">
+        <button type="button" data-verb="stats">GET /stats</button>
         <button type="button" data-verb="tree">GET /tree</button>
         <button type="button" data-verb="ls">GET /ls</button>
+        <button type="button" data-verb="outline">GET /outline</button>
         <button type="button" data-verb="cat">GET /cat</button>
+        <button type="button" data-verb="head">GET /head</button>
+        <button type="button" data-verb="tail">GET /tail</button>
+        <button type="button" data-verb="rg">GET /rg</button>
+        <button type="button" data-verb="refs">GET /refs</button>
+        <button type="button" data-verb="commits">GET /commits</button>
+        <button type="button" data-verb="search">GET /search</button>
       </div>
 
       <pre id="out">Ready. Routes run in-page via wit-snapshot wasm (open/list/read).</pre>
       <p class="hint">
         Pure static hosts cannot execute wasm for <code>curl</code> — use the
         Pages Function / worker host adapter for <code>text/plain</code>. See
-        <code>docs/adr/0005-url-api-howto.md</code>.
+        <code>docs/adr/0005-url-api-howto.md</code> and
+        <code>docs/adr/0007-url-api-agent-verbs.md</code>.
       </p>
     </main>
     <script type="module" src="./app.js"></script>

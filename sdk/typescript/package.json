@@ -1,0 +1,27 @@
+{
+  "name": "@nothumanwork/wit-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency TypeScript client for the wit URL API (read GitHub repositories without cloning).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "keywords": ["github", "agents", "wit", "code-search", "llm"]
+}

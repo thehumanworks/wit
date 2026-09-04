@@ -722,6 +722,14 @@ fn print_ls_entries(entries: &[wit::gitops::ops::FileMetadata], long: bool) {
     }
 }
 
+/// Rough token estimate from a byte size (~4 bytes per token). The memory
+/// backend only knows sizes without fetching blobs, so this is the budgeting
+/// hint the disk backend's `lines * 5` provides once content is available.
+/// The URL API (`showcase/url-api`) prints the same figure.
+fn estimate_tokens_from_bytes(bytes: u64) -> u64 {
+    bytes.div_ceil(4)
+}
+
 fn print_snapshot_ls(entries: &[DirEntry], long: bool) {
     if long {
         for entry in entries {
@@ -729,7 +737,12 @@ fn print_snapshot_ls(entries: &[DirEntry], long: bool) {
                 EntryKind::Dir => println!("            {}/", entry.name),
                 EntryKind::File => {
                     if let Some(size) = entry.size_bytes {
-                        println!("{:>8} B  {}", size, entry.name);
+                        println!(
+                            "{:>8} B  {}  (~{} tok)",
+                            size,
+                            entry.name,
+                            estimate_tokens_from_bytes(size)
+                        );
                     } else {
                         println!("            {}", entry.name);
                     }
@@ -778,10 +791,12 @@ fn print_snapshot_tree<S: RepoSnapshot>(
         } else {
             dirs.entry(String::new()).or_default().push(relative);
         }
-        let _ = long;
         let label = if long {
             if let Some(size) = entry.size_bytes {
-                format!("{relative} ({size} B)")
+                format!(
+                    "{relative} ({size} B, ~{} tok)",
+                    estimate_tokens_from_bytes(size)
+                )
             } else {
                 relative.to_string()
             }

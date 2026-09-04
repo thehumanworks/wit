@@ -74,6 +74,26 @@ Generated source is not persisted or logged. Worker diagnostic content is draine
 
 The checked-in external model evaluation is unrun, so Code Mode remains experimental and direct mode remains the fail-closed recommendation. Do not claim token, outer-call, or latency improvements unless a complete checked-in benchmark report passes every predeclared correctness, provenance, efficiency, latency, startup, and invalid-call gate.
 
+## Hosted URL API (no install)
+
+When the CLI is not installed, the same explorer answers plain `GET`s at
+`https://wit.thehuman.sh/api` (guide: `https://wit.thehuman.sh/api/llms.txt`).
+Verbs take `/{verb}/{owner}/{repo}` with the file path in `?path=`; add
+`?format=json` for JSON. Every response carries `x-wit-commit` (the pinned
+commit), and `?ref=` accepts a branch, tag, or SHA.
+
+Recommended order, cheapest first:
+
+1. `stats` — files, bytes, ~tokens, per-directory/language breakdown (no blob reads).
+2. `rg?q=PATTERN&l=1` — which files match (add `path=`/`glob=` to narrow).
+3. `outline?path=FILE` — symbols with line ranges.
+4. `cat?path=FILE&lines=A-B&n=1` — exactly the lines you need.
+
+`rg` is bounded (`max`, `max_files`) and reports truncation in a trailing
+`# truncated:` line — narrow the query rather than assuming no matches. A
+429 means the GitHub quota behind the host is exhausted; send your own
+`Authorization: Bearer <token>` to use yours.
+
 ## Cache Behavior
 
 Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Concurrent checks for the same repository and branch are coalesced, so a remote SHA lookup does not hold up other valid warm-cache reads. Without `--branch`, the selected branch is the repository's default branch.

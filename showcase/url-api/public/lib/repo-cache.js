@@ -306,11 +306,19 @@ export class RepoSnapshotCache {
    * Serve from cache or call `fetchFn` on miss/expiry.
    * `fetchFn` must return `{ status: number, body: string }` synchronously.
    *
+   * `opts.ttlMs` overrides the cache-wide TTL for entries this call creates,
+   * so one request's `?ttl=` never leaks into concurrent requests.
+   *
    * @param {string} path
    * @param {(path: string) => { status: number, body: string } | null} fetchFn
+   * @param {{ ttlMs?: number | null }} [opts]
    * @returns {{ status: number, body: string, outcome: 'hit' | 'miss', repoKey: string | null, remainingMs: number | null } | null}
    */
-  getOrFetch(path, fetchFn) {
+  getOrFetch(path, fetchFn, opts = {}) {
+    const ttlMs =
+      opts.ttlMs != null && Number.isFinite(Number(opts.ttlMs))
+        ? Math.max(0, Number(opts.ttlMs))
+        : this.ttlMs;
     const parsed = parseGitHubApiPath(path);
     if (parsed.kind === "other" || !parsed.ownerRepo) {
       const raw = fetchFn(path);
@@ -320,10 +328,10 @@ export class RepoSnapshotCache {
     }
 
     if (parsed.kind === "blob") {
-      return this.#handleBlob(path, parsed.ownerRepo, parsed.blobSha, fetchFn);
+      return this.#handleBlob(path, parsed.ownerRepo, parsed.blobSha, fetchFn, ttlMs);
     }
     if (parsed.kind === "tree") {
-      return this.#handleTree(path, parsed.ownerRepo, parsed.treeSha, fetchFn);
+      return this.#handleTree(path, parsed.ownerRepo, parsed.treeSha, fetchFn, ttlMs);
     }
     if (parsed.kind === "commit") {
       return this.#handleCommit(path, parsed.ownerRepo, parsed.ref, fetchFn);
@@ -342,6 +350,14 @@ export class RepoSnapshotCache {
   #handleRepo(path, ownerRepo, fetchFn) {
     const hit = this.findEntry(ownerRepo);
     if (hit) {
+      // The repo call starts an open sequence: seed the pending state from
+      // the cached metadata so a later commit/tree miss for another ref
+      // still records the true default branch (not the requested ref).
+      this.pending.set(ownerRepo, {
+        ownerRepo,
+        private: hit.private,
+        defaultBranch: hit.defaultBranch,
+      });
       const remainingMs = this.remainingMs(hit);
       const repoKey = repoCacheKey(hit.ownerRepo, hit.resolvedRef);
       this.lastOutcome = { path, outcome: "hit", repoKey, remainingMs };
@@ -359,10 +375,12 @@ export class RepoSnapshotCache {
       return raw ? { ...raw, outcome: "miss", repoKey: null, remainingMs: null } : null;
     }
     const meta = JSON.parse(raw.body);
-    const pending = this.pending.get(ownerRepo) ?? { ownerRepo };
-    pending.private = !!meta.private;
-    pending.defaultBranch = String(meta.default_branch ?? "main");
-    this.pending.set(ownerRepo, pending);
+    // A fresh repo response restarts the open sequence for this repo.
+    this.pending.set(ownerRepo, {
+      ownerRepo,
+      private: !!meta.private,
+      defaultBranch: String(meta.default_branch ?? "main"),
+    });
     this.lastOutcome = { path, outcome: "miss", repoKey: null, remainingMs: null };
     return { ...raw, outcome: "miss", repoKey: null, remainingMs: null };
   }
@@ -410,10 +428,21 @@ export class RepoSnapshotCache {
    * @param {string} ownerRepo
    * @param {string} treeSha
    * @param {(path: string) => { status: number, body: string } | null} fetchFn
+   * @param {number} ttlMs
    */
-  #handleTree(path, ownerRepo, treeSha, fetchFn) {
+  #handleTree(path, ownerRepo, treeSha, fetchFn, ttlMs) {
     const hit = this.findEntryByTreeSha(ownerRepo, treeSha);
+    const pending = this.pending.get(ownerRepo) ?? { ownerRepo };
     if (hit) {
+      // Another ref (a fresh branch, a tag, or a commit SHA) can point at the
+      // same tree. Complete its open sequence as its own entry, sharing the
+      // slim tree, instead of leaving it without one.
+      if (pending.resolvedRef && pending.resolvedRef !== hit.resolvedRef) {
+        return this.#storeTree(path, ownerRepo, treeSha, hit.tree, pending, ttlMs, {
+          status: 200,
+          body: reconstructTreeJson(hit),
+        });
+      }
       const remainingMs = this.remainingMs(hit);
       const repoKey = repoCacheKey(hit.ownerRepo, hit.resolvedRef);
       this.lastOutcome = { path, outcome: "hit", repoKey, remainingMs };
@@ -431,7 +460,20 @@ export class RepoSnapshotCache {
       return raw ? { ...raw, outcome: "miss", repoKey: null, remainingMs: null } : null;
     }
     const tree = slimTreeFromGitHubJson(raw.body);
-    const pending = this.pending.get(ownerRepo) ?? { ownerRepo };
+    return this.#storeTree(path, ownerRepo, treeSha, tree, pending, ttlMs, raw);
+  }
+
+  /**
+   * Materialize the open entry for the pending ref once its tree is known.
+   * @param {string} path
+   * @param {string} ownerRepo
+   * @param {string} treeSha
+   * @param {SlimTreeEntry[]} tree
+   * @param {Partial<RepoCacheEntry> & { ownerRepo: string }} pending
+   * @param {number} ttlMs
+   * @param {{ status: number, body: string }} raw
+   */
+  #storeTree(path, ownerRepo, treeSha, tree, pending, ttlMs, raw) {
     const requestedRef = pending.requestedRef ?? pending.defaultBranch ?? "main";
     const resolvedRef = pending.resolvedRef ?? resolveRefName(requestedRef);
     /** @type {RepoCacheEntry} */
@@ -446,7 +488,7 @@ export class RepoSnapshotCache {
       tree,
       blobs: {},
       cachedAt: this.now(),
-      ttlMs: this.ttlMs,
+      ttlMs,
     };
     const key = repoCacheKey(ownerRepo, resolvedRef);
     // Preserve blobs if refreshing the same key after expiry.
@@ -466,8 +508,9 @@ export class RepoSnapshotCache {
    * @param {string} ownerRepo
    * @param {string} blobSha
    * @param {(path: string) => { status: number, body: string } | null} fetchFn
+   * @param {number} ttlMs
    */
-  #handleBlob(path, ownerRepo, blobSha, fetchFn) {
+  #handleBlob(path, ownerRepo, blobSha, fetchFn, ttlMs) {
     const hit = this.findEntryWithBlob(ownerRepo, blobSha);
     if (hit) {
       const remainingMs = this.remainingMs(hit);
@@ -505,7 +548,7 @@ export class RepoSnapshotCache {
         tree: [],
         blobs: {},
         cachedAt: this.now(),
-        ttlMs: this.ttlMs,
+        ttlMs,
       };
       this.entries.set(key, entry);
     }
@@ -546,6 +589,41 @@ export class RepoSnapshotCache {
       }
     }
     return null;
+  }
+
+  /**
+   * Drop the live open entry for repo@ref (a `?fresh=1` request) while
+   * keeping its blobs reachable: blobs are content addressed by SHA, so they
+   * move to the synthetic `_blobs` bucket instead of being refetched.
+   *
+   * @param {string} ownerRepo
+   * @param {string} [requestedRef]
+   * @returns {boolean} whether an entry was evicted
+   */
+  evictOpenEntry(ownerRepo, requestedRef) {
+    const entry = this.findOpenEntry(ownerRepo, requestedRef);
+    if (!entry) return false;
+    this.entries.delete(repoCacheKey(entry.ownerRepo, entry.resolvedRef));
+    const blobShas = Object.keys(entry.blobs ?? {});
+    if (blobShas.length > 0) {
+      const key = repoCacheKey(ownerRepo, "refs/heads/_blobs");
+      const bucket = this.entries.get(key) ?? {
+        ownerRepo,
+        requestedRef: "_blobs",
+        resolvedRef: "refs/heads/_blobs",
+        commitSha: "",
+        treeSha: "",
+        defaultBranch: "main",
+        private: false,
+        tree: [],
+        blobs: {},
+        cachedAt: this.now(),
+        ttlMs: entry.ttlMs,
+      };
+      bucket.blobs = { ...bucket.blobs, ...entry.blobs };
+      this.entries.set(key, bucket);
+    }
+    return true;
   }
 
   /**

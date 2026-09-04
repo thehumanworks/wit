@@ -24,6 +24,28 @@
 
 import { reconstructBlobJson, repoCacheKey, resolveRefName } from "./repo-cache.js";
 
+/**
+ * Isolate-lifetime memory of what already lives in KV, keyed by the sync
+ * cache instance. Without it every warm request re-`put`s every blob and
+ * tree row the isolate holds (write amplification: N requests → N × rows KV
+ * writes, against KV's daily write quota and 1 write/sec/key limit).
+ *
+ * @type {WeakMap<object, { entries: Map<string, number>, blobs: Set<string> }>}
+ */
+const PERSISTED = new WeakMap();
+
+/**
+ * @param {object} cache
+ */
+export function persistedState(cache) {
+  let state = PERSISTED.get(cache);
+  if (!state) {
+    state = { entries: new Map(), blobs: new Set() };
+    PERSISTED.set(cache, state);
+  }
+  return state;
+}
+
 /** KV rejects expirationTtl below 60 seconds. */
 const KV_MIN_TTL_SECONDS = 60;
 /** Stay under KV's 25 MB value limit with headroom. */
@@ -92,7 +114,9 @@ export class KvRepoCache {
     if (!row || row.ownerRepo !== ownerRepo || !row.treeSha || !row.commitSha) return;
     cache.upsertEntries([row]);
     if (cache.findOpenEntry(ownerRepo, requestedRef ?? undefined)) {
-      this.hydratedEntries.set(repoCacheKey(row.ownerRepo, row.resolvedRef), row.cachedAt);
+      const key = repoCacheKey(row.ownerRepo, row.resolvedRef);
+      this.hydratedEntries.set(key, row.cachedAt);
+      persistedState(cache).entries.set(key, row.cachedAt);
     }
   }
 
@@ -114,19 +138,23 @@ export class KvRepoCache {
       body: reconstructBlobJson(blobSha, blob),
     }));
     this.hydratedBlobShas.add(blobSha);
+    persistedState(cache).blobs.add(this.blobKey(ownerRepo, blobSha));
   }
 
   /**
    * Persist this repo's live cache entries and blobs to KV. Rows hydrated
-   * from KV this request are skipped; oversized values are skipped rather
-   * than failed. Values expire together with the in-memory TTL.
+   * from KV, or already written by an earlier request in this isolate, are
+   * skipped; oversized values are skipped rather than failed. Values expire
+   * together with the in-memory TTL.
    *
    * @param {import('./repo-cache.js').RepoSnapshotCache} cache
    * @param {string} ownerRepo
+   * @returns {Promise<number>} number of KV writes issued
    */
   async persistRepo(cache, ownerRepo) {
     /** @type {Promise<unknown>[]} */
     const puts = [];
+    const persisted = persistedState(cache);
     for (const entry of cache.dumpEntries()) {
       if (entry.ownerRepo !== ownerRepo) continue;
       const expirationTtl = Math.max(
@@ -135,10 +163,12 @@ export class KvRepoCache {
       );
 
       for (const [sha, blob] of Object.entries(entry.blobs ?? {})) {
-        if (this.hydratedBlobShas.has(sha)) continue;
+        const blobKey = this.blobKey(ownerRepo, sha);
+        if (this.hydratedBlobShas.has(sha) || persisted.blobs.has(blobKey)) continue;
         const body = JSON.stringify(blob);
         if (body.length > KV_MAX_VALUE_BYTES) continue;
-        puts.push(this.kv.put(this.blobKey(ownerRepo, sha), body, { expirationTtl }));
+        persisted.blobs.add(blobKey);
+        puts.push(this.kv.put(blobKey, body, { expirationTtl }));
       }
 
       // The synthetic `_blobs` bucket has no open sequence worth persisting.
@@ -146,8 +176,10 @@ export class KvRepoCache {
 
       const key = repoCacheKey(entry.ownerRepo, entry.resolvedRef);
       if (this.hydratedEntries.get(key) === entry.cachedAt) continue;
+      if (persisted.entries.get(key) === entry.cachedAt) continue;
       const body = JSON.stringify({ ...entry, blobs: {} });
       if (body.length > KV_MAX_VALUE_BYTES) continue;
+      persisted.entries.set(key, entry.cachedAt);
       puts.push(this.kv.put(this.entryKey(ownerRepo, entry.resolvedRef), body, { expirationTtl }));
       if (
         entry.defaultBranch &&
@@ -162,6 +194,14 @@ export class KvRepoCache {
         );
       }
     }
-    await Promise.all(puts);
+    const results = await Promise.allSettled(puts);
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length > 0) {
+      // Let a later request retry the rows this one could not write.
+      persisted.entries.clear();
+      persisted.blobs.clear();
+      throw failed[0].reason;
+    }
+    return puts.length;
   }
 }

@@ -22,3 +22,17 @@ pages_build_output_dir = "public"
 # [[kv_namespaces]]
 # binding = "WIT_REPO_CACHE"
 # id = "<kv-namespace-id>"
+
+# Host GitHub token (ADR 0007): the worker calls GitHub anonymously without
+# it, and the anonymous quota (60 req/h per egress IP) is permanently
+# exhausted on shared Cloudflare IPs, so most requests fail with 429. Set a
+# fine-grained token with *public repository read access only* as a secret
+# (never in this file):
+#
+#   npx wrangler pages secret put GITHUB_TOKEN --project-name wit-url-api
+#
+# A caller's own `Authorization: Bearer <token>` always takes precedence.
+#
+# Blob bytes come from raw.githubusercontent.com (no REST quota) with the
+# REST blob endpoint as fallback. Set WIT_RAW_BLOBS = "0" under [vars] to use
+# the REST endpoint only.

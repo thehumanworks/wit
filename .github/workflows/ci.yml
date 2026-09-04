@@ -64,6 +64,56 @@ jobs:
       - name: docs try-it parser, formatters, and wasm smoke
         run: bash scripts/check_docs_site.sh
 
+  url-api:
+    name: url-api host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build the wasm the host tests instantiate
+        working-directory: showcase/url-api
+        run: npm run build:wasm
+
+      - name: Sync public/lib and run host tests
+        working-directory: showcase/url-api
+        run: npm run check
+
+      - name: public/lib must match lib (committed copy for Pages Git builds)
+        run: git diff --exit-code -- showcase/url-api/public/lib
+
+  sdks:
+    name: SDK tests (typescript, python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned TypeScript compiler
+        run: npm install --global typescript@7.0.2
+
+      - name: TypeScript SDK type check and tests
+        working-directory: sdk/typescript
+        run: npm run check
+
+      - name: Python SDK tests
+        working-directory: sdk/python
+        run: python -m unittest discover -s tests -v
+
   wit-snapshot-wasm:
     name: wit_snapshot.wasm (release)
     runs-on: ubuntu-latest

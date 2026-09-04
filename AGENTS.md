@@ -31,6 +31,18 @@ This is a Cargo workspace with several crates:
 - `tests/integration.rs`: VCR integration tests using wiremock with cassette recording/replay.
 - `tests/cassettes/`: Recorded grep.app API responses (JSON fixtures).
 
+### `showcase/url-api/` — hosted URL API (Cloudflare Pages Worker + browser page)
+- `lib/routes.js`, `lib/handle.js`: route table and request handler for `stats|tree|ls|outline|cat|head|tail|rg|refs|commits|search` (+ `/api`, `/api/openapi.json`, `/api/llms.txt`).
+- `lib/github.js`, `lib/repo-cache.js`, `lib/persistent-cache.js`: GitHub prefetch with rate-limit mapping and raw-blob fetch, sync host cache for the wasm `http_get` import, Workers KV persistence.
+- `lib/textops.js`, `lib/stats.js`, `lib/outline.js`, `lib/format.js`: pure views (line ranges, grep, repo stats, symbol outline, CLI plaintext).
+- `public/lib/` is a committed copy of `lib/` — run `npm run sync-lib` after editing `lib/` (CI and the deploy guard diff them).
+- Tests: `tests/*.test.js` (node:test, fixture GitHub in `tests/helpers.js`, no network). Docs: `docs/adr/0005-*.md`, `0006-*.md`, `0007-url-api-agent-verbs.md`.
+
+### `sdk/` — clients for the URL API
+- `sdk/typescript/src/index.ts`: `@nothumanwork/wit-sdk` (fetch-based, typed, `node --test tests/*.test.ts`, `tsc --noEmit`).
+- `sdk/python/wit_api/__init__.py`: `wit-api` (urllib-based, `python -m unittest discover -s tests`).
+- Keep both SDKs' method surface identical (`stats`, `tree`, `ls`, `cat(lines)`, `head`, `tail`, `outline`, `rg*`, `refs`, `commits`, `search`, `readSymbol`/`read_symbol`, `context`).
+
 ### Top-level
 - `tasks/`: Task/planning files (e.g., `sed.txt`).
 - `README.md`: User-facing installation and usage examples.
@@ -65,6 +77,8 @@ This is a Cargo workspace with several crates:
 - `bash scripts/check_wit_snapshot_wasm.sh`: Build `wit-snapshot` for `wasm32-unknown-unknown` without reqwest; run wasmtime fixture smoke.
 - `bash scripts/check_docs_site.sh`: Pages try-it parser/formatter tests plus fixture wasm smoke (`wit tree demo/repo`).
 - `bash scripts/check_url_api_deploy_workflow.sh`: Enforce that `showcase/url-api` deploys to Cloudflare Pages (`wit-url-api`) from `main` and never folds onto GitHub Pages.
+- `(cd showcase/url-api && npm run check)`: Sync `public/lib` and run the URL API host tests (fixture-backed, no network).
+- `(cd sdk/typescript && npm run check)` and `(cd sdk/python && python3 -m unittest discover -s tests)`: SDK type check and tests.
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.
 - `cargo test -p wit --test search_github_live -- --ignored`: Optional live GitHub smoke test (`GITHUB_TOKEN` recommended).
@@ -113,5 +127,6 @@ This is a Cargo workspace with several crates:
 
 - Prefer `rg` / `rg --files` for repo search while working on changes.
 - Keep patches focused and avoid committing generated artifacts under `target/`.
-- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, `bash scripts/check_docs_site.sh`, and `bash scripts/check_url_api_deploy_workflow.sh`.
+- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, `bash scripts/check_docs_site.sh`, and `bash scripts/check_url_api_deploy_workflow.sh`. When `showcase/url-api` or `sdk/` changed, also run `(cd showcase/url-api && npm run check)`, `(cd sdk/typescript && npm run check)`, and `(cd sdk/python && python3 -m unittest discover -s tests)`.
+- URL API error messages pass through `scrubSecrets`, which redacts anything after the words `token` or `Bearer`; phrase messages as "credentials" / "Authorization header" so guidance stays readable (tests assert no `[REDACTED]`).
 - The `sed` subcommand aims for broad POSIX coverage; update tests and docs alongside behavior changes.
