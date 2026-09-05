@@ -7,7 +7,7 @@ mod memory_ops;
 
 pub use memory_ops::{
     filter_ignored_paths, grep_memory_snapshot, head_from_text, list_remote_branches_api,
-    read_memory_text, tail_from_text,
+    read_memory_text, tail_from_text, walk_memory_text_blobs,
 };
 
 use crate::gitops::ops::{

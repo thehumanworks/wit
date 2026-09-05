@@ -2208,6 +2208,79 @@ pub fn grep_repo_with_options(
     }
 }
 
+/// Filters for [`walk_text_blobs`].
+#[derive(Debug, Clone, Default)]
+pub struct BlobWalkOptions {
+    /// Repository-relative file or directory to restrict the walk to.
+    pub path_prefix: Option<String>,
+    /// ripgrep-style glob (`*.rs`, `src/**`) applied to the full path.
+    pub glob: Option<String>,
+    /// `--ignore` patterns.
+    pub ignore: Vec<String>,
+    /// Blobs larger than this are skipped (0 = no limit).
+    pub max_bytes: usize,
+}
+
+/// Whether `path` is `prefix` itself or lives under it (`""` matches all).
+pub fn path_under_prefix(path: &str, prefix: &str) -> bool {
+    let prefix = prefix.trim_matches('/');
+    prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+/// Visit every UTF-8 text blob of `HEAD` in path order, skipping binaries,
+/// oversized blobs, ignored paths, and glob/prefix mismatches. `visit`
+/// returns `false` to stop early.
+pub fn walk_text_blobs(
+    repo: &gix::Repository,
+    opts: &BlobWalkOptions,
+    mut visit: impl FnMut(&str, &str) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let tree = repo.head_commit()?.tree()?;
+    let ignore_matcher = IgnoreMatcher::new(&opts.ignore)?;
+    let mut recorder = gix::traverse::tree::Recorder::default();
+    tree.traverse().breadthfirst(&mut recorder)?;
+    let mut entries: Vec<(String, gix::ObjectId)> = recorder
+        .records
+        .iter()
+        .filter(|entry| entry.mode.is_blob())
+        .filter_map(|entry| {
+            entry
+                .filepath
+                .to_str()
+                .ok()
+                .map(|path| (path.to_string(), entry.oid))
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (path, oid) in entries {
+        if !path_under_prefix(&path, opts.path_prefix.as_deref().unwrap_or(""))
+            || ignore_matcher.is_ignored(&path)
+            || opts
+                .glob
+                .as_ref()
+                .is_some_and(|glob| !matches_glob(&path, glob))
+        {
+            continue;
+        }
+        let object = repo.find_object(oid)?;
+        let blob = object.into_blob();
+        if opts.max_bytes > 0 && blob.data.len() > opts.max_bytes {
+            continue;
+        }
+        if blob.data.find_byte(0).is_some() {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&blob.data) else {
+            continue;
+        };
+        if !visit(&path, text)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
 pub fn read_file(repo: &gix::Repository, path: &str) -> anyhow::Result<String> {
     read_file_with_ignore(repo, path, &[])
 }

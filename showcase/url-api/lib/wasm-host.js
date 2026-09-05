@@ -277,5 +277,8 @@ export function collectTreeFiles(api, basePath, depth) {
   }
 
   walk(basePath || "", 0);
+  // Byte-wise path order, matching the Rust BTreeMap walk in
+  // `MemorySnapshot::tree` (the CLI prints `src/lib.rs` before `src/util/mod.rs`).
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return files;
 }

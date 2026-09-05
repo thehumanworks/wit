@@ -6,18 +6,20 @@ use std::path::PathBuf;
 
 const SKILL_MD: &str = include_str!("skill/SKILL.md");
 use wit::{
+    ast::{self, AstLanguage, SymbolFilter},
     ensure_rustls_provider,
     gitops::ops::{
-        BranchMetadata, CacheAcquisitionMode, CacheBranchSelection, GrepOptions, GrepResult,
-        IgnoreMatcher, build_tree_with_ignore, cache_github_repo, grep_repo_with_options,
-        head_with_ignore, list_dir_with_ignore, list_remote_branches, read_file,
-        read_file_with_ignore, revalidate_github_repo, tail_with_ignore,
+        BlobWalkOptions, BranchMetadata, CacheAcquisitionMode, CacheBranchSelection, GrepOptions,
+        GrepResult, IgnoreMatcher, build_tree_with_ignore, cache_github_repo,
+        grep_repo_with_options, head_with_ignore, list_dir_with_ignore, list_remote_branches,
+        read_file, read_file_with_ignore, revalidate_github_repo, tail_with_ignore,
+        walk_text_blobs,
     },
     search::{DEFAULT_GITHUB_REPO_LIMIT, MAX_GITHUB_REPOS},
     search_run, sed,
     snapshot::{
         CliSnapshotBackend, grep_memory_snapshot, head_from_text, list_remote_branches_api,
-        read_memory_text, tail_from_text,
+        read_memory_text, tail_from_text, walk_memory_text_blobs,
     },
 };
 use wit_snapshot::{
@@ -428,6 +430,15 @@ enum Commands {
         backend: Option<String>,
     },
     #[command(
+        name = "ast",
+        about = "AST-backed search: list definitions or run tree-sitter queries",
+        after_help = "Structural search built on tree-sitter (rust, python, javascript, typescript, tsx, go, java, c). `symbols` indexes definitions with exact line ranges and nesting so you can read precisely the lines you need; `query` runs a raw tree-sitter S-expression query and prints every capture with its position.\n\nExamples:\n  wit ast symbols ratatui/ratatui src/widgets/block.rs\n  wit ast symbols ratatui/ratatui src/widgets --kind fn --name '^render'\n  wit ast symbols -r ratatui/ratatui --glob '*.rs' --json\n  wit ast query '(call_expression function: (identifier) @callee (#eq? @callee \"render\"))' ratatui/ratatui src --lang rust\n  wit ast query '(function_definition name: (identifier) @name)' owner/repo app.py"
+    )]
+    Ast {
+        #[command(subcommand)]
+        command: AstCommands,
+    },
+    #[command(
         name = "skill",
         about = "Manage the wit agent skill",
         after_help = "Examples:\n  wit skill load                        # Print the skill to stdout\n  wit skill install --path ~/skills     # Install skill directory to ~/skills/wit-skill"
@@ -439,7 +450,7 @@ enum Commands {
     #[command(
         name = "mcp",
         about = "Start wit MCP (direct by default; Code Mode experimental)",
-        after_help = "Direct mode exposes seven typed snapshot-first tools, is the default, and is recommended for simple calls. Experimental Code Mode exposes one native JavaScript code tool. Both are structured, bounded, and resumable; neither requires an external JavaScript runtime.\n\nExamples:\n  wit mcp --transport stdio --mode direct   # Default seven-tool surface\n  wit mcp --transport stdio --mode code     # Experimental one-tool surface"
+        after_help = "Direct mode exposes eight typed snapshot-first tools, is the default, and is recommended for simple calls. Experimental Code Mode exposes one native JavaScript code tool. Both are structured, bounded, and resumable; neither requires an external JavaScript runtime.\n\nExamples:\n  wit mcp --transport stdio --mode direct   # Default eight-tool surface\n  wit mcp --transport stdio --mode code     # Experimental one-tool surface"
     )]
     Mcp {
         /// MCP transport to use
@@ -474,6 +485,103 @@ enum SkillCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum AstCommands {
+    #[command(
+        about = "List definitions (functions, types, methods, ...) with exact line ranges",
+        override_usage = "wit ast symbols [OPTIONS] [REPO] [PATH]"
+    )]
+    Symbols {
+        /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
+        repo: Option<String>,
+
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
+
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
+
+        /// Repository and optional file or directory: `owner/repo [path]`, or just `[path]` when using -r/--repo
+        #[arg(value_name = "REPO|PATH")]
+        args: Vec<String>,
+
+        /// Keep only these kind labels (fn, struct, class, method, ...); repeatable
+        #[arg(short = 'k', long = "kind", value_name = "KIND", action = ArgAction::Append)]
+        kind: Vec<String>,
+
+        /// Keep only definitions whose name matches this regex
+        #[arg(long = "name", value_name = "REGEX")]
+        name: Option<String>,
+
+        /// Glob pattern to filter files (e.g., "*.rs", "src/**")
+        #[arg(short = 'g', long = "glob")]
+        glob: Option<String>,
+
+        /// Restrict to one language (rust, python, javascript, typescript, tsx, go, java, c)
+        #[arg(long = "lang", value_name = "LANG")]
+        lang: Option<String>,
+
+        /// Maximum files to parse (default: 500)
+        #[arg(long = "max-files", default_value_t = 500)]
+        max_files: usize,
+
+        /// Emit JSON instead of plaintext
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
+    },
+    #[command(
+        about = "Run a tree-sitter S-expression query and print every capture",
+        override_usage = "wit ast query [OPTIONS] <QUERY> [REPO] [PATH]"
+    )]
+    Query {
+        /// tree-sitter query, e.g. '(function_item name: (identifier) @name)'
+        query: String,
+
+        /// Repository in "owner/repo" format
+        #[arg(short = 'r', long = "repo")]
+        repo: Option<String>,
+
+        /// Branch name under refs/heads to read instead of the repository default branch
+        #[arg(long = "branch", value_name = "BRANCH")]
+        branch: Option<String>,
+
+        /// Force refresh the branch cache before reading
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        refresh_cache: bool,
+
+        /// Repository and optional file or directory: `owner/repo [path]`, or just `[path]` when using -r/--repo
+        #[arg(value_name = "REPO|PATH")]
+        args: Vec<String>,
+
+        /// Language the query is written for (required unless PATH is a single source file)
+        #[arg(long = "lang", value_name = "LANG")]
+        lang: Option<String>,
+
+        /// Glob pattern to filter files (e.g., "*.rs", "src/**")
+        #[arg(short = 'g', long = "glob")]
+        glob: Option<String>,
+
+        /// Maximum files to parse (default: 500)
+        #[arg(long = "max-files", default_value_t = 500)]
+        max_files: usize,
+
+        /// Emit JSON instead of plaintext
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
+        #[arg(long = "backend", value_name = "disk|memory")]
+        backend: Option<String>,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum McpTransport {
     Stdio,
@@ -481,7 +589,7 @@ enum McpTransport {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum McpMode {
-    /// Recommended default: seven snapshot-first repository tools
+    /// Recommended default: eight snapshot-first repository tools
     Direct,
     /// Experimental: one bounded native JavaScript code tool
     Code,
@@ -722,6 +830,14 @@ fn print_ls_entries(entries: &[wit::gitops::ops::FileMetadata], long: bool) {
     }
 }
 
+/// Rough token estimate from a byte size (~4 bytes per token). The memory
+/// backend only knows sizes without fetching blobs, so this is the budgeting
+/// hint the disk backend's `lines * 5` provides once content is available.
+/// The URL API (`showcase/url-api`) prints the same figure.
+fn estimate_tokens_from_bytes(bytes: u64) -> u64 {
+    bytes.div_ceil(4)
+}
+
 fn print_snapshot_ls(entries: &[DirEntry], long: bool) {
     if long {
         for entry in entries {
@@ -729,7 +845,12 @@ fn print_snapshot_ls(entries: &[DirEntry], long: bool) {
                 EntryKind::Dir => println!("            {}/", entry.name),
                 EntryKind::File => {
                     if let Some(size) = entry.size_bytes {
-                        println!("{:>8} B  {}", size, entry.name);
+                        println!(
+                            "{:>8} B  {}  (~{} tok)",
+                            size,
+                            entry.name,
+                            estimate_tokens_from_bytes(size)
+                        );
                     } else {
                         println!("            {}", entry.name);
                     }
@@ -778,10 +899,12 @@ fn print_snapshot_tree<S: RepoSnapshot>(
         } else {
             dirs.entry(String::new()).or_default().push(relative);
         }
-        let _ = long;
         let label = if long {
             if let Some(size) = entry.size_bytes {
-                format!("{relative} ({size} B)")
+                format!(
+                    "{relative} ({size} B, ~{} tok)",
+                    estimate_tokens_from_bytes(size)
+                )
             } else {
                 relative.to_string()
             }
@@ -794,8 +917,266 @@ fn print_snapshot_tree<S: RepoSnapshot>(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// What `wit ast` does with each visited file.
+enum AstJob {
+    Symbols(SymbolFilter),
+    Query {
+        language: AstLanguage,
+        query: String,
+    },
+}
+
+#[derive(serde::Serialize)]
+struct AstFileReport {
+    path: String,
+    language: &'static str,
+    total_lines: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    symbols: Vec<ast::AstSymbol>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    captures: Vec<ast::AstCapture>,
+}
+
+/// Shared `wit ast symbols|query` driver over disk or memory snapshots.
+async fn run_ast(
+    command: AstCommands,
+    ignore_patterns: &[String],
+    argv: &[impl AsRef<str>],
+) -> anyhow::Result<()> {
+    let (repo, branch, refresh_cache, args, glob, lang, max_files, json, backend, job) =
+        match command {
+            AstCommands::Symbols {
+                repo,
+                branch,
+                refresh_cache,
+                args,
+                kind,
+                name,
+                glob,
+                lang,
+                max_files,
+                json,
+                backend,
+            } => {
+                let filter = SymbolFilter {
+                    kinds: kind,
+                    name: match name {
+                        Some(pattern) => Some(
+                            regex::Regex::new(&pattern)
+                                .map_err(|err| anyhow::anyhow!("invalid --name regex: {err}"))?,
+                        ),
+                        None => None,
+                    },
+                };
+                (
+                    repo,
+                    branch,
+                    refresh_cache,
+                    args,
+                    glob,
+                    lang,
+                    max_files,
+                    json,
+                    backend,
+                    AstJob::Symbols(filter),
+                )
+            }
+            AstCommands::Query {
+                query,
+                repo,
+                branch,
+                refresh_cache,
+                args,
+                lang,
+                glob,
+                max_files,
+                json,
+                backend,
+            } => (
+                repo,
+                branch,
+                refresh_cache,
+                args,
+                glob,
+                lang,
+                max_files,
+                json,
+                backend,
+                // The language is resolved below once the path is known.
+                AstJob::Query {
+                    language: AstLanguage::Rust,
+                    query,
+                },
+            ),
+        };
+    let (repo, path) = resolve_repo_and_optional_path(repo, args, argv)?;
+    let language_filter = match lang.as_deref() {
+        Some(name) => Some(AstLanguage::from_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown --lang '{name}'; supported: {}",
+                ast::supported_languages_summary()
+            )
+        })?),
+        None => None,
+    };
+    let job = match job {
+        AstJob::Query { query, .. } => {
+            let language = language_filter
+                .or_else(|| path.as_deref().and_then(AstLanguage::from_path))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "wit ast query needs --lang LANG unless PATH is a single source file (supported: {})",
+                        ast::supported_languages_summary()
+                    )
+                })?;
+            ast::validate_query(language, &query)?;
+            AstJob::Query { language, query }
+        }
+        symbols => symbols,
+    };
+    let walk = BlobWalkOptions {
+        path_prefix: path.clone(),
+        glob,
+        ignore: ignore_patterns.to_vec(),
+        max_bytes: ast::MAX_AST_SOURCE_BYTES,
+    };
+
+    let mut reports: Vec<AstFileReport> = Vec::new();
+    let mut parsed = 0usize;
+    let mut truncated = false;
+    let mut visit = |file_path: &str, text: &str| -> anyhow::Result<bool> {
+        let Some(file_language) = AstLanguage::from_path(file_path) else {
+            return Ok(true);
+        };
+        if language_filter.is_some_and(|wanted| wanted != file_language) {
+            return Ok(true);
+        }
+        if parsed >= max_files {
+            truncated = true;
+            return Ok(false);
+        }
+        let report = match &job {
+            AstJob::Symbols(filter) => {
+                parsed += 1;
+                let symbols = ast::symbols(file_language, text, filter)?;
+                AstFileReport {
+                    path: file_path.to_string(),
+                    language: file_language.name(),
+                    total_lines: text.lines().count(),
+                    symbols,
+                    captures: Vec::new(),
+                }
+            }
+            AstJob::Query { language, query } => {
+                if *language != file_language {
+                    return Ok(true);
+                }
+                parsed += 1;
+                let captures = ast::run_query(file_language, text, query)?;
+                AstFileReport {
+                    path: file_path.to_string(),
+                    language: file_language.name(),
+                    total_lines: text.lines().count(),
+                    symbols: Vec::new(),
+                    captures,
+                }
+            }
+        };
+        reports.push(report);
+        Ok(true)
+    };
+
+    match CliSnapshotBackend::from_env_or_flag(backend.as_deref()).map_err(anyhow::Error::msg)? {
+        CliSnapshotBackend::Disk => {
+            let repository = cache_github_repo(
+                &repo,
+                cache_branch_selection(branch),
+                repo_cache_mode(refresh_cache),
+            )
+            .await?;
+            walk_text_blobs(&repository, &walk, &mut visit)?;
+        }
+        CliSnapshotBackend::Memory => {
+            let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
+            print_memory_provenance(snap.provenance());
+            walk_memory_text_blobs(&snap, &walk, &mut visit).await?;
+        }
+    }
+
+    if let Some(path) = &path
+        && reports.is_empty()
+        && AstLanguage::from_path(path).is_none()
+        && !path.contains('/')
+        && parsed == 0
+    {
+        // A bare file name with no grammar: say so instead of printing nothing.
+        eprintln!(
+            "note: no parseable files under '{path}' (supported: {})",
+            ast::supported_languages_summary()
+        );
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+    } else {
+        let mut blocks = Vec::new();
+        for report in &reports {
+            match &job {
+                AstJob::Symbols(_) => {
+                    if report.symbols.is_empty() && path.as_deref() != Some(report.path.as_str()) {
+                        continue;
+                    }
+                    let language =
+                        AstLanguage::from_name(report.language).unwrap_or(AstLanguage::Rust);
+                    blocks.push(ast::format_symbols(
+                        &report.path,
+                        language,
+                        &report.symbols,
+                        report.total_lines,
+                    ));
+                }
+                AstJob::Query { .. } => {
+                    if report.captures.is_empty() {
+                        continue;
+                    }
+                    blocks.push(ast::format_captures(&report.path, &report.captures));
+                }
+            }
+        }
+        if !blocks.is_empty() {
+            println!("{}", blocks.join("\n\n"));
+        }
+    }
+    if truncated {
+        eprintln!(
+            "note: stopped after {max_files} files (raise --max-files or narrow PATH/--glob)"
+        );
+    }
+    Ok(())
+}
+
+/// Stack for the thread that runs the CLI. Windows gives the main thread
+/// 1 MiB, and the clap derive for this many subcommands builds every argument
+/// in one function whose debug-build frame alone exceeds that (observed as an
+/// immediate stack overflow in `wit --help` on Windows CI).
+const CLI_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn main() -> anyhow::Result<()> {
+    let worker = std::thread::Builder::new()
+        .name("wit-main".to_string())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async_main())
+        })?;
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+async fn async_main() -> anyhow::Result<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__codemode-worker")) {
         anyhow::ensure!(
             std::env::args_os().nth(2).is_none(),
@@ -1309,6 +1690,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::CacheRevalidate { repo, branch } => {
             revalidate_github_repo(&repo, cache_branch_selection(branch))?;
         }
+        Commands::Ast { command } => run_ast(command, &ignore_patterns, &argv).await?,
         Commands::Skill { command } => match command {
             SkillCommands::Load => {
                 print!("{SKILL_MD}");
@@ -1630,7 +2012,7 @@ mod tests {
             subcommands,
             vec![
                 "search", "branches", "cache", "tree", "ls", "cat", "rg", "sed", "head", "tail",
-                "skill", "mcp"
+                "ast", "skill", "mcp"
             ]
         );
         assert_eq!(

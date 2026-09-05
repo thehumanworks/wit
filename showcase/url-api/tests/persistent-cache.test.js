@@ -117,6 +117,49 @@ describe("KvRepoCache unit", () => {
     assert.equal(kv.puts, putsBefore, "hydrated rows must not be re-written");
   });
 
+  it("a warm isolate does not rewrite rows it already persisted (no write amplification)", async () => {
+    const kv = new FakeKv();
+    const cache = createHostCache({ ttlMs: 60_000 });
+    cache.upsertEntries([makeEntry()]);
+
+    const first = await new KvRepoCache(kv).persistRepo(cache, REPO);
+    assert.equal(first, 3, "entry + default alias + one blob");
+    assert.equal(kv.puts, 3);
+
+    // A second request in the same isolate (new per-request KvRepoCache).
+    const second = await new KvRepoCache(kv).persistRepo(cache, REPO);
+    assert.equal(second, 0);
+    assert.equal(kv.puts, 3, "nothing new to write");
+
+    // A new blob written by a later request is persisted exactly once.
+    cache.findEntry(REPO).blobs["blob-new"] = { size: 1, contentBase64: "eA==" };
+    assert.equal(await new KvRepoCache(kv).persistRepo(cache, REPO), 1);
+    assert.equal(await new KvRepoCache(kv).persistRepo(cache, REPO), 0);
+    assert.ok(kv.store.has(`v1:blob:${REPO}:blob-new`));
+
+    // A refreshed entry (new cachedAt) is written again.
+    cache.upsertEntries([makeEntry({ cachedAt: Date.now() + 1 })]);
+    assert.equal(await new KvRepoCache(kv).persistRepo(cache, REPO), 2, "entry + alias, blobs untouched");
+  });
+
+  it("failed KV writes are retried by a later request", async () => {
+    let fail = true;
+    const kv = new FakeKv();
+    const flaky = {
+      get: (k, t) => kv.get(k, t),
+      async put(k, v, o) {
+        if (fail) throw new Error("kv write limit");
+        return kv.put(k, v, o);
+      },
+    };
+    const cache = createHostCache({ ttlMs: 60_000 });
+    cache.upsertEntries([makeEntry()]);
+    await assert.rejects(new KvRepoCache(flaky).persistRepo(cache, REPO), /kv write limit/);
+    fail = false;
+    assert.equal(await new KvRepoCache(flaky).persistRepo(cache, REPO), 3);
+    assert.equal(await new KvRepoCache(flaky).persistRepo(cache, REPO), 0);
+  });
+
   it("expired persisted entries are ignored on hydrate", async () => {
     const kv = new FakeKv();
     const warm = createHostCache({ ttlMs: 60_000 });

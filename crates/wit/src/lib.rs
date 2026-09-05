@@ -1,3 +1,4 @@
+pub mod ast;
 pub mod codemode;
 pub mod codemode_policy;
 pub mod gitops;

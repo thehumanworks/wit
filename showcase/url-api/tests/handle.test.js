@@ -184,7 +184,7 @@ describe("handleRequest fixtures", () => {
     assert.equal(seenAuth.includes("query-should-lose"), false);
   });
 
-  it("GET /api lists the three curls for the requested origin", async () => {
+  it("GET /api lists a curl per verb for the requested origin", async () => {
     const res = await handleRequest(new Request("https://example.test/api"), {
       cache: createHostCache({ ttlMs: 60_000 }),
       loadWasmBytes: async () => wasmBytes,
@@ -193,19 +193,36 @@ describe("handleRequest fixtures", () => {
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type"), /text\/plain/);
     const text = await res.text();
-    for (const line of [
-      'curl "https://example.test/api/tree/{owner}/{repo}"',
-      'curl "https://example.test/api/ls/{owner}/{repo}"',
-      'curl "https://example.test/api/cat/{owner}/{repo}?path="',
-    ]) {
+    for (const verb of ["stats", "tree", "ls", "refs", "commits", "outline", "cat", "head", "tail", "rg"]) {
+      const line = `curl "https://example.test/api/${verb}/{owner}/{repo}`;
       assert.ok(text.includes(line), `missing curl line: ${line}\n${text}`);
     }
-    for (const absent of ["/rg/", "/head/", "/tail/", "swagger"]) {
-      assert.equal(text.includes(absent), false, `unexpected ${absent} in /api`);
-    }
+    assert.ok(text.includes('curl "https://example.test/api/search?q='));
+    assert.ok(text.includes("https://example.test/api/llms.txt"));
+    assert.ok(text.includes("https://example.test/api/openapi.json"));
+    assert.equal(text.includes("swagger"), false);
   });
 
-  it("GET /api/openapi.json documents only the six tree/ls/cat GETs", async () => {
+  it("GET /api/llms.txt is an agent guide built from the request origin", async () => {
+    const res = await handleRequest(new Request("https://example.test/api/llms.txt"), {
+      cache: createHostCache({ ttlMs: 60_000 }),
+      loadWasmBytes: async () => wasmBytes,
+    });
+    assert.ok(res);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /text\/plain/);
+    const text = await res.text();
+    assert.match(text, /^# wit URL API\n/);
+    assert.ok(text.includes("Base URL: https://example.test/api"));
+    for (const verb of ["stats", "outline", "rg", "cat", "refs", "commits", "search"]) {
+      assert.ok(text.includes(`| ${verb} |`), `llms.txt table is missing ${verb}`);
+    }
+    assert.match(text, /x-wit-commit/);
+    assert.match(text, /fresh=1/);
+    assert.equal(text.includes("?token="), false, "never advertise the leaky query token");
+  });
+
+  it("GET /api/openapi.json documents every verb with and without the /api prefix", async () => {
     const res = await handleRequest(
       new Request("https://example.test/api/openapi.json"),
       {
@@ -221,41 +238,46 @@ describe("handleRequest fixtures", () => {
     const doc = JSON.parse(raw);
     assert.match(doc.openapi, /^3\./);
     assert.deepEqual(doc.servers, [{ url: "https://example.test" }]);
-    assert.deepEqual(Object.keys(doc.paths).sort(), [
-      "/api/cat/{owner}/{repo}",
-      "/api/ls/{owner}/{repo}",
-      "/api/tree/{owner}/{repo}",
-      "/cat/{owner}/{repo}",
-      "/ls/{owner}/{repo}",
-      "/tree/{owner}/{repo}",
-    ]);
+    const verbs = ["tree", "ls", "cat", "head", "tail", "rg", "stats", "outline", "refs", "commits"];
+    const expected = [];
+    for (const prefix of ["", "/api"]) {
+      for (const verb of verbs) expected.push(`${prefix}/${verb}/{owner}/{repo}`);
+      expected.push(`${prefix}/search`);
+    }
+    assert.deepEqual(Object.keys(doc.paths).sort(), expected.sort());
     for (const [pathname, item] of Object.entries(doc.paths)) {
       assert.deepEqual(Object.keys(item), ["get"], `${pathname} exposes non-GET methods`);
+      assert.ok(item.get.responses["429"], `${pathname} must document 429`);
     }
 
     for (const prefix of ["", "/api"]) {
-      const catPath = doc.paths[`${prefix}/cat/{owner}/{repo}`].get.parameters;
-      const pathParam = catPath.find((p) => p.in === "query" && p.name === "path");
-      assert.ok(pathParam, `${prefix}/cat is missing the path query param`);
-      assert.equal(pathParam.required, true, `${prefix}/cat ?path= must be required`);
+      for (const verb of ["cat", "head", "tail", "outline"]) {
+        const params = doc.paths[`${prefix}/${verb}/{owner}/{repo}`].get.parameters;
+        const pathParam = params.find((p) => p.in === "query" && p.name === "path");
+        assert.ok(pathParam, `${prefix}/${verb} is missing the path query param`);
+        assert.equal(pathParam.required, true, `${prefix}/${verb} ?path= must be required`);
+      }
       const treeParams = doc.paths[`${prefix}/tree/{owner}/{repo}`].get.parameters;
       const names = treeParams.map((p) => p.name);
-      for (const expected of ["owner", "repo", "path", "branch", "ref", "depth"]) {
+      for (const expected of ["owner", "repo", "path", "branch", "ref", "depth", "format", "fresh"]) {
         assert.ok(names.includes(expected), `${prefix}/tree missing ${expected}`);
       }
+      const rgParams = doc.paths[`${prefix}/rg/{owner}/{repo}`].get.parameters;
+      assert.ok(rgParams.find((p) => p.name === "q" && p.required));
+      const catParams = doc.paths[`${prefix}/cat/{owner}/{repo}`].get.parameters.map((p) => p.name);
+      assert.ok(catParams.includes("lines"));
+      const searchParams = doc.paths[`${prefix}/search`].get.parameters.map((p) => p.name);
+      assert.deepEqual(searchParams, ["q", "p", "lang", "limit", "sort", "format"]);
     }
 
-    // Header auth only: never advertise the leaky ?token= form, and never
-    // advertise verbs this host does not serve.
+    // Header auth only: never advertise the leaky ?token= form.
     assert.equal(JSON.stringify(doc).includes('"name": "token"'), false);
     assert.equal(raw.includes('"name":"token"'), false);
-    for (const absent of ["/rg/", "/search/", "/head/", "/tail/"]) {
-      assert.equal(raw.includes(absent), false, `unexpected ${absent} in openapi.json`);
-    }
+    assert.equal(raw.includes("access_token"), false);
   });
 
   it("HEAD on the discovery routes is 200 with an empty body", async () => {
-    for (const pathname of ["/api", "/api/openapi.json"]) {
+    for (const pathname of ["/api", "/api/openapi.json", "/api/llms.txt"]) {
       const res = await handleRequest(
         new Request(`https://example.test${pathname}`, { method: "HEAD" }),
         {
@@ -270,8 +292,8 @@ describe("handleRequest fixtures", () => {
     }
   });
 
-  it("still serves static for /, /api/foo and /api/rg", async () => {
-    for (const pathname of ["/", "/index.html", "/api/foo", "/api/rg/demo/repo"]) {
+  it("still serves static for /, /api/foo and unknown verbs", async () => {
+    for (const pathname of ["/", "/index.html", "/api/foo", "/api/clone/demo/repo", "/wit_snapshot.wasm"]) {
       const res = await handleRequest(
         new Request(`https://example.test${pathname}`),
         {

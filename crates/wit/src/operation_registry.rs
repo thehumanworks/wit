@@ -1,7 +1,7 @@
 use crate::operations::{
-    ContextArgs, ContextItem, FindRepositoriesArgs, ListArgs, ListResponse, OpenArgs, OpenResponse,
-    OperationContext, Page, ReadArgs, ReadResponse, RefItem, RefsArgs, RepositoryItem,
-    SearchCodeArgs, SearchItem, WitOperations,
+    AstArgs, AstItem, ContextArgs, ContextItem, FindRepositoriesArgs, ListArgs, ListResponse,
+    OpenArgs, OpenResponse, OperationContext, Page, ReadArgs, ReadResponse, RefItem, RefsArgs,
+    RepositoryItem, SearchCodeArgs, SearchItem, WitOperations,
 };
 use schemars::{JsonSchema, schema_for};
 use serde::{Serialize, de::DeserializeOwned};
@@ -167,6 +167,15 @@ declare_operations! {
         handler: read,
         input: ReadArgs,
         output: ReadResponse,
+    },
+    Ast {
+        name: "wit_ast",
+        code_method: "ast",
+        description: "Structural search on a snapshot via tree-sitter: mode 'symbols' (default) indexes definitions with exact line ranges, nesting, and signatures for rust/python/javascript/typescript/tsx/go/java/c; mode 'query' runs a raw tree-sitter query with a required language",
+        classification: Search,
+        handler: ast,
+        input: AstArgs,
+        output: Page<AstItem>,
     },
     Context {
         name: "wit_context",

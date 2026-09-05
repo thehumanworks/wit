@@ -1,7 +1,7 @@
 # Native Code Mode release contract
 
 Code Mode is compiled into the existing `wit` and `wit-mcp` executables. Both
-entrypoints default to the direct seven-tool MCP surface and accept `--mode code`
+entrypoints default to the direct eight-tool MCP surface and accept `--mode code`
 for the one-tool Code Mode surface. Each Code Mode invocation starts a hidden child
 mode of the same executable; it does not install or launch a third public binary or
 require Node.js, npm, Wrangler, Cloudflare, or another JavaScript runtime.

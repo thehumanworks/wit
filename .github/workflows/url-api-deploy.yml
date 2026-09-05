@@ -102,6 +102,25 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes wrangler@4 pages deploy public --branch=main
 
+      # ADR 0007: the host token lifts the anonymous GitHub quota that shared
+      # Cloudflare egress IPs exhaust. Optional; when the repository secret is
+      # absent the Worker keeps answering with the caller's token or 429s.
+      - name: Configure the host GitHub token (optional WIT_GITHUB_TOKEN secret)
+        working-directory: showcase/url-api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WIT_GITHUB_TOKEN: ${{ secrets.WIT_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${WIT_GITHUB_TOKEN:-}" ]]; then
+            echo "WIT_GITHUB_TOKEN repository secret not set; the Worker will rely on caller tokens."
+            echo "Add a fine-grained token with public read access under Settings > Secrets to enable the host fallback."
+            exit 0
+          fi
+          printf '%s' "$WIT_GITHUB_TOKEN" | npx --yes wrangler@4 pages secret put GITHUB_TOKEN --project-name "$PROJECT_NAME"
+          echo "Host GITHUB_TOKEN secret configured (value never printed)."
+
       - name: Post-deploy QA reminder
         run: |
           set -euo pipefail

@@ -112,10 +112,42 @@ wit rg -l 'impl Widget' -r ratatui/ratatui                    # Find files
 wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file
 wit head -n 30 -r ratatui/ratatui Cargo.toml                  # Preview a file
 wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
+wit ast symbols ratatui/ratatui src/widgets/block.rs          # Definitions with exact line ranges (tree-sitter)
+wit ast query '(impl_item type: (type_identifier) @t)' ratatui/ratatui src --lang rust  # Raw tree-sitter query
 wit branches -r ratatui/ratatui                               # List branches before choosing --branch
 wit cat --branch main -r ratatui/ratatui README.md            # Read a named branch
 wit tree --refresh-cache -r ratatui/ratatui src               # Force fresh cache before reading
 wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
+```
+
+## URL API (no install)
+
+The same explorer is hosted at `https://wit.thehuman.sh/api`: one `GET` per
+verb, CLI-identical plaintext (or `?format=json`), every response pinned to a
+commit reported in `x-wit-commit`. Start with `stats`, then `outline`, then
+read exactly the lines you need:
+
+```bash
+B=https://wit.thehuman.sh/api
+curl "$B/stats/ratatui/ratatui"                                   # files, bytes, ~tokens, languages
+curl "$B/outline/ratatui/ratatui?path=src/widgets/block.rs"       # symbols with line ranges
+curl "$B/cat/ratatui/ratatui?path=src/widgets/block.rs&lines=40-80&n=1"
+curl "$B/rg/ratatui/ratatui?q=impl%20Widget&glob=*.rs&l=1"        # locate, files only
+curl "$B/search?q=terminal%20ui&lang=rust"                        # find owner/repo
+curl "$B/llms.txt"                                                # the agent guide
+```
+
+Verbs: `stats`, `tree`, `ls`, `outline`, `cat`, `head`, `tail`, `rg`,
+`refs`, `commits`, `search`. `?ref=` takes a branch, tag, or commit SHA.
+Details, quotas, and self-hosting: [`showcase/url-api/README.md`](showcase/url-api/README.md)
+and [ADR 0007](docs/adr/0007-url-api-agent-verbs.md).
+
+Zero-dependency SDKs wrap the JSON surface and chain the workflow for you:
+[`sdk/typescript`](sdk/typescript/README.md) and [`sdk/python`](sdk/python/README.md).
+
+```ts
+const repo = new WitClient().repo("ratatui/ratatui");
+const hit = await repo.readSymbol("src/widgets/block.rs", "Block", { kind: "impl" });
 ```
 
 ## MCP Server
@@ -129,11 +161,12 @@ wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude pat
 - `wit_search_code`: run bounded multi-query code search with context and provenance.
 - `wit_read`: read explicit one-based inclusive line ranges.
 - `wit_context`: rank and merge deterministic multi-file evidence without an internal model.
+- `wit_ast`: tree-sitter structural search — definitions with exact line ranges (`symbols`) or raw tree-sitter queries (`query`) for Rust, Python, JavaScript, TypeScript/TSX, Go, Java, and C.
 
 Every evidence item includes the repository, immutable commit, path, blob identity, and applicable line range. Collection responses are structured, use a 64 KiB default whole-response budget, and return `next_cursor` whenever `has_more` is true. A cursor is bound to the tool, snapshot, and normalized arguments; changing any of them returns an error instead of silently mixing result sets.
 
 Direct MCP is the default and the recommended mode for a simple operation such as one open, list,
-search, or read. It exposes seven typed tools directly, so existing client configurations continue
+search, or read. It exposes eight typed tools directly, so existing client configurations continue
 to work unchanged. Code Mode is experimental and is intended for bounded composition where one
 model call can open, search, filter, and read before returning a focused result. It exposes one
 normal MCP tool named `code`; Code Mode is an optional wit workflow, not an MCP protocol

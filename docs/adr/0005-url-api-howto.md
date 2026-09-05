@@ -20,7 +20,12 @@ A purely static file host **cannot** execute wasm for `curl`. Use the Pages
 Function (or `wrangler pages dev`) for `text/plain`. The browser page runs the
 same handler in-page via wasm.
 
-## Routes (only these three)
+> ADR 0007 extended this host with `stats`, `outline`, `head`, `tail`, `rg`,
+> `refs`, `commits`, `search`, `cat?lines=`, JSON output, and a host token;
+> see `docs/adr/0007-url-api-agent-verbs.md` and `showcase/url-api/README.md`
+> for the current route table. The notes below describe the original cut.
+
+## Routes (the original three)
 
 ```
 GET /tree/{owner}/{repo}?path=&branch=&depth=

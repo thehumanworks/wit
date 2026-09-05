@@ -36,7 +36,8 @@ Use the snapshot-first workflow:
 3. Call `wit_open`, then reuse its immutable `snapshot_id` for every read in the task. Use `freshness: "require_fresh"` only when a branch must be refreshed before pinning.
 4. Call `wit_list` for bounded structural orientation, `wit_search_code` for one or more known regex queries, and `wit_read` for explicit one-based inclusive line ranges.
 5. Call `wit_context` when one deterministic operation should rank and merge bounded evidence across files. It does not call an internal model or embeddings.
-6. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Cursors are bound to the tool, snapshot, and normalized query.
+6. Call `wit_ast` when structure matters: `mode: "symbols"` (default) returns every definition under `path` with exact line ranges, nesting, and signatures (then `wit_read` exactly that range); `mode: "query"` with `language` runs a raw tree-sitter query. Languages: rust, python, javascript, typescript, tsx, go, java, c.
+7. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Cursors are bound to the tool, snapshot, and normalized query.
 
 Evidence items carry repository, commit SHA, path, blob identity, and line provenance. Collection responses are structured and use a 64 KiB whole-response budget. Fetch `wit://skill/SKILL.md`, `wit://guide/workflow`, or `wit://guide/tools` for reusable guidance.
 
@@ -73,6 +74,26 @@ The fixed defaults bound source, wall time, host calls/concurrency, pages, snaps
 Generated source is not persisted or logged. Worker diagnostic content is drained but neither returned nor logged; only capped byte counts and a truncation flag are retained. Never put secrets in source or results. Snapshots do not survive a parent server restart, so call `open` again after reconnecting.
 
 The checked-in external model evaluation is unrun, so Code Mode remains experimental and direct mode remains the fail-closed recommendation. Do not claim token, outer-call, or latency improvements unless a complete checked-in benchmark report passes every predeclared correctness, provenance, efficiency, latency, startup, and invalid-call gate.
+
+## Hosted URL API (no install)
+
+When the CLI is not installed, the same explorer answers plain `GET`s at
+`https://wit.thehuman.sh/api` (guide: `https://wit.thehuman.sh/api/llms.txt`).
+Verbs take `/{verb}/{owner}/{repo}` with the file path in `?path=`; add
+`?format=json` for JSON. Every response carries `x-wit-commit` (the pinned
+commit), and `?ref=` accepts a branch, tag, or SHA.
+
+Recommended order, cheapest first:
+
+1. `stats` — files, bytes, ~tokens, per-directory/language breakdown (no blob reads).
+2. `rg?q=PATTERN&l=1` — which files match (add `path=`/`glob=` to narrow).
+3. `outline?path=FILE` — symbols with line ranges.
+4. `cat?path=FILE&lines=A-B&n=1` — exactly the lines you need.
+
+`rg` is bounded (`max`, `max_files`) and reports truncation in a trailing
+`# truncated:` line — narrow the query rather than assuming no matches. A
+429 means the GitHub quota behind the host is exhausted; send your own
+`Authorization: Bearer <token>` to use yours.
 
 ## Cache Behavior
 
@@ -217,6 +238,29 @@ wit sed -n -r ratatui/ratatui '/^pub fn/p' src/lib.rs             # function sig
 | `-n/--quiet` | Suppress automatic printing of pattern space |
 | `-e/--expression` | Add script expression (repeatable) |
 | `-f/--file` | Add script from file (repeatable) |
+
+### ast
+
+Structural search with tree-sitter (Rust, Python, JavaScript, TypeScript/TSX, Go, Java, C). Prefer it over `rg` when you need definition boundaries or a question regex cannot express.
+
+```bash
+wit ast symbols ratatui/ratatui src/widgets/block.rs             # every definition with exact line ranges
+wit ast symbols ratatui/ratatui src/widgets --kind fn --name '^render'
+wit ast symbols -r ratatui/ratatui --glob '*.rs' --json           # machine-readable, includes parent/depth/signature
+wit ast query '(call_expression function: (identifier) @callee (#eq? @callee "render"))' ratatui/ratatui src --lang rust
+wit ast query '(function_definition name: (identifier) @name)' owner/repo app.py   # single file infers the language
+```
+
+| Flag | Description |
+|------|-------------|
+| `-k/--kind` | Keep only these kind labels (`fn`, `struct`, `class`, `method`, …); repeatable |
+| `--name` | Keep only names matching a regex |
+| `-g/--glob` | Filter files by glob |
+| `--lang` | Restrict to one language (required for `query` unless PATH is one file) |
+| `--max-files` | Parse at most N files (default 500) |
+| `--json` | Structured output |
+
+Symbol output is `START-END  kind name`, indented by nesting; use the range with `sed -n 'START,ENDp'` or MCP `wit_read`.
 
 ### head
 

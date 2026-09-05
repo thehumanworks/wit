@@ -30,3 +30,6 @@ Thumbs.db
 # Cloudflare Pages Git builds (no build command) can deploy the worker.
 crates/wit-snapshot/demo/browser/wit_snapshot.wasm
 docs/try/wit_snapshot.wasm
+
+# SDK build output (published from CI, never committed)
+sdk/typescript/dist/

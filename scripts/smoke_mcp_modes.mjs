@@ -11,6 +11,7 @@ if (!binary) {
 }
 
 const DIRECT_TOOLS = [
+  "wit_ast",
   "wit_context",
   "wit_find_repositories",
   "wit_list",
