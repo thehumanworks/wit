@@ -6670,7 +6670,7 @@ dependencies = [
 
 [[package]]
 name = "wit"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7024,4 +7024,5 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
 
