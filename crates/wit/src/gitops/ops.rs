@@ -1892,7 +1892,7 @@ fn recache_repo(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Resu
                     })?;
                 }
                 clone_with_git_cli(repo_url, branch, cache_path).with_context(|| {
-                    format!("gix clone timed out and git fallback failed for '{repo_url}'")
+                    format!("gix clone failed ({err:#}) and git fallback failed for '{repo_url}'")
                 })
             } else {
                 Err(err).with_context(|| format!("failed to cache repository from '{repo_url}'"))
@@ -1991,10 +1991,26 @@ fn clone_with_git_cli(
         .with_context(|| format!("failed to open fallback cache '{}'", cache_path.display()))
 }
 
+/// Transport failures worth retrying with the git CLI. Matched on messages because the HTTP/2
+/// stack (h2) wraps the underlying `io::Error` without exposing it via `source()`.
+const INTERRUPTED_TRANSFER_MESSAGES: &[&str] = &[
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection aborted",
+    "broken pipe",
+    "unexpected end of file",
+    "unexpected eof",
+    "early eof",
+    "close_notify",
+];
+
 fn should_fallback_to_git_cli(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         let message = cause.to_string().to_ascii_lowercase();
-        message.contains("timed out") || message.contains("timeout")
+        INTERRUPTED_TRANSFER_MESSAGES
+            .iter()
+            .any(|needle| message.contains(needle))
     })
 }
 
@@ -4057,6 +4073,35 @@ mod tests {
     fn test_should_not_fallback_to_git_cli_on_non_timeout_error() {
         let auth_err = anyhow::anyhow!("received HTTP status 401");
         assert!(!should_fallback_to_git_cli(&auth_err));
+    }
+
+    #[test]
+    fn test_should_fallback_to_git_cli_on_mid_stream_connection_reset() {
+        // h2 surfaces the reset as an opaque leaf, not a downcastable `io::Error`.
+        let reset = anyhow::anyhow!("connection reset")
+            .context("error reading a body from connection")
+            .context("request or response body error")
+            .context("An IO operation failed while streaming an entry")
+            .context("Failed to consume the pack sent by the remote");
+        assert!(should_fallback_to_git_cli(&reset));
+    }
+
+    #[test]
+    fn test_should_fallback_to_git_cli_on_truncated_tls_stream() {
+        let truncated = anyhow::anyhow!(
+            "peer closed connection without sending TLS close_notify: \
+             https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof"
+        )
+        .context("error reading a body from connection")
+        .context("Failed to consume the pack sent by the remote");
+        assert!(should_fallback_to_git_cli(&truncated));
+    }
+
+    #[test]
+    fn test_should_not_fallback_to_git_cli_on_local_io_error() {
+        let denied = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            .context("failed to create cache");
+        assert!(!should_fallback_to_git_cli(&denied));
     }
 
     #[test]
