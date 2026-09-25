@@ -1945,11 +1945,14 @@ fn clone_with_gix(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Re
     std::fs::create_dir_all(cache_path)
         .with_context(|| format!("failed to create cache '{}'", cache_path.display()))?;
 
+    // Without a remote override gix clones with `Tags::All`, which turns a depth-1 clone into one
+    // shallow tip per tag (openai/codex: ~1400 tags, ~400 MB instead of ~19 MB).
     let (repo, _) = gix::prepare_clone_bare(repo_url, cache_path)?
         .with_ref_name(Some(branch))?
         .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
             1.try_into().unwrap(),
         ))
+        .configure_remote(|remote| Ok(remote.with_fetch_tags(gix::remote::fetch::Tags::None)))
         .fetch_only(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?;
 
     Ok(repo)
@@ -4054,6 +4057,50 @@ mod tests {
     fn test_should_not_fallback_to_git_cli_on_non_timeout_error() {
         let auth_err = anyhow::anyhow!("received HTTP status 401");
         assert!(!should_fallback_to_git_cli(&auth_err));
+    }
+
+    #[test]
+    fn clone_with_gix_fetches_only_branch_tip_without_tags() {
+        let temp = tempfile::tempdir().unwrap();
+        let (remote, tagged_sha) = create_remote_with_default_branch(&temp, "main");
+        let worktree = temp.path().join("worktree");
+        run_git(&["tag", "v0.1.0", &tagged_sha], Some(&worktree));
+        run_git(
+            &[
+                "-c",
+                "user.name=wit-test",
+                "-c",
+                "user.email=wit-test@example.com",
+                "tag",
+                "-a",
+                "v0.1.0-annotated",
+                "-m",
+                "release",
+                &tagged_sha,
+            ],
+            Some(&worktree),
+        );
+        let tip_sha = commit_and_push_file(&temp, "main", "tip\n");
+        run_git(&["push", "origin", "--tags"], Some(&worktree));
+
+        let cache_path = temp.path().join("cache").join("repo.git");
+        let remote_url = format!("file://{}", remote.display());
+        let repo = clone_with_gix(&remote_url, "main", &cache_path).unwrap();
+
+        assert_eq!(repo.head_commit().unwrap().id().to_string(), tip_sha);
+        let tags: Vec<String> = repo
+            .references()
+            .unwrap()
+            .tags()
+            .unwrap()
+            .map(|reference| reference.unwrap().name().as_bstr().to_string())
+            .collect();
+        assert!(tags.is_empty(), "shallow cache fetched tags: {tags:?}");
+        let tagged_id = gix::ObjectId::from_hex(tagged_sha.as_bytes()).unwrap();
+        assert!(
+            !repo.has_object(tagged_id),
+            "shallow cache fetched history outside the branch tip"
+        );
     }
 
     #[test]
