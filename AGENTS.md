@@ -115,7 +115,8 @@ This is a Cargo workspace with several crates:
 - `wit search` uses the **GitHub REST API** only. `-q/--query` passes raw GitHub repository-search terms and qualifiers through to `q`, and `--limit` should bound paging work as well as output. Avoid adding tokens/secrets to logs or CLI output.
 - Be mindful of rate limits and handle HTTP failures gracefully in `wits` client code (`crates/wits/src/client.rs`).
 - Repos are cached as bare git repos in the system temp directory under `.wit/cache` (override with `WIT_CACHE_DIR`); the `cache_github_repo` function handles both initial caching and forced refresh.
-- A failed `gix` fetch can leave a poisoned cache directory (for example unborn `HEAD`); cache logic should delete partial state before retrying, and can fall back to `git clone --bare --depth 1` when transport timeouts persist.
+- A failed `gix` fetch can leave a poisoned cache directory (for example unborn `HEAD`); cache logic should delete partial state before retrying, and falls back to `git clone --bare --depth 1` when the gix transfer times out or is interrupted (connection reset, truncated stream).
+- The gix clone must pass `Tags::None`: gix otherwise clones with `Tags::All`, fetching one shallow tip per tag (openai/codex: ~400 MB instead of ~19 MB).
 - Cache operations are serialized by a global cache lock file (`.cache.lock`) plus an in-process mutex; cache reads/writes should continue to route through `cache_github_repo` to preserve this safety.
 - `wit rg` max-count semantics now mirror ripgrep: omit `-m` for unlimited matches, use `-m 0` to return no matches.
 
