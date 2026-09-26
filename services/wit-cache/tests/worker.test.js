@@ -211,6 +211,19 @@ describe("limits", () => {
     assert.equal(stats.stored_bytes, pack.length * 2);
     assert.equal(stats.fills_today, 3);
   });
+
+  it("a fill request racing a stored pack keeps its bytes in the ledger", async () => {
+    const pack = makePack(1000);
+    const gh = fakeGitHub({ "o/r": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
+    const { env, coord } = makeEnv();
+    await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`);
+    await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl });
+    // A miss observed just before that fill finished asks again, and the queue send fails.
+    coord.requestFill({ owner: "o", repo: "r", commit: SHA_A });
+    coord.release({ owner: "o", repo: "r", commit: SHA_A });
+    const stats = await body(await call(env, "/v1/stats"));
+    assert.equal(stats.stored_bytes, pack.length, "every stored pack must stay counted against the cap");
+  });
 });
 
 describe("routes", () => {
@@ -240,6 +253,22 @@ describe("routes", () => {
     assert.equal(ok.status, 200);
     assert.equal((await body(ok)).deleted, 1);
     assert.equal(bucket.objects.size, 0);
+    assert.equal((await body(await call(env, `/v1/github/o/r/${SHA_B}.pack?branch=main`))).reason, "blocked");
+  });
+
+  it("a fill that finishes after a takedown neither restores the pack nor shortens the block", async () => {
+    let clock = Date.UTC(2026, 8, 1);
+    const pack = makePack(100);
+    const gh = fakeGitHub({ "o/r": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
+    const { env, bucket, coord } = makeEnv({ ADMIN_KEY: "operator-key-value" }, { now: () => clock });
+    await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`);
+    const admin = { method: "DELETE", headers: { "x-wit-admin-key": "operator-key-value" } };
+    assert.equal((await call(env, "/v1/github/o/r", admin)).status, 200);
+    await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl });
+    assert.equal(bucket.objects.size, 0, "a taken-down repo must not reappear from an in-flight fill");
+
+    await coord.complete({ owner: "o", repo: "r", commit: SHA_B, ok: false, reason: "not_found_or_private" });
+    clock += 2 * 3600_000;
     assert.equal((await body(await call(env, `/v1/github/o/r/${SHA_B}.pack?branch=main`))).reason, "blocked");
   });
 
