@@ -1,0 +1,7 @@
+name = "wit_formal"
+version = "0.1.0"
+defaultTargets = ["Wit"]
+leanOptions = { autoImplicit = false }
+
+[[lean_lib]]
+name = "Wit"

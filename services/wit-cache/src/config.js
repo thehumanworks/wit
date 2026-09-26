@@ -4,6 +4,8 @@
  * be overridden with a wrangler `[vars]` entry of the same name.
  */
 
+import { MAX_PKT_LEN } from "./pktline.js";
+
 const MiB = 1024 * 1024;
 
 export const DEFAULTS = Object.freeze({
@@ -39,6 +41,16 @@ export function limitsFromEnv(env) {
     if (Number.isFinite(n) && n > 0) out[name] = n;
   }
   return /** @type {typeof DEFAULTS} */ (out);
+}
+
+/**
+ * Upstream bytes one fill can read, reserved against the day's byte budget
+ * when it is queued: the pack cap plus one side-band chunk, because the
+ * verifier counts a chunk before rejecting it.
+ * @param {typeof DEFAULTS} limits
+ */
+export function fillReserveBytes(limits) {
+  return limits.MAX_PACK_BYTES + MAX_PKT_LEN - 5;
 }
 
 /** Negative-cache lifetimes in seconds, by fill failure reason. */

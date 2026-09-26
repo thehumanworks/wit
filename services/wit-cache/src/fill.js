@@ -12,7 +12,7 @@ import { PackUpload, PackVerifier } from "./store.js";
 import { FillError, fetchPack, lsRefs } from "./upload-pack.js";
 
 /**
- * @typedef {{ owner: string, repo: string, commit: string, branch: string }} FillJob
+ * @typedef {{ owner: string, repo: string, commit: string, branch: string, reservation?: string }} FillJob
  */
 
 /**

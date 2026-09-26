@@ -50,6 +50,25 @@ jobs:
       - name: wit-cache worker guard and tests
         run: bash scripts/check_cache_worker.sh
 
+  formal:
+    name: Lean proofs (formal/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cache the pinned Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: elan-${{ hashFiles('formal/lean-toolchain') }}
+
+      - name: Constants drift, forbidden constructs, build, and axioms
+        run: bash scripts/check_formal.sh
+
   docs-site:
     name: docs try-it site
     runs-on: ubuntu-latest

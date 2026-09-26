@@ -166,14 +166,15 @@ export async function requestFill(env, job, ip) {
   }
   const decision = await callCoordinator(env, "/request-fill", job);
   if (decision.status !== "queued") return decision;
+  const queued = { ...job, reservation: decision.reservation };
   try {
-    await env.FILL_QUEUE.send(job);
+    await env.FILL_QUEUE.send(queued);
   } catch (err) {
-    await callCoordinator(env, "/release", job).catch(() => {});
+    await callCoordinator(env, "/release", queued).catch(() => {});
     safeConsole.error("fill enqueue failed", err);
     return { status: "skipped", reason: "enqueue_failed" };
   }
-  return decision;
+  return { status: "queued" };
 }
 
 /**
@@ -247,32 +248,81 @@ async function route(request, env, ctx) {
 }
 
 /**
+ * Bookkeeping is retried here before the message goes back to the queue,
+ * which wrangler.toml allows to redeliver it only once (ADR 0009).
+ */
+const COMPLETE_BACKOFF_MS = [500, 2000];
+
+/** @param {number} ms */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * @param {Env} env
+ * @param {Record<string, unknown>} outcome
+ * @param {(ms: number) => Promise<unknown>} wait
+ */
+async function recordOutcome(env, outcome, wait) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callCoordinator(env, "/complete", outcome);
+    } catch (err) {
+      if (attempt >= COMPLETE_BACKOFF_MS.length) throw err;
+      safeConsole.warn(`fill complete retry ${attempt + 1}: ${String(err)}`);
+      await wait(COMPLETE_BACKOFF_MS[attempt]);
+    }
+  }
+}
+
+/**
+ * First delivery: fetch and store the pack. `bytesRead` is what it streamed
+ * from GitHub, which `complete` settles the reservation to.
  * @param {Env} env
  * @param {import("./fill.js").FillJob} job
- * @param {{ fetchImpl?: typeof fetch }} [deps]
+ * @param {{ fetchImpl?: typeof fetch }} deps
  */
-export async function runFillJob(env, job, deps = {}) {
-  const limits = limitsFromEnv(env);
+async function fillOutcome(env, job, deps) {
   const started = Date.now();
-  let outcome;
   try {
-    const done = await fillPack(env, job, limits, deps);
-    outcome = { ...job, ok: true, bytes: done.bytes, reused: done.reused };
+    const done = await fillPack(env, job, limitsFromEnv(env), deps);
     safeConsole.log(
       `fill ok ${job.owner}/${job.repo}@${job.commit} bytes=${done.bytes} parts=${done.parts} ms=${Date.now() - started}`,
     );
+    return { ...job, ok: true, bytes: done.bytes, reused: done.reused, bytesRead: done.reused ? 0 : done.bytes };
   } catch (err) {
     const fillErr = err instanceof FillError ? err : new FillError("upstream_error", String(err));
-    outcome = {
+    safeConsole.warn(`fill failed ${job.owner}/${job.repo}@${job.commit} reason=${fillErr.reason}: ${fillErr.message}`);
+    return {
       ...job,
       ok: false,
       reason: fillErr.reason,
       retryAfterSeconds: fillErr.retryAfterSeconds,
-      bytesRead: fillErr.bytesRead,
+      // fillPack attaches the verifier's count to every failure after the fetch starts.
+      bytesRead: fillErr.bytesRead ?? 0,
     };
-    safeConsole.warn(`fill failed ${job.owner}/${job.repo}@${job.commit} reason=${fillErr.reason}: ${fillErr.message}`);
   }
-  await callCoordinator(env, "/complete", outcome);
+}
+
+/**
+ * Redelivery: never fetch again, only record what the first delivery left in
+ * R2, so one reservation covers every fetch of a job. Neither outcome states
+ * `bytesRead`, so `complete` keeps the stored size, or the whole reservation.
+ * @param {Env} env
+ * @param {import("./fill.js").FillJob} job
+ */
+async function recheckOutcome(env, job) {
+  const stored = await env.PACKS.head(packKey(job.owner, job.repo, job.commit));
+  if (stored) return { ...job, ok: true, bytes: stored.size, reused: true };
+  return { ...job, ok: false, reason: "upstream_error" };
+}
+
+/**
+ * @param {Env} env
+ * @param {import("./fill.js").FillJob} job
+ * @param {{ fetchImpl?: typeof fetch, sleep?: (ms: number) => Promise<unknown>, attempts?: number }} [deps]
+ */
+export async function runFillJob(env, job, deps = {}) {
+  const outcome = (deps.attempts ?? 1) > 1 ? await recheckOutcome(env, job) : await fillOutcome(env, job, deps);
+  await recordOutcome(env, outcome, deps.sleep ?? sleep);
   return outcome;
 }
 
@@ -309,7 +359,7 @@ export default {
         continue;
       }
       try {
-        await runFillJob(env, job);
+        await runFillJob(env, job, { attempts: message.attempts });
         message.ack();
       } catch (err) {
         safeConsole.error("fill bookkeeping failed", err);

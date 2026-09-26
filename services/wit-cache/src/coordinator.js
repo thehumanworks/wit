@@ -3,7 +3,8 @@
  * fill decision, so budgets and single-flight are strongly consistent:
  *
  * - pending fills (single-flight per repo@commit, max in flight)
- * - daily fill count and upstream byte budget
+ * - daily fill count and upstream byte budget; a queued fill reserves the most
+ *   bytes it can read, and `complete` settles the reservation to what it read
  * - negative cache (private/missing, too large, rate limited, not a tip)
  * - ledger of stored packs, used to evict the oldest beyond the storage cap
  *
@@ -11,16 +12,19 @@
  * client IP addresses.
  */
 
-import { NEGATIVE_TTL, PENDING_TTL_SECONDS, REPO_SCOPED, limitsFromEnv } from "./config.js";
+import { NEGATIVE_TTL, PENDING_TTL_SECONDS, REPO_SCOPED, fillReserveBytes, limitsFromEnv } from "./config.js";
 import { packKey, repoId, repoPrefix } from "./keys.js";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS packs (key TEXT PRIMARY KEY, repo TEXT NOT NULL, bytes INTEGER NOT NULL, filled_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS packs_by_age ON packs (filled_at)`,
   `CREATE TABLE IF NOT EXISTS negatives (scope TEXT PRIMARY KEY, reason TEXT NOT NULL, until INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS pending (key TEXT PRIMARY KEY, since INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS pending (key TEXT PRIMARY KEY, since INTEGER NOT NULL, id TEXT NOT NULL DEFAULT '', reserved INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS daily (day TEXT PRIMARY KEY, fills INTEGER NOT NULL, bytes INTEGER NOT NULL)`,
 ];
+
+/** Columns added to `pending` after the first deploy; SQLite has no ADD COLUMN IF NOT EXISTS. */
+const PENDING_COLUMNS = [`id TEXT NOT NULL DEFAULT ''`, `reserved INTEGER NOT NULL DEFAULT 0`];
 
 /** @param {number} ms */
 function utcDay(ms) {
@@ -38,6 +42,13 @@ export class FillCoordinator {
     this.limits = limitsFromEnv(env);
     this.now = () => Date.now();
     for (const stmt of SCHEMA) this.sql.exec(stmt);
+    for (const column of PENDING_COLUMNS) {
+      try {
+        this.sql.exec(`ALTER TABLE pending ADD COLUMN ${column}`);
+      } catch {
+        // already present
+      }
+    }
   }
 
   /** @param {string} q @param {...unknown} b */
@@ -112,6 +123,14 @@ export class FillCoordinator {
     return row ? { reason: row.reason, retryAfterSeconds: row.until - now } : null;
   }
 
+  /** @param {string} repo @param {number} now unix seconds */
+  isBlocked(repo, now) {
+    return (
+      this.rows(`SELECT 1 FROM negatives WHERE scope = ? AND reason = 'blocked' AND until > ?`, `repo:${repo}`, now)
+        .length > 0
+    );
+  }
+
   /**
    * Decide whether a miss may start a fill. Reserves the budget when it does.
    * @param {{ owner: string, repo: string, commit: string }} job
@@ -130,27 +149,59 @@ export class FillCoordinator {
     }
     const day = utcDay(nowMs);
     const used = this.today(day);
-    if (used.fills >= this.limits.DAILY_FILL_LIMIT || used.bytes >= this.limits.DAILY_FILL_BYTES) {
+    const reserve = fillReserveBytes(this.limits);
+    if (used.fills >= this.limits.DAILY_FILL_LIMIT || used.bytes + reserve > this.limits.DAILY_FILL_BYTES) {
       return { status: "skipped", reason: "daily_budget" };
     }
-    // The Worker only asks after an R2 miss, so a ledger row here is stale.
-    this.rows(`DELETE FROM packs WHERE key = ?`, key);
-    this.rows(`INSERT INTO pending (key, since) VALUES (?, ?)`, key, Math.floor(nowMs / 1000));
-    this.bumpDaily(day, 1, 0);
-    return { status: "queued" };
+    // A ledger row for this key may still describe a stored pack (the miss
+    // raced a fill); `complete` refreshes it, so it is never dropped here.
+    const reservation = crypto.randomUUID();
+    this.rows(
+      `INSERT INTO pending (key, since, id, reserved) VALUES (?, ?, ?, ?)`,
+      key,
+      Math.floor(nowMs / 1000),
+      reservation,
+      reserve,
+    );
+    this.bumpDaily(day, 1, reserve);
+    return { status: "queued", reservation };
   }
 
-  /** Undo a reservation whose queue send failed. @param {{ owner: string, repo: string, commit: string }} job */
+  /**
+   * End a fill's reservation: drop its pending row and refund what the fill
+   * did not read to the day it was reserved on. Only the delivery holding the
+   * reservation (same id) settles it, so it is refunded at most once and a late
+   * `complete` never touches a newer fill of the same key. A reservation whose
+   * row expires unsettled stays charged: nobody knows what that fill read.
+   * @param {string} key
+   * @param {string | undefined} id
+   * @param {number | undefined} charge bytes read; unknown keeps the whole reservation
+   */
+  settle(key, id, charge) {
+    const [row] = this.rows(`SELECT id, since, reserved FROM pending WHERE key = ?`, key);
+    if (!row || (id !== undefined && row.id !== id)) return false;
+    this.rows(`DELETE FROM pending WHERE key = ?`, key);
+    const read = typeof charge === "number" && charge >= 0 ? Math.min(charge, row.reserved) : row.reserved;
+    const refund = row.reserved - read;
+    if (refund > 0) {
+      this.rows(`UPDATE daily SET bytes = MAX(0, bytes - ?) WHERE day = ?`, refund, utcDay(row.since * 1000));
+    }
+    return true;
+  }
+
+  /**
+   * Undo a reservation whose queue send failed.
+   * @param {{ owner: string, repo: string, commit: string, reservation?: string }} job
+   */
   release(job) {
     const key = packKey(job.owner, job.repo, job.commit);
-    this.rows(`DELETE FROM pending WHERE key = ?`, key);
-    this.bumpDaily(utcDay(this.now()), -1, 0);
+    if (this.settle(key, job.reservation, 0)) this.bumpDaily(utcDay(this.now()), -1, 0);
     return { ok: true };
   }
 
   /**
    * Record a fill outcome; on success evict the oldest packs beyond the cap.
-   * @param {{ owner: string, repo: string, commit: string, ok: boolean, bytes?: number,
+   * @param {{ owner: string, repo: string, commit: string, reservation?: string, ok: boolean, bytes?: number,
    *   reused?: boolean, reason?: string, retryAfterSeconds?: number | null, bytesRead?: number }} outcome
    */
   async complete(outcome) {
@@ -158,8 +209,7 @@ export class FillCoordinator {
     const now = Math.floor(nowMs / 1000);
     const repo = repoId(outcome.owner, outcome.repo);
     const key = packKey(outcome.owner, outcome.repo, outcome.commit);
-    this.rows(`DELETE FROM pending WHERE key = ?`, key);
-    const day = utcDay(nowMs);
+    this.settle(key, outcome.reservation, outcome.bytesRead ?? (outcome.ok ? outcome.bytes : undefined));
     if (!outcome.ok) {
       const reason = outcome.reason && outcome.reason in NEGATIVE_TTL ? outcome.reason : "upstream_error";
       const ttl =
@@ -167,26 +217,33 @@ export class FillCoordinator {
           ? Math.min(outcome.retryAfterSeconds, 3600)
           : NEGATIVE_TTL[/** @type {keyof typeof NEGATIVE_TTL} */ (reason)];
       const scope = reason === "rate_limited" ? "global" : REPO_SCOPED.has(reason) ? `repo:${repo}` : `key:${key}`;
+      // Keep the later expiry so a short negative never shortens a takedown.
       this.rows(
         `INSERT INTO negatives (scope, reason, until) VALUES (?, ?, ?)
-         ON CONFLICT(scope) DO UPDATE SET reason = excluded.reason, until = excluded.until`,
+         ON CONFLICT(scope) DO UPDATE SET
+           reason = CASE WHEN excluded.until > until THEN excluded.reason ELSE reason END,
+           until = MAX(until, excluded.until)`,
         scope,
         reason,
         now + ttl,
       );
-      this.bumpDaily(day, 0, outcome.bytesRead ?? 0);
       return { ok: true, evicted: [] };
     }
     const bytes = outcome.bytes ?? 0;
+    if (this.isBlocked(repo, now)) {
+      // The fill was in flight when the operator took the repo down.
+      await this.env.PACKS.delete(key);
+      this.rows(`DELETE FROM packs WHERE key = ?`, key);
+      return { ok: true, evicted: [key] };
+    }
     this.rows(
       `INSERT INTO packs (key, repo, bytes, filled_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET bytes = excluded.bytes`,
+       ON CONFLICT(key) DO UPDATE SET bytes = excluded.bytes, filled_at = excluded.filled_at`,
       key,
       repo,
       bytes,
       now,
     );
-    if (!outcome.reused) this.bumpDaily(day, 0, bytes);
     return { ok: true, evicted: await this.evict(key) };
   }
 
@@ -213,6 +270,15 @@ export class FillCoordinator {
   async takedown(target) {
     const repo = repoId(target.owner, target.repo);
     const prefix = repoPrefix(target.owner, target.repo);
+    // Block before the first await: a `complete` that runs while R2 is being
+    // listed must see the block and delete its own pack.
+    const until = Math.floor(this.now() / 1000) + NEGATIVE_TTL.blocked;
+    this.rows(
+      `INSERT INTO negatives (scope, reason, until) VALUES (?, 'blocked', ?)
+       ON CONFLICT(scope) DO UPDATE SET reason = 'blocked', until = excluded.until`,
+      `repo:${repo}`,
+      until,
+    );
     /** @type {Set<string>} */
     const keys = new Set(this.rows(`SELECT key FROM packs WHERE repo = ?`, repo).map((r) => r.key));
     let cursor;
@@ -223,13 +289,6 @@ export class FillCoordinator {
     } while (cursor);
     if (keys.size) await this.env.PACKS.delete([...keys]);
     this.rows(`DELETE FROM packs WHERE repo = ?`, repo);
-    const until = Math.floor(this.now() / 1000) + NEGATIVE_TTL.blocked;
-    this.rows(
-      `INSERT INTO negatives (scope, reason, until) VALUES (?, 'blocked', ?)
-       ON CONFLICT(scope) DO UPDATE SET reason = 'blocked', until = excluded.until`,
-      `repo:${repo}`,
-      until,
-    );
     return { deleted: keys.size };
   }
 
