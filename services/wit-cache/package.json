@@ -1,0 +1,12 @@
+{
+  "name": "wit-cache",
+  "private": true,
+  "type": "module",
+  "description": "Shared no-login depth-1 pack cache for the wit CLI (Cloudflare Worker, ADR 0009)",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "npm test",
+    "dev": "npx --yes wrangler@4 dev",
+    "deploy": "npx --yes wrangler@4 deploy"
+  }
+}
