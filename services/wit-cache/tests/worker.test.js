@@ -272,6 +272,27 @@ describe("routes", () => {
     assert.equal((await body(await call(env, `/v1/github/o/r/${SHA_B}.pack?branch=main`))).reason, "blocked");
   });
 
+  it("a fill that completes while a takedown is listing R2 is still removed", async () => {
+    const pack = makePack(100);
+    const gh = fakeGitHub({ "o/r": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
+    const { env, bucket } = makeEnv({ ADMIN_KEY: "operator-key-value" });
+    await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`);
+    const list = bucket.list.bind(bucket);
+    let raced = false;
+    bucket.list = async (opts) => {
+      const listed = await list(opts);
+      if (!raced) {
+        raced = true;
+        await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl });
+      }
+      return listed;
+    };
+    const admin = { method: "DELETE", headers: { "x-wit-admin-key": "operator-key-value" } };
+    assert.equal((await call(env, "/v1/github/o/r", admin)).status, 200);
+    assert.ok(raced);
+    assert.equal(bucket.objects.size, 0, "a pack stored during the takedown must not survive it");
+  });
+
   it("takedown is disabled when no operator key is configured", async () => {
     const { env } = makeEnv();
     const res = await call(env, "/v1/github/o/r", { method: "DELETE", headers: { "x-wit-admin-key": "" } });

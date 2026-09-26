@@ -230,6 +230,15 @@ export class FillCoordinator {
   async takedown(target) {
     const repo = repoId(target.owner, target.repo);
     const prefix = repoPrefix(target.owner, target.repo);
+    // Block before the first await: a `complete` that runs while R2 is being
+    // listed must see the block and delete its own pack.
+    const until = Math.floor(this.now() / 1000) + NEGATIVE_TTL.blocked;
+    this.rows(
+      `INSERT INTO negatives (scope, reason, until) VALUES (?, 'blocked', ?)
+       ON CONFLICT(scope) DO UPDATE SET reason = 'blocked', until = excluded.until`,
+      `repo:${repo}`,
+      until,
+    );
     /** @type {Set<string>} */
     const keys = new Set(this.rows(`SELECT key FROM packs WHERE repo = ?`, repo).map((r) => r.key));
     let cursor;
@@ -240,13 +249,6 @@ export class FillCoordinator {
     } while (cursor);
     if (keys.size) await this.env.PACKS.delete([...keys]);
     this.rows(`DELETE FROM packs WHERE repo = ?`, repo);
-    const until = Math.floor(this.now() / 1000) + NEGATIVE_TTL.blocked;
-    this.rows(
-      `INSERT INTO negatives (scope, reason, until) VALUES (?, 'blocked', ?)
-       ON CONFLICT(scope) DO UPDATE SET reason = 'blocked', until = excluded.until`,
-      `repo:${repo}`,
-      until,
-    );
     return { deleted: keys.size };
   }
 
