@@ -47,6 +47,9 @@ jobs:
       - name: url-api Cloudflare deploy workflow guard
         run: bash scripts/check_url_api_deploy_workflow.sh
 
+      - name: wit-cache worker guard and tests
+        run: bash scripts/check_cache_worker.sh
+
   docs-site:
     name: docs try-it site
     runs-on: ubuntu-latest

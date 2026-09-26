@@ -41,6 +41,13 @@ export class PackVerifier {
       merged.set(chunk.subarray(0, need), this.head.length);
       this.head = merged;
     }
+    // Hold back the last 20 bytes seen: they are the trailer if the stream ends here.
+    if (chunk.length >= TRAILER) {
+      if (this.tail.length) this.hash.update(this.tail);
+      this.hash.update(chunk.subarray(0, chunk.length - TRAILER));
+      this.tail = chunk.slice(chunk.length - TRAILER);
+      return;
+    }
     const joined = new Uint8Array(this.tail.length + chunk.length);
     joined.set(this.tail, 0);
     joined.set(chunk, this.tail.length);
