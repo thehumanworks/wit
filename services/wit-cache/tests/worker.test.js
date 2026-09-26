@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import worker, { runFillJob } from "../src/index.js";
 import { packKey } from "../src/keys.js";
@@ -157,6 +158,68 @@ describe("read path and lazy fill", () => {
     }
     assert.deepEqual(acks, ["ok", "bad"]);
     assert.equal(bucket.objects.size, 1);
+  });
+
+  it("a transient coordinator error in complete is retried without re-running the fill", async () => {
+    const gh = fakeGitHub({ "o/r": { refs: { main: SHA_A }, packs: { [SHA_A]: makePack(40_000) } } });
+    const { env, bucket, coord } = makeEnv();
+    await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`);
+    const complete = coord.complete.bind(coord);
+    let failures = 1;
+    coord.complete = async (/** @type {any} */ outcome) => {
+      if (failures-- > 0) throw new Error("durable object reset");
+      return complete(outcome);
+    };
+    /** @type {number[]} */
+    const waits = [];
+    const sleep = async (/** @type {number} */ ms) => waits.push(ms);
+    const outcome = await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl, sleep });
+    assert.equal(outcome.ok, true);
+    assert.deepEqual(waits, [500]);
+    assert.equal(gh.requests.length, 2, "one ls-refs and one fetch");
+    assert.equal(bucket.ops.put, 1);
+    const stats = coord.stats();
+    assert.equal(stats.stored_packs, 1);
+    assert.equal(stats.fills_in_flight, 0);
+  });
+
+  it("a fill whose bookkeeping keeps failing writes nothing to R2 on its one redelivery", async () => {
+    const gh = fakeGitHub({ "o/r": { refs: { main: SHA_A }, packs: { [SHA_A]: makePack(40_000) } } });
+    const { env, bucket, coord } = makeEnv({ PART_BYTES: String(16 * 1024) });
+    await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`);
+    const job = env.FILL_QUEUE.sent[0];
+    const complete = coord.complete.bind(coord);
+    let calls = 0;
+    coord.complete = async () => {
+      calls++;
+      throw new Error("durable object unavailable");
+    };
+    const deps = { fetchImpl: gh.fetchImpl, sleep: async () => {} };
+    await assert.rejects(runFillJob(env, job, deps), /HTTP 500|unavailable/);
+    assert.equal(calls, 3, "complete is tried three times before the queue redelivers");
+    assert.ok(bucket.ops.uploadPart > 0);
+
+    const writes = { ...bucket.ops };
+    const requests = gh.requests.length;
+    coord.complete = complete;
+    const outcome = await runFillJob(env, job, deps);
+    assert.equal(outcome.reused, true);
+    assert.equal(gh.requests.length, requests, "the redelivery does not refetch from GitHub");
+    for (const op of /** @type {const} */ (["put", "createMultipart", "uploadPart", "complete"])) {
+      assert.equal(bucket.ops[op], writes[op], `no Class A ${op} on the redelivery`);
+    }
+    assert.equal(coord.stats().stored_packs, 1);
+  });
+
+  it("the fill queue redelivers a message at most once", () => {
+    const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const consumer = toml.split("[[queues.consumers]]")[1].split(/\n\[/)[0];
+    const retries = Number(consumer.match(/^max_retries = (\d+)$/m)?.[1]);
+    assert.ok(
+      retries <= 1,
+      `max_retries = ${retries}: ADR 0009's Class A worst case (Budget.classA_worst_case_le_free_tier) allows one retry`,
+    );
+    assert.doesNotMatch(consumer, /dead_letter_queue/);
   });
 });
 

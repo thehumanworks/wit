@@ -46,7 +46,7 @@ queue = "wit-cache-fills"
 queue = "wit-cache-fills"
 max_batch_size = 1
 max_batch_timeout = 1
-max_retries = 2
+max_retries = 1
 max_concurrency = 4
 
 # Per-IP limits (per Cloudflare location). Reads are cheap R2 GETs; fills are

@@ -163,6 +163,8 @@ for (const name of Object.keys(vars)) {
 const consumers = wrangler.queues?.consumers ?? [];
 if (consumers.length !== 1) fail("wrangler.toml must declare exactly one queue consumer");
 const consumer = consumers[0];
+// Budget.runsPerMessage = 1 + max_retries; a dead-letter consumer would add runs.
+if ("dead_letter_queue" in consumer) fail("wrangler.toml: a dead_letter_queue would re-run fills outside the Class A bound");
 const limiter = (name) => {
   const rl = (wrangler.ratelimits ?? []).find((r) => r.name === name);
   if (!rl?.simple) fail(`wrangler.toml: rate limiter ${name} is missing`);

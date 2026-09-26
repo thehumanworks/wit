@@ -33,7 +33,7 @@ def maxFillBytes (l : Limits) : Nat := l.maxPackBytes + (Src.maxPktLen - 5)
 /-- `Coordinator.daily_bytes_le`: bytes counted in one UTC day. -/
 def dailyBytesBound (l : Limits) : Nat := l.dailyFillBytes + maxFillBytes l * l.maxInflightFills
 
-/-- Fill jobs whose bytes count against one month. -/
+/-- Fill messages in one month: the coordinator enqueues one per counted fill. -/
 def monthlyFills (l : Limits) : Nat := Assume.monthDays * l.dailyFillLimit + l.maxInflightFills
 
 /-- Runs of one queued message: the first delivery plus `max_retries`. -/
@@ -55,40 +55,71 @@ theorem uploadClassA_le (p n : Nat) : uploadClassA p n ≤ n / p + 3 := by
 `n / p` parts before `abort` (which is free). -/
 def failedUploadClassA (p n : Nat) : Nat := n / p + 1
 
-theorem add_div_le (a b p : Nat) : a / p + b / p ≤ (a + b) / p := by
-  by_cases hp : p = 0
-  · subst hp; simp
-  · rw [Nat.le_div_iff_mul_le (by omega), Nat.add_mul]
-    have := Nat.div_mul_le_self a p
-    have := Nat.div_mul_le_self b p
+/-- What one run of a fill job writes to R2: `fillPack`'s HEAD finds the pack
+already stored (free of Class A), or an upload of `n` verified bytes completes
+or aborts. -/
+inductive Run where
+  | reused
+  | stored (n : Nat)
+  | failed (n : Nat)
+
+def Run.bytes : Run → Nat
+  | .reused => 0
+  | .stored n => n
+  | .failed n => n
+
+def Run.classA (p : Nat) : Run → Nat
+  | .reused => 0
+  | .stored n => uploadClassA p n
+  | .failed n => failedUploadClassA p n
+
+/-- Class A operations of the largest run: an upload of `maxFillBytes`. -/
+def maxRunClassA (l : Limits) : Nat := maxFillBytes l / l.partBytes + 3
+
+theorem run_classA_le (l : Limits) (r : Run) (h : r.bytes ≤ maxFillBytes l) :
+    r.classA l.partBytes ≤ maxRunClassA l := by
+  have hd : r.bytes / l.partBytes ≤ maxFillBytes l / l.partBytes := Nat.div_le_div_right h
+  unfold maxRunClassA
+  cases r with
+  | reused => simp [Run.classA]
+  | stored n =>
+    have := uploadClassA_le l.partBytes n
+    simp only [Run.classA]
+    simp only [Run.bytes] at hd
+    omega
+  | failed n =>
+    simp only [Run.classA, failedUploadClassA]
+    simp only [Run.bytes] at hd
     omega
 
-/-- Summing per-fill bounds: the floors add up to at most the floor of the sum. -/
-theorem sum_div_le (p : Nat) : ∀ ns : List Nat,
-    (ns.map (fun n => n / p)).sum ≤ ns.sum / p
-  | [] => by simp
-  | n :: ns => by
-    have ih := sum_div_le p ns
-    simp only [List.map_cons, List.sum_cons]
-    have := add_div_le n ns.sum p
+/-- Worst-case R2 Class A operations in a month: the baseline plus every run of
+every message at the largest pack. Retried runs are included and the byte
+budget is not used, because a run whose `complete` failed never counted. -/
+def classAWorstCase (l : Limits) : Nat :=
+  Assume.baselineClassA + runsPerMessage * monthlyFills l * maxRunClassA l
+
+theorem sum_le_length_mul (c : Nat) : ∀ xs : List Nat, (∀ x ∈ xs, x ≤ c) → xs.sum ≤ xs.length * c
+  | [], _ => by simp
+  | x :: xs, h => by
+    have ih := sum_le_length_mul c xs (fun y hy => h y (by simp [hy]))
+    have hx := h x (by simp)
+    simp only [List.sum_cons, List.length_cons, Nat.succ_mul]
     omega
 
-/-- Class A operations of a month's counted fills: 3 per fill plus the bytes
-over the part size. -/
-theorem classA_of_fills (p : Nat) (ns : List Nat) :
-    (ns.map (fun n => uploadClassA p n)).sum ≤ 3 * ns.length + ns.sum / p := by
-  have h1 : ∀ ms : List Nat, (ms.map (fun n => uploadClassA p n)).sum ≤
-      (ms.map (fun n => n / p)).sum + 3 * ms.length := by
-    intro ms
-    induction ms with
-    | nil => simp
-    | cons m ms ih =>
-      simp only [List.map_cons, List.sum_cons, List.length_cons]
-      have := uploadClassA_le p m
-      omega
-  have := h1 ns
-  have := sum_div_le p ns
-  omega
+/-- A month has at most `monthlyFills` messages (`daily_fills_le`), the queue
+runs each at most `runsPerMessage` times, and no run uploads more than
+`maxFillBytes`; so its Class A operations are at most `classAWorstCase`. -/
+theorem month_classA_le (l : Limits) (runs : List Run)
+    (hlen : runs.length ≤ runsPerMessage * monthlyFills l)
+    (hbytes : ∀ r ∈ runs, r.bytes ≤ maxFillBytes l) :
+    Assume.baselineClassA + (runs.map (Run.classA l.partBytes)).sum ≤ classAWorstCase l := by
+  have h := sum_le_length_mul (maxRunClassA l) (runs.map (Run.classA l.partBytes)) (by
+    intro x hx
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp hx
+    exact run_classA_le l r (hbytes r hr))
+  rw [List.length_map] at h
+  have := Nat.mul_le_mul_right (maxRunClassA l) hlen
+  exact Nat.add_le_add_left (Nat.le_trans h this) _
 
 /-- The coordinator parameters the deployed Worker runs with. -/
 def params (l : Limits) : Coordinator.Params where
@@ -104,10 +135,6 @@ def params (l : Limits) : Coordinator.Params where
 
 /-- Client requests a month for which requests and Class B stay in the allowance. -/
 def clientRequestHeadroom : Nat := 9500000
-
-/-- Fill runs a month whose bytes the coordinator never counted (their
-`complete` failed, so the queue retried them) that Class A still absorbs. -/
-def uncountedRunHeadroom : Nat := 25000
 
 /-- Worker CPU left for serving requests after fills. -/
 def requestCpuHeadroomMs : Nat := 20000000
@@ -130,11 +157,8 @@ structure Fits (l : Limits) : Prop where
     (Assume.baselineStorageBytes + l.storageCapBytes) * (86400 * 1000) +
         dailyBytesBound l * Assume.queueConsumerWallMs ≤
       Assume.r2FreeStorageBytes * (86400 * 1000)
-  /-- R2 Class A: `classA_of_fills` for every counted fill, plus
-  `uncountedRunHeadroom` retried runs at the largest pack, plus the baseline. -/
-  classA :
-    Assume.baselineClassA + 3 * monthlyFills l + Assume.monthDays * dailyBytesBound l / l.partBytes +
-        uncountedRunHeadroom * (l.maxPackBytes / l.partBytes + 3) ≤ Assume.r2FreeClassA
+  /-- R2 Class A, queue retries included (`month_classA_le`). -/
+  classA : classAWorstCase l ≤ Assume.r2FreeClassA
   /-- R2 Class B: one GET or HEAD per client request, one HEAD per fill run. -/
   classB :
     Assume.baselineClassB + clientRequestHeadroom + runsPerMessage * monthlyFills l ≤ Assume.r2FreeClassB
@@ -171,6 +195,19 @@ theorem deployed_fits : Fits deployed := by
 
 theorem defaults_fits : Fits Src.workerDefaults := by
   constructor <;> decide
+
+/-- ADR 0009: a month's R2 Class A operations, every queue retry included, stay
+within the 1M free tier for any limits that pass `Fits`. -/
+theorem classA_worst_case_le_free_tier (l : Limits) (h : Fits l) (runs : List Run)
+    (hlen : runs.length ≤ runsPerMessage * monthlyFills l)
+    (hbytes : ∀ r ∈ runs, r.bytes ≤ maxFillBytes l) :
+    Assume.baselineClassA + (runs.map (Run.classA l.partBytes)).sum ≤ Assume.r2FreeClassA :=
+  Nat.le_trans (month_classA_le l runs hlen hbytes) h.classA
+
+/-- 9,304 messages × 2 runs × 35 operations + the 60k baseline. -/
+theorem deployed_classA_worst_case : classAWorstCase deployed = 711280 := by decide
+
+theorem defaults_classA_worst_case : classAWorstCase Src.workerDefaults = 711280 := by decide
 
 /-- ADR 0009 once said one pack is at most 1/6 of the store; it is not. -/
 theorem six_packs_exceed_cap : Src.workerDefaults.storageCapBytes < 6 * Src.workerDefaults.maxPackBytes := by

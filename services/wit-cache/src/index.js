@@ -247,9 +247,35 @@ async function route(request, env, ctx) {
 }
 
 /**
+ * Bookkeeping is retried here rather than by redelivering the message: a queue
+ * retry re-runs the whole fill, and wrangler.toml allows only one (ADR 0009).
+ */
+const COMPLETE_BACKOFF_MS = [500, 2000];
+
+/** @param {number} ms */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * @param {Env} env
+ * @param {Record<string, unknown>} outcome
+ * @param {(ms: number) => Promise<unknown>} wait
+ */
+async function recordOutcome(env, outcome, wait) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callCoordinator(env, "/complete", outcome);
+    } catch (err) {
+      if (attempt >= COMPLETE_BACKOFF_MS.length) throw err;
+      safeConsole.warn(`fill complete retry ${attempt + 1}: ${String(err)}`);
+      await wait(COMPLETE_BACKOFF_MS[attempt]);
+    }
+  }
+}
+
+/**
  * @param {Env} env
  * @param {import("./fill.js").FillJob} job
- * @param {{ fetchImpl?: typeof fetch }} [deps]
+ * @param {{ fetchImpl?: typeof fetch, sleep?: (ms: number) => Promise<unknown> }} [deps]
  */
 export async function runFillJob(env, job, deps = {}) {
   const limits = limitsFromEnv(env);
@@ -272,7 +298,7 @@ export async function runFillJob(env, job, deps = {}) {
     };
     safeConsole.warn(`fill failed ${job.owner}/${job.repo}@${job.commit} reason=${fillErr.reason}: ${fillErr.message}`);
   }
-  await callCoordinator(env, "/complete", outcome);
+  await recordOutcome(env, outcome, deps.sleep ?? sleep);
   return outcome;
 }
 

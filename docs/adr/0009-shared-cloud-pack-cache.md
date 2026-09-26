@@ -138,6 +138,7 @@ includes 10M requests and 30M CPU-ms).
 | Max pack | **512 MiB** (Worker and client) | Covers torvalds/linux at depth 1; one pack is under a fifth of the store (five fit in 3 GB, six do not). Over-cap repos get `too_large` for 7 days and clone from GitHub. |
 | Fills per day | **300** (global, strongly consistent in the coordinator) | Class A and Queue ops |
 | Fill bytes per day | **8 GB** upstream | Worker CPU: 8,000 MB × about 14 ms/MB ≈ 112k CPU-ms/day ≈ 3.4M/month, which leaves plenty of the 30M included |
+| Fill retries | queue `max_retries` **1**; the consumer retries `complete` in-process (3 tries, 0.5 s and 2 s apart) before handing the message back | R2 Class A, even when bookkeeping fails |
 | Fills in flight | 4 (queue `max_concurrency` 4, coordinator cap 4) | Memory (one 16 MiB part per fill) and transient multipart storage |
 | Fill timeout | 5 min (queue consumer wall limit is 15 min); `cpu_ms = 60000` | Large packs |
 | Per-IP reads | 60/min (Workers rate-limit binding) | Class B ops and Worker requests |
@@ -152,12 +153,19 @@ Worst-case monthly usage at these caps:
   peak), each for less than one consumer invocation, so the monthly average
   stays at or below about 9.0 GB. Incomplete multipart parts are aborted on
   failure, or by the 1-day `abort-multipart-1d` rule.
-- **R2 Class A** ≤ 300 × (create + complete) + 8 GB / 16 MiB parts ≈ 1.1k/day
-  ≈ 35k/month, of the 1M free (other buckets use about 60k). Queue retries
-  re-run a fill whose `complete` failed, and those runs are not counted
-  against the byte budget. Up to 25k such runs a month still fit. The
-  pathological worst case (every message of a month is a 512 MiB pack whose
-  `complete` fails on every delivery) is about 1.04M.
+- **R2 Class A** ≤ 9,304 fill messages a month (31 × 300, plus four in
+  flight across the month boundary) × 2 runs each (the first delivery and
+  one queue retry) × 35 ops per run (a 512 MiB upload in 16 MiB parts is
+  create + 32 parts + complete; the bound allows a partial last part) + the
+  60k baseline = **711,280** of the 1M free. This counts every retry and does not rely on the byte budget,
+  because a run whose `complete` failed was never counted against it.
+  Realistic use is far lower: 300 × (create + complete) + 8 GB / 16 MiB
+  parts ≈ 1.1k/day ≈ 35k/month. A queue retry re-runs the whole fill, so the
+  consumer retries `complete` itself before giving up the delivery, and a
+  redelivery whose pack is already stored only HEADs it (Class B). With the
+  previous `max_retries = 2` the worst case was 1,036,920. One retry is kept
+  rather than none so that a coordinator blip longer than a few seconds
+  still gets the stored pack into the ledger.
 - **R2 Class B:** one GET per warm pull plus one HEAD per fill, well under the
   10M free at realistic use. This is the only dimension without a global hard
   cap (a global counter would put the DO on the hit path). Per-IP limits bound
@@ -193,6 +201,7 @@ assumptions, and the limits).
 | Eviction removes the oldest pack other than the one just stored | [`Coordinator.evict_removes_oldest`](../../formal/Wit/Coordinator.lean) |
 | A takedown holds for 30 days, including against fills in flight | [`Coordinator.takedown_holds`, `takedown_no_fill`](../../formal/Wit/Coordinator.lean) |
 | Storage, Class A/B, requests, CPU, queue ops, memory, and multipart rules fit the free tiers at the deployed and default limits | [`Budget.deployed_fits`, `defaults_fits`](../../formal/Wit/Budget.lean) |
+| Worst-case monthly Class A, queue retries included, is ≤ 1M (711,280) at the deployed and default limits | [`Budget.classA_worst_case_le_free_tier`, `deployed_classA_worst_case`, `defaults_classA_worst_case`](../../formal/Wit/Budget.lean) |
 | One pack is under a fifth of the store | [`Budget.Fits.fivePacksFit`, `six_packs_exceed_cap`](../../formal/Wit/Budget.lean) |
 | A cache can deny service but cannot change content; every failure falls back to GitHub | [`Integrity.fill_matches_github`](../../formal/Wit/Integrity.lean) |
 | The client sends no credentials; the Worker never reads or forwards `Authorization` | [`ReadOnly.client_sends_no_credentials`, `worker_ignores_authorization`, `worker_upstream_anonymous`, `only_takedown_mutates`](../../formal/Wit/ReadOnly.lean) |

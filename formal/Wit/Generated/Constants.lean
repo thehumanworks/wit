@@ -64,7 +64,7 @@ def ledgerGraceDays : Nat := 1
 /-- `services/wit-cache/wrangler.toml`: `[limits]`, queue consumer, rate limiters. -/
 def cpuMsPerInvocation : Nat := 60000
 def queueMaxConcurrency : Nat := 4
-def queueMaxRetries : Nat := 2
+def queueMaxRetries : Nat := 1
 def queueMaxBatchSize : Nat := 1
 def readLimitPerPeriod : Nat := 60
 def readLimitPeriodSeconds : Nat := 60
