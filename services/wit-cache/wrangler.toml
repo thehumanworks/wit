@@ -1,0 +1,71 @@
+# wit-cache: shared no-login pack cache for the wit CLI (ADR 0009).
+# Deployed by .github/workflows/cache-worker-deploy.yml from main, or locally:
+#   cd services/wit-cache && npx --yes wrangler@4 deploy
+#
+# One-time account setup (idempotent; scripts/check_cache_worker.sh documents it):
+#   npx wrangler@4 r2 bucket create wit-cache-packs
+#   npx wrangler@4 r2 bucket lifecycle add wit-cache-packs expire-30d v1/ --expire-days 30 --force
+#   npx wrangler@4 r2 bucket lifecycle add wit-cache-packs abort-multipart "" --abort-multipart-days 1 --force
+#   npx wrangler@4 queues create wit-cache-fills
+#
+# Optional operator takedown key (never put the value in this file):
+#   npx wrangler@4 secret put ADMIN_KEY
+name = "wit-cache"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+# Fills stream packs through JS (pkt-line demux + SHA-1); give large packs room.
+[limits]
+cpu_ms = 60000
+
+# No request logs are persisted (privacy: the host sees which repos are read).
+# `wrangler tail` still works for live debugging.
+[observability]
+enabled = false
+
+[[r2_buckets]]
+binding = "PACKS"
+bucket_name = "wit-cache-packs"
+
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "FillCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FillCoordinator"]
+
+[[queues.producers]]
+binding = "FILL_QUEUE"
+queue = "wit-cache-fills"
+
+[[queues.consumers]]
+queue = "wit-cache-fills"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 2
+max_concurrency = 4
+
+# Per-IP limits (per Cloudflare location). Reads are cheap R2 GETs; fills are
+# the expensive path and are also bounded globally by the coordinator.
+[[ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "9001"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "FILL_LIMITER"
+namespace_id = "9002"
+simple = { limit = 5, period = 60 }
+
+# Budgets (see src/config.js and ADR 0009 for the cost reasoning).
+[vars]
+MAX_PACK_BYTES = "536870912"
+STORAGE_CAP_BYTES = "3000000000"
+DAILY_FILL_LIMIT = "300"
+DAILY_FILL_BYTES = "8000000000"
+MAX_INFLIGHT_FILLS = "4"
+RETENTION_DAYS = "30"
