@@ -10,6 +10,8 @@ export const FLUSH = "0000";
 export const DELIM = "0001";
 /** Largest pkt-line git allows (length prefix included). */
 export const MAX_PKT_LEN = 65520;
+const READ_MIN = 64 * 1024;
+const READ_BYTES = 256 * 1024;
 
 /** @param {string} line */
 export function pkt(line) {
@@ -26,18 +28,38 @@ export function pkt(line) {
 export class PktLineReader {
   /** @param {ReadableStream<Uint8Array>} stream */
   constructor(stream) {
-    this.reader = stream.getReader();
+    /** @type {any} */
+    let reader;
+    /** @type {"atleast" | "byob" | "default"} */
+    let mode = "default";
+    try {
+      reader = stream.getReader({ mode: "byob" });
+      mode = typeof reader.readAtLeast === "function" ? "atleast" : "byob";
+    } catch {
+      reader = stream.getReader();
+    }
+    this.reader = reader;
+    this.mode = mode;
     /** @type {Uint8Array} */
     this.buf = new Uint8Array(0);
     this.off = 0;
     this.done = false;
   }
 
+  /** @returns {Promise<ReadableStreamReadResult<Uint8Array>>} */
+  read() {
+    // Per-chunk overhead dominates Worker CPU on large packs; workerd's
+    // readAtLeast hands back big chunks instead of whatever TLS delivered.
+    if (this.mode === "atleast") return this.reader.readAtLeast(READ_MIN, new Uint8Array(READ_BYTES));
+    if (this.mode === "byob") return this.reader.read(new Uint8Array(READ_BYTES));
+    return this.reader.read();
+  }
+
   /** @param {number} n */
   async fill(n) {
     while (this.buf.length - this.off < n) {
       if (this.done) return false;
-      const { value, done } = await this.reader.read();
+      const { value, done } = await this.read();
       if (done) {
         this.done = true;
         continue;

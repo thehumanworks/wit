@@ -67,6 +67,22 @@ describe("read path and lazy fill", () => {
     for (const req of gh.requests) assert.equal(req.headers.get("authorization"), null);
   });
 
+  it("with an execution context the miss answers first and requests the fill afterwards", async () => {
+    const { env } = makeEnv();
+    /** @type {Promise<unknown>[]} */
+    const pending = [];
+    const ctx = { waitUntil: (/** @type {Promise<unknown>} */ p) => void pending.push(p) };
+    const req = new Request(`${BASE}/v1/github/o/r/${SHA_A}.pack?branch=main`, {
+      headers: { "cf-connecting-ip": "203.0.113.7" },
+    });
+    const res = await worker.fetch(req, env, ctx);
+    assert.equal(res.status, 404);
+    assert.deepEqual(await body(res), { error: "not cached", fill: "requested" });
+    assert.equal(pending.length, 1);
+    assert.deepEqual(await pending[0], { status: "queued" });
+    assert.equal(env.FILL_QUEUE.sent.length, 1);
+  });
+
   it("a miss without a branch does not fill", async () => {
     const { env } = makeEnv();
     const res = await call(env, `/v1/github/o/r/${SHA_A}.pack`);

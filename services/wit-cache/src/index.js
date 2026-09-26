@@ -4,7 +4,8 @@
  *
  *   GET|HEAD /v1/github/{owner}/{repo}/{commit}.pack?branch={branch}
  *     200  the pack (immutable bytes for that commit)
- *     404  miss; a GET with `branch` queues an anonymous fill
+ *     404  miss; a GET with `branch` requests an anonymous fill (decided
+ *          after the response, so a miss costs one R2 lookup)
  *   GET /v1/stats                       storage and budget counters
  *   DELETE /v1/github/{owner}/{repo}    operator takedown (X-Wit-Admin-Key)
  *
@@ -111,8 +112,9 @@ function packResponse(obj, commit, body) {
  * @param {Request} request
  * @param {Env} env
  * @param {{ owner: string, repo: string, commit: string }} target
+ * @param {{ waitUntil(p: Promise<unknown>): void } | undefined} ctx
  */
-async function handlePack(request, env, target) {
+async function handlePack(request, env, target, ctx) {
   const ip = clientKey(request);
   if (!(await allowed(env.READ_LIMITER, ip))) {
     return json({ error: "read rate limit reached; retry in a minute" }, 429, { "retry-after": "60" });
@@ -129,22 +131,18 @@ async function handlePack(request, env, target) {
   if (!branch || !isSafeBranch(branch)) {
     return json({ error: "not cached", fill: "skipped", reason: "branch query parameter required to fill" }, 404);
   }
-  if (!(await allowed(env.FILL_LIMITER, ip))) {
-    return json({ error: "not cached", fill: "skipped", reason: "fill_rate_limited" }, 404, {
-      "retry-after": "60",
-    });
-  }
   const job = { owner: target.owner, repo: target.repo, commit: target.commit, branch };
-  const decision = await callCoordinator(env, "/request-fill", job);
-  if (decision.status === "queued") {
-    try {
-      await env.FILL_QUEUE.send(job);
-    } catch (err) {
-      await callCoordinator(env, "/release", job).catch(() => {});
-      safeConsole.error("fill enqueue failed", err);
-      return json({ error: "not cached", fill: "skipped", reason: "enqueue_failed" }, 404);
-    }
+  // The caller falls back to GitHub on any miss, so answer now and decide
+  // about the fill (limiter, coordinator, queue) after the response.
+  const decided = requestFill(env, job, ip).catch((err) => {
+    safeConsole.error("fill request failed", err);
+    return { status: "skipped", reason: "coordinator_error" };
+  });
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(decided);
+    return json({ error: "not cached", fill: "requested" }, 404);
   }
+  const decision = await decided;
   /** @type {Record<string, string>} */
   const headers = {};
   if (decision.retryAfterSeconds) headers["retry-after"] = String(decision.retryAfterSeconds);
@@ -153,6 +151,29 @@ async function handlePack(request, env, target) {
     404,
     headers,
   );
+}
+
+/**
+ * Decide whether this miss starts a fill and enqueue it when it does.
+ * @param {Env} env
+ * @param {import("./fill.js").FillJob} job
+ * @param {string} ip
+ * @returns {Promise<{ status: string, reason?: string, retryAfterSeconds?: number }>}
+ */
+export async function requestFill(env, job, ip) {
+  if (!(await allowed(env.FILL_LIMITER, ip))) {
+    return { status: "skipped", reason: "fill_rate_limited", retryAfterSeconds: 60 };
+  }
+  const decision = await callCoordinator(env, "/request-fill", job);
+  if (decision.status !== "queued") return decision;
+  try {
+    await env.FILL_QUEUE.send(job);
+  } catch (err) {
+    await callCoordinator(env, "/release", job).catch(() => {});
+    safeConsole.error("fill enqueue failed", err);
+    return { status: "skipped", reason: "enqueue_failed" };
+  }
+  return decision;
 }
 
 /**
@@ -200,8 +221,9 @@ function info(env) {
 /**
  * @param {Request} request
  * @param {Env} env
+ * @param {{ waitUntil(p: Promise<unknown>): void } | undefined} ctx
  */
-async function route(request, env) {
+async function route(request, env, ctx) {
   const url = new URL(request.url);
   const method = request.method;
   if (url.pathname === "/" && (method === "GET" || method === "HEAD")) return json(info(env), 200);
@@ -214,7 +236,7 @@ async function route(request, env) {
   const pack = parsePackPath(url.pathname);
   if (pack) {
     if (method !== "GET" && method !== "HEAD") return json({ error: "method not allowed" }, 405, { allow: "GET, HEAD" });
-    return handlePack(request, env, pack);
+    return handlePack(request, env, pack, ctx);
   }
   const repo = parseRepoPath(url.pathname);
   if (repo && method === "DELETE") return handleTakedown(request, env, repo);
@@ -258,10 +280,11 @@ export default {
   /**
    * @param {Request} request
    * @param {Env} env
+   * @param {{ waitUntil(p: Promise<unknown>): void }} [ctx]
    */
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (err) {
       safeConsole.error("request failed", err);
       const status = err instanceof SafeError ? err.status : 500;
