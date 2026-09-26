@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { PENDING_TTL_SECONDS, fillReserveBytes, limitsFromEnv } from "../src/config.js";
 import worker, { runFillJob } from "../src/index.js";
 import { packKey } from "../src/keys.js";
+import { MAX_PKT_LEN } from "../src/pktline.js";
 import { FakeBucket, SHA_A, SHA_B, SHA_C, fakeGitHub, makeEnv, makePack, readAll } from "./helpers.js";
 
 const BASE = "https://wit-cache.test";
@@ -131,6 +133,8 @@ describe("read path and lazy fill", () => {
     env.FILL_QUEUE.fail = true;
     const res = await body(await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`));
     assert.equal(res.reason, "enqueue_failed");
+    const stats = await body(await call(env, "/v1/stats"));
+    assert.deepEqual([stats.fills_today, stats.fill_bytes_today, stats.fills_in_flight], [0, 0, 0]);
     env.FILL_QUEUE.fail = false;
     assert.equal((await body(await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`))).fill, "queued");
   });
@@ -202,13 +206,14 @@ describe("read path and lazy fill", () => {
     const writes = { ...bucket.ops };
     const requests = gh.requests.length;
     coord.complete = complete;
-    const outcome = await runFillJob(env, job, deps);
+    const outcome = await runFillJob(env, job, { ...deps, attempts: 2 });
     assert.equal(outcome.reused, true);
     assert.equal(gh.requests.length, requests, "the redelivery does not refetch from GitHub");
     for (const op of /** @type {const} */ (["put", "createMultipart", "uploadPart", "complete"])) {
       assert.equal(bucket.ops[op], writes[op], `no Class A ${op} on the redelivery`);
     }
     assert.equal(coord.stats().stored_packs, 1);
+    assert.equal(coord.stats().fill_bytes_today, outcome.bytes, "charged the pack the first delivery read");
   });
 
   it("the fill queue redelivers a message at most once", () => {
@@ -220,6 +225,115 @@ describe("read path and lazy fill", () => {
       `max_retries = ${retries}: ADR 0009's Class A worst case (Budget.classA_worst_case_le_free_tier) allows one retry`,
     );
     assert.doesNotMatch(consumer, /dead_letter_queue/);
+  });
+});
+
+describe("byte reservations", () => {
+  const RESERVE = 1000 + MAX_PKT_LEN - 5;
+  const vars = { MAX_PACK_BYTES: "1000", DAILY_FILL_BYTES: String(RESERVE + 2000) };
+  const noWait = { sleep: async () => {} };
+
+  it("a queued fill reserves the most it can read and complete settles to what it read", async () => {
+    const pack = makePack(300);
+    const gh = fakeGitHub({ "o/a": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
+    const { env, coord } = makeEnv(vars);
+    await call(env, `/v1/github/o/a/${SHA_A}.pack?branch=main`);
+    assert.equal(coord.stats().fill_bytes_today, RESERVE);
+    assert.equal(fillReserveBytes(limitsFromEnv(env)), RESERVE);
+    await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl, ...noWait });
+    assert.equal(coord.stats().fill_bytes_today, pack.length);
+  });
+
+  it("a fill is queued only when its whole reservation fits in the day's bytes", async () => {
+    const pack = makePack(300);
+    const gh = fakeGitHub({ "o/a": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
+    const { env } = makeEnv(vars);
+    await call(env, `/v1/github/o/a/${SHA_A}.pack?branch=main`);
+    const second = await body(await call(env, `/v1/github/o/b/${SHA_B}.pack?branch=main`));
+    assert.equal(second.reason, "daily_budget", "two reservations exceed the day's bytes");
+    await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl, ...noWait });
+    assert.equal((await body(await call(env, `/v1/github/o/b/${SHA_B}.pack?branch=main`))).fill, "queued");
+  });
+
+  it("when every complete fails, expired reservations stay charged until the next UTC day", async () => {
+    let clock = Date.UTC(2026, 8, 1, 1);
+    const shas = [SHA_A, SHA_B, SHA_C, "d".repeat(40)];
+    const repos = Object.fromEntries(shas.map((sha, i) => [`o/r${i}`, { refs: { main: sha }, packs: { [sha]: makePack(300) } }]));
+    const gh = fakeGitHub(repos);
+    const { env, coord } = makeEnv({ ...vars, DAILY_FILL_BYTES: String(3 * RESERVE) }, { now: () => clock });
+    coord.complete = async () => {
+      throw new Error("durable object unavailable");
+    };
+    let fetched = 0;
+    for (const [i, sha] of shas.entries()) {
+      clock += (PENDING_TTL_SECONDS + 1) * 1000;
+      const res = await body(await call(env, `/v1/github/o/r${i}/${sha}.pack?branch=main`));
+      if (res.fill !== "queued") {
+        assert.equal(res.reason, "daily_budget");
+        continue;
+      }
+      await assert.rejects(runFillJob(env, env.FILL_QUEUE.sent.at(-1), { fetchImpl: gh.fetchImpl, ...noWait }));
+      fetched++;
+    }
+    assert.equal(fetched, 3, "at most DAILY_FILL_BYTES / reserve fills a day");
+    clock += (PENDING_TTL_SECONDS + 1) * 1000;
+    const stats = coord.stats();
+    assert.equal(stats.fills_in_flight, 0, "expired rows free their in-flight slots");
+    assert.equal(stats.fill_bytes_today, 3 * RESERVE);
+    clock = Date.UTC(2026, 8, 2, 0, 1);
+    assert.equal((await body(await call(env, `/v1/github/o/r3/${shas[3]}.pack?branch=main`))).fill, "queued");
+  });
+
+  it("a failed fill settles to the bytes it read", async () => {
+    const gh = fakeGitHub({ "o/big": { refs: { main: SHA_A }, packs: { [SHA_A]: makePack(20_000) } } });
+    const { env, coord } = makeEnv(vars);
+    await call(env, `/v1/github/o/big/${SHA_A}.pack?branch=main`);
+    const outcome = await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl, ...noWait });
+    assert.equal(outcome.reason, "too_large");
+    assert.ok(outcome.bytesRead > 1000 && outcome.bytesRead <= RESERVE);
+    assert.equal(coord.stats().fill_bytes_today, outcome.bytesRead);
+
+    const missing = makeEnv(vars);
+    await call(missing.env, `/v1/github/o/gone/${SHA_A}.pack?branch=main`);
+    const gone = await runFillJob(missing.env, missing.env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl, ...noWait });
+    assert.equal(gone.reason, "not_found_or_private");
+    assert.equal(missing.coord.stats().fill_bytes_today, 0, "a fill that never fetched refunds everything");
+  });
+
+  it("a redelivery never refetches; without a stored pack it keeps the whole reservation", async () => {
+    const gh = fakeGitHub({ "o/a": { refs: { main: SHA_A }, packs: { [SHA_A]: makePack(300) } } });
+    const { env, coord } = makeEnv(vars);
+    await call(env, `/v1/github/o/a/${SHA_A}.pack?branch=main`);
+    const outcome = await runFillJob(env, env.FILL_QUEUE.sent[0], { fetchImpl: gh.fetchImpl, attempts: 2, ...noWait });
+    assert.equal(outcome.ok, false);
+    assert.equal(gh.requests.length, 0);
+    const stats = coord.stats();
+    assert.equal(stats.fills_in_flight, 0);
+    assert.equal(stats.fill_bytes_today, RESERVE);
+  });
+
+  it("a reservation settles once, and only for the fill that holds it", async () => {
+    let clock = Date.UTC(2026, 8, 1, 1);
+    const pack = makePack(300);
+    const gh = fakeGitHub({ "o/a": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
+    const { env, coord } = makeEnv({ ...vars, DAILY_FILL_BYTES: String(3 * RESERVE) }, { now: () => clock });
+    await call(env, `/v1/github/o/a/${SHA_A}.pack?branch=main`);
+    const stale = env.FILL_QUEUE.sent[0];
+    clock += (PENDING_TTL_SECONDS + 1) * 1000;
+    await call(env, `/v1/github/o/a/${SHA_A}.pack?branch=main`);
+    const fresh = env.FILL_QUEUE.sent[1];
+    assert.notEqual(stale.reservation, fresh.reservation);
+
+    await runFillJob(env, stale, { fetchImpl: gh.fetchImpl, ...noWait });
+    let stats = coord.stats();
+    assert.equal(stats.fills_in_flight, 1, "the late complete leaves the newer fill pending");
+    assert.equal(stats.fill_bytes_today, 2 * RESERVE, "and refunds neither reservation");
+
+    await coord.complete({ ...fresh, ok: true, bytes: pack.length, bytesRead: pack.length });
+    await coord.complete({ ...fresh, ok: true, bytes: pack.length, bytesRead: 0 });
+    stats = coord.stats();
+    assert.equal(stats.fills_in_flight, 0);
+    assert.equal(stats.fill_bytes_today, RESERVE + pack.length, "the second complete refunds nothing");
   });
 });
 
