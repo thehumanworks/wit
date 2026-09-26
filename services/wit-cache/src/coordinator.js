@@ -112,6 +112,14 @@ export class FillCoordinator {
     return row ? { reason: row.reason, retryAfterSeconds: row.until - now } : null;
   }
 
+  /** @param {string} repo @param {number} now unix seconds */
+  isBlocked(repo, now) {
+    return (
+      this.rows(`SELECT 1 FROM negatives WHERE scope = ? AND reason = 'blocked' AND until > ?`, `repo:${repo}`, now)
+        .length > 0
+    );
+  }
+
   /**
    * Decide whether a miss may start a fill. Reserves the budget when it does.
    * @param {{ owner: string, repo: string, commit: string }} job
@@ -133,8 +141,8 @@ export class FillCoordinator {
     if (used.fills >= this.limits.DAILY_FILL_LIMIT || used.bytes >= this.limits.DAILY_FILL_BYTES) {
       return { status: "skipped", reason: "daily_budget" };
     }
-    // The Worker only asks after an R2 miss, so a ledger row here is stale.
-    this.rows(`DELETE FROM packs WHERE key = ?`, key);
+    // A ledger row for this key may still describe a stored pack (the miss
+    // raced a fill); `complete` refreshes it, so it is never dropped here.
     this.rows(`INSERT INTO pending (key, since) VALUES (?, ?)`, key, Math.floor(nowMs / 1000));
     this.bumpDaily(day, 1, 0);
     return { status: "queued" };
@@ -167,9 +175,12 @@ export class FillCoordinator {
           ? Math.min(outcome.retryAfterSeconds, 3600)
           : NEGATIVE_TTL[/** @type {keyof typeof NEGATIVE_TTL} */ (reason)];
       const scope = reason === "rate_limited" ? "global" : REPO_SCOPED.has(reason) ? `repo:${repo}` : `key:${key}`;
+      // Keep the later expiry so a short negative never shortens a takedown.
       this.rows(
         `INSERT INTO negatives (scope, reason, until) VALUES (?, ?, ?)
-         ON CONFLICT(scope) DO UPDATE SET reason = excluded.reason, until = excluded.until`,
+         ON CONFLICT(scope) DO UPDATE SET
+           reason = CASE WHEN excluded.until > until THEN excluded.reason ELSE reason END,
+           until = MAX(until, excluded.until)`,
         scope,
         reason,
         now + ttl,
@@ -178,15 +189,21 @@ export class FillCoordinator {
       return { ok: true, evicted: [] };
     }
     const bytes = outcome.bytes ?? 0;
+    if (!outcome.reused) this.bumpDaily(day, 0, bytes);
+    if (this.isBlocked(repo, now)) {
+      // The fill was in flight when the operator took the repo down.
+      await this.env.PACKS.delete(key);
+      this.rows(`DELETE FROM packs WHERE key = ?`, key);
+      return { ok: true, evicted: [key] };
+    }
     this.rows(
       `INSERT INTO packs (key, repo, bytes, filled_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET bytes = excluded.bytes`,
+       ON CONFLICT(key) DO UPDATE SET bytes = excluded.bytes, filled_at = excluded.filled_at`,
       key,
       repo,
       bytes,
       now,
     );
-    if (!outcome.reused) this.bumpDaily(day, 0, bytes);
     return { ok: true, evicted: await this.evict(key) };
   }
 
@@ -213,6 +230,15 @@ export class FillCoordinator {
   async takedown(target) {
     const repo = repoId(target.owner, target.repo);
     const prefix = repoPrefix(target.owner, target.repo);
+    // Block before the first await: a `complete` that runs while R2 is being
+    // listed must see the block and delete its own pack.
+    const until = Math.floor(this.now() / 1000) + NEGATIVE_TTL.blocked;
+    this.rows(
+      `INSERT INTO negatives (scope, reason, until) VALUES (?, 'blocked', ?)
+       ON CONFLICT(scope) DO UPDATE SET reason = 'blocked', until = excluded.until`,
+      `repo:${repo}`,
+      until,
+    );
     /** @type {Set<string>} */
     const keys = new Set(this.rows(`SELECT key FROM packs WHERE repo = ?`, repo).map((r) => r.key));
     let cursor;
@@ -223,13 +249,6 @@ export class FillCoordinator {
     } while (cursor);
     if (keys.size) await this.env.PACKS.delete([...keys]);
     this.rows(`DELETE FROM packs WHERE repo = ?`, repo);
-    const until = Math.floor(this.now() / 1000) + NEGATIVE_TTL.blocked;
-    this.rows(
-      `INSERT INTO negatives (scope, reason, until) VALUES (?, 'blocked', ?)
-       ON CONFLICT(scope) DO UPDATE SET reason = 'blocked', until = excluded.until`,
-      `repo:${repo}`,
-      until,
-    );
     return { deleted: keys.size };
   }
 

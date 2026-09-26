@@ -77,3 +77,10 @@ Tradeoffs:
    - Rejected because a network or fetch failure should not destroy usable cached content.
 6. Expose public branch selection with the cache refactor:
    - Rejected to keep this change focused on cache identity and freshness semantics; branch reads remain a separate feature.
+
+## Formal proofs
+
+Proved in Lean 4 under [`formal/`](../../formal) (see ADR 0010):
+
+- Revalidation keeps the old cache when `ls-remote` or the refresh fails, replaces it only when the remote SHA changed, ends at the remote SHA when it succeeds, and always holds the content of its recorded SHA: [`Swr.revalidate_keeps_on_failure`, `revalidate_recaches_only_on_change`, `revalidate_follows_remote`, `revalidate_sound`](../../formal/Wit/Swr.lean).
+- The `b-` branch directory encoding is injective, also on case-insensitive filesystems, and never yields `/`, `.`, or NUL: [`Keys.encodeBranch_injective`, `encodeBranch_injective_folded`, `encodeBranch_path_safe`](../../formal/Wit/Keys.lean), with the safe byte set extracted from `encode_branch_for_path`.

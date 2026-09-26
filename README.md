@@ -398,7 +398,7 @@ WIT_CACHE_URL=http://127.0.0.1:8787 wit tree -r openai/codex        # local `wra
 curl -s https://wit-cache.rodat-human-ada.workers.dev/v1/stats       # storage and budget counters
 ```
 
-Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning.
+Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning. Its invariants (single-flight, daily budgets, the storage cap, takedowns, content integrity, and the free-tier arithmetic at the deployed limits) are proved in Lean under `formal/` and checked against the code by `scripts/check_formal.sh` ([ADR 0010](docs/adr/0010-formal-proofs.md)).
 
 ### Snapshot backends (disk vs memory)
 
@@ -554,6 +554,7 @@ crates/wit/src/
 
 crates/wits/         # grep.app client + `wits` binary; shared result printing
 services/wit-cache/  # Cloudflare Worker behind WIT_CACHE_URL (R2 packs, lazy fills)
+formal/              # Lean 4 proofs of ADR 0002/0009 invariants (ADR 0010)
 ```
 
 ## Dependencies
