@@ -10,6 +10,7 @@ This is a Cargo workspace with several crates:
 - `src/search.rs`: GitHub repository search (`GitHubSearchClient`, octocrab), raw query assembly, and limit-aware pagination for `wit search`.
 - `src/search_run.rs`: `wit search` orchestration for GitHub-only repository discovery and result shaping.
 - `src/gitops/`: Git operations module for bare-repo caching, file access, tree display, directory listing, head/tail, and ripgrep-style search (`ops.rs`, `mod.rs`).
+- `src/gitops/cloud.rs`: shared cloud pack cache fill source (ADR 0009). `recache_repo` / `refresh_repo_with_context` try `WIT_CACHE_URL` for the ls-remote-resolved SHA before cloning; the pack is verified locally (`index-pack --strict` with a client-written `shallow`, `update-ref`, connectivity, HEAD) and every failure falls back to the GitHub clone. Release builds default to the hosted instance, debug builds to off; `metadata.json` records `fill_source`.
 - `src/snapshot/`: Disk adapter + memory helpers (`memory_ops.rs`) for the shared `wit-snapshot` open/list/tree/read/search contract; CLI `--backend memory|disk` for tree/ls/cat/rg/sed/head/tail, cache pin, and branches.
 - `src/sed.rs`: POSIX-style sed parser and execution engine for `wit sed`. ~1140 lines including 25+ unit tests.
 - `src/ast.rs`: tree-sitter AST search (`symbols` definition index with exact ranges and nesting; `run_query` raw queries) for rust/python/javascript/typescript/tsx/go/java/c. Backs `wit ast` and MCP `wit_ast`; grammars are native-only (ADR 0008). Adding a language = grammar crate + extension list + definition query + kind labels; `every_builtin_symbol_query_compiles` guards the queries.
@@ -38,6 +39,13 @@ This is a Cargo workspace with several crates:
 - `lib/textops.js`, `lib/stats.js`, `lib/outline.js`, `lib/format.js`: pure views (line ranges, grep, repo stats, symbol outline, CLI plaintext).
 - `public/lib/` is a committed copy of `lib/` — run `npm run sync-lib` after editing `lib/` (CI and the deploy guard diff them).
 - Tests: `tests/*.test.js` (node:test, fixture GitHub in `tests/helpers.js`, no network). Docs: `docs/adr/0005-*.md`, `0006-*.md`, `0007-url-api-agent-verbs.md`.
+
+### `services/wit-cache/` — shared no-login pack cache (Cloudflare Worker, ADR 0009)
+- `src/index.js`: `GET|HEAD /v1/github/{owner}/{repo}/{commit}.pack?branch=` from R2; a miss answers 404 at once and requests a fill in `ctx.waitUntil`; `GET /v1/stats`; operator `DELETE /v1/github/{owner}/{repo}` (`X-Wit-Admin-Key`, disabled without the `ADMIN_KEY` secret); queue consumer runs fills.
+- `src/upload-pack.js` + `src/fill.js` + `src/store.js`: anonymous git smart-HTTP v2 (`ls-refs` tip check, then `want`/`deepen 1`, no tags), side-band demux, SHA-1 trailer check, streamed single PUT / 16 MiB multipart into R2.
+- `src/coordinator.js`: global `FillCoordinator` Durable Object (SQLite) owning daily budgets, single-flight, negative cache, and oldest-first eviction beyond `STORAGE_CAP_BYTES`.
+- `src/auth.js` is a verbatim copy of `showcase/url-api/lib/auth.js` (a test enforces it). Limits live in `wrangler.toml` `[vars]` / `src/config.js`.
+- Tests: `tests/*.test.js` (node:test, `node:sqlite` fake DO storage, fake R2 with multipart rules, fake GitHub upload-pack; no network). Deploy: `.github/workflows/cache-worker-deploy.yml`.
 
 ### `sdk/` — clients for the URL API
 - `sdk/typescript/src/index.ts`: `@nothumanwork/wit-sdk` (fetch-based, typed, `node --test tests/*.test.ts`, `tsc --noEmit`). Published by `.github/workflows/publish-sdk.yml` on pushes to `main` that touch `sdk/typescript/` when `package.json` `version` is new (`NPM_TOKEN` secret); bump the version to release.
@@ -80,6 +88,7 @@ This is a Cargo workspace with several crates:
 - `bash scripts/check_docs_site.sh`: Pages try-it parser/formatter tests plus fixture wasm smoke (`wit tree demo/repo`).
 - `bash scripts/check_url_api_deploy_workflow.sh`: Enforce that `showcase/url-api` deploys to Cloudflare Pages (`wit-url-api`) from `main` and never folds onto GitHub Pages.
 - `(cd showcase/url-api && npm run check)`: Sync `public/lib` and run the URL API host tests (fixture-backed, no network).
+- `bash scripts/check_cache_worker.sh`: `services/wit-cache` Worker tests plus guards (credentials only from secrets, CLI `HOSTED_CACHE_URL` matches the deployed Worker).
 - `(cd sdk/typescript && npm run check)` and `(cd sdk/python && python3 -m unittest discover -s tests)`: SDK type check and tests.
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.
@@ -119,6 +128,7 @@ This is a Cargo workspace with several crates:
 - The gix clone must pass `Tags::None`: gix otherwise clones with `Tags::All`, fetching one shallow tip per tag (openai/codex: ~400 MB instead of ~19 MB).
 - Cache operations are serialized by a global cache lock file (`.cache.lock`) plus an in-process mutex; cache reads/writes should continue to route through `cache_github_repo` to preserve this safety.
 - `wit rg` max-count semantics now mirror ripgrep: omit `-m` for unlimited matches, use `-m 0` to return no matches.
+- Shared cloud cache (ADR 0009): the CLI must never send credentials to `WIT_CACHE_URL` and must treat every cloud failure as a fallback to the GitHub clone, never as an error. The Worker must stay anonymous toward GitHub (no credential, so private repos cannot enter), ignore caller Authorization headers, and only fill a commit that `ls-refs` reports as the current branch tip. Test fixtures that commit should set `GIT_CONFIG_GLOBAL=/dev/null` so a host `commit.gpgsign` cannot slow or break them.
 
 ## Release Packaging
 
@@ -130,6 +140,6 @@ This is a Cargo workspace with several crates:
 
 - Prefer `rg` / `rg --files` for repo search while working on changes.
 - Keep patches focused and avoid committing generated artifacts under `target/`.
-- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, `bash scripts/check_docs_site.sh`, and `bash scripts/check_url_api_deploy_workflow.sh`. When `showcase/url-api` or `sdk/` changed, also run `(cd showcase/url-api && npm run check)`, `(cd sdk/typescript && npm run check)`, and `(cd sdk/python && python3 -m unittest discover -s tests)`.
+- Before handing off, run `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `bash scripts/check_wit_search_migration.sh`, `bash scripts/check_wit_snapshot_wasm.sh`, `bash scripts/check_docs_site.sh`, `bash scripts/check_url_api_deploy_workflow.sh`, and `bash scripts/check_cache_worker.sh`. When `showcase/url-api` or `sdk/` changed, also run `(cd showcase/url-api && npm run check)`, `(cd sdk/typescript && npm run check)`, and `(cd sdk/python && python3 -m unittest discover -s tests)`.
 - URL API error messages pass through `scrubSecrets`, which redacts anything after the words `token` or `Bearer`; phrase messages as "credentials" / "Authorization header" so guidance stays readable (tests assert no `[REDACTED]`).
 - The `sed` subcommand aims for broad POSIX coverage; update tests and docs alongside behavior changes.

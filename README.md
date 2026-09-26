@@ -377,6 +377,29 @@ wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
 
 `wit cache -r owner/repo` is also a force-refresh command for the default branch; add `--branch BRANCH` to refresh that named branch. Internally, cache entries are stored per repository and branch under `WIT_CACHE_DIR`, with metadata recording the branch name and current SHA. No public `--max-age` or TTL option exists.
 
+### Shared cloud cache
+
+When the local cache is cold (or the branch moved), `wit` first asks a shared, read-only, no-login pack cache for the commit it just resolved with `git ls-remote`, and only clones from GitHub when that fails. Release builds use the hosted instance (`https://wit-cache.rodat-human-ada.workers.dev`, source in [`services/wit-cache`](services/wit-cache)); debug builds leave it off.
+
+- The cache stores one depth-1 git pack per public `owner/repo` + commit. A miss answers `404` right away and queues an anonymous fill, so the first reader clones from GitHub as before and later readers download the pack.
+- The pack is untrusted: `wit` rebuilds the bare cache itself (own `shallow`, refs, HEAD, and config) and accepts it only after `git index-pack --strict`, a connectivity walk, and a HEAD check against the commit GitHub reported. A miss, corrupt or truncated pack, wrong commit, oversize pack, timeout, or any HTTP error falls back to the normal GitHub clone.
+- Requests carry no credentials (no `GITHUB_TOKEN`, no Authorization header), and the service stores only what an anonymous clone can fetch, so private repositories never enter it.
+- `metadata.json` in each cache entry records `"fill_source": "cloud"` or `"github"`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WIT_CACHE_URL` | hosted instance (release builds) | Cache base URL. Set to empty, `off`, `0`, or `false` to disable. Must be `https://` (or `http://` on loopback) without embedded credentials. |
+| `WIT_CACHE_TIMEOUT_MS` | `60000` | Total time allowed for the pack download before falling back (connect timeout is 3 s). |
+| `WIT_CACHE_MAX_BYTES` | `536870912` (512 MiB) | Largest pack the client will download. |
+
+```bash
+WIT_CACHE_URL=off wit tree -r openai/codex                          # always clone from GitHub
+WIT_CACHE_URL=http://127.0.0.1:8787 wit tree -r openai/codex        # local `wrangler dev`
+curl -s https://wit-cache.rodat-human-ada.workers.dev/v1/stats       # storage and budget counters
+```
+
+Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning.
+
 ### Snapshot backends (disk vs memory)
 
 Repo-reading commands default to the **disk** cache backend. Pass `--backend memory` (or set `WIT_SNAPSHOT_BACKEND=memory`) to load a **public** repository over the GitHub REST API into RAM with **zero** `WIT_CACHE_DIR` writes. Provenance (`commit_sha`, `tree_sha`, backend label) is printed on stderr.
@@ -527,8 +550,10 @@ crates/wit/src/
 ├── search_run.rs    # `wit search`: GitHub-only orchestration
 ├── sed.rs
 └── gitops/          # Bare-repo cache, tree, ls, cat, rg, head, tail
+    └── cloud.rs     # Shared cloud pack cache fill source (ADR 0009)
 
 crates/wits/         # grep.app client + `wits` binary; shared result printing
+services/wit-cache/  # Cloudflare Worker behind WIT_CACHE_URL (R2 packs, lazy fills)
 ```
 
 ## Dependencies
