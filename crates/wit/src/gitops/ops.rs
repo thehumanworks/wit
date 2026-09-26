@@ -1,3 +1,4 @@
+use super::cloud;
 use crate::operation_context::{OperationContext, command_output};
 use anyhow::Context;
 use fs2::FileExt;
@@ -179,6 +180,16 @@ struct CacheMetadata {
     last_updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fill_source: Option<FillSource>,
+}
+
+/// Where the cached repository bytes came from (ADR 0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FillSource {
+    Cloud,
+    Github,
 }
 
 impl CacheMetadata {
@@ -192,7 +203,13 @@ impl CacheMetadata {
             last_checked_at,
             last_updated_at,
             last_error: None,
+            fill_source: None,
         }
+    }
+
+    fn filled_from(mut self, source: FillSource) -> Self {
+        self.fill_source = Some(source);
+        self
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -1418,15 +1435,16 @@ fn cache_github_repo_target_with_context(
     // mutation lock, so they can observe either the old complete cache or the new repo+metadata,
     // never a repository paired with stale provenance after cancellation.
     remove_cache_metadata(&metadata_path)?;
-    let repository = refresh_repo_with_context(
+    let (repository, source) = refresh_repo_with_context(
         context,
         &resolved.remote_url,
         &resolved.branch.name,
+        &resolved.branch.current_sha,
         &cache_path,
     )?;
     context.check().map_err(anyhow::Error::msg)?;
     let now = current_unix_timestamp()?;
-    let metadata = CacheMetadata::new(resolved, now, now);
+    let metadata = CacheMetadata::new(resolved, now, now).filled_from(source);
     write_cache_metadata(&metadata_path, &metadata)?;
     context.check().map_err(anyhow::Error::msg)?;
     Ok(repository)
@@ -1491,22 +1509,27 @@ fn revalidate_cache_target_with_context(
             current_sha: remote_sha,
         },
     };
-    refresh_repo_with_context(
+    let (_, source) = refresh_repo_with_context(
         context,
         &refreshed.remote_url,
         &refreshed.branch.name,
+        &refreshed.branch.current_sha,
         &refreshed.target.repo_path(cache_dir),
     )?;
     context.check().map_err(anyhow::Error::msg)?;
-    write_cache_metadata(&metadata_path, &CacheMetadata::new(&refreshed, now, now))
+    write_cache_metadata(
+        &metadata_path,
+        &CacheMetadata::new(&refreshed, now, now).filled_from(source),
+    )
 }
 
 fn refresh_repo_with_context(
     context: &OperationContext,
     repo_url: &str,
     branch: &str,
+    expected_sha: &str,
     cache_path: &Path,
-) -> anyhow::Result<Repository> {
+) -> anyhow::Result<(Repository, FillSource)> {
     let parent = cache_path
         .parent()
         .with_context(|| format!("cache path '{}' has no parent", cache_path.display()))?;
@@ -1514,26 +1537,19 @@ fn refresh_repo_with_context(
     let staging_path = parent.join(format!("repo.git.{}.tmp", std::process::id()));
     remove_cache_dir(&staging_path)?;
     let result = (|| {
-        let mut command = Command::new("git");
-        command
-            .arg("clone")
-            .arg("--bare")
-            .arg("--depth")
-            .arg("1")
-            .arg("--branch")
-            .arg(branch)
-            .arg("--single-branch")
-            .arg(repo_url)
-            .arg(&staging_path);
-        let output = command_output(context, &mut command, "clone repository cache")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "git clone failed (status: {}) stderr: '{}' stdout: '{}'",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim(),
-                String::from_utf8_lossy(&output.stdout).trim()
-            );
-        }
+        context.check().map_err(anyhow::Error::msg)?;
+        let source = if cloud::fill_from_cloud(
+            repo_url,
+            branch,
+            expected_sha,
+            &staging_path,
+            context.deadline(),
+        ) {
+            FillSource::Cloud
+        } else {
+            clone_with_git_cli_in_context(context, repo_url, branch, &staging_path)?;
+            FillSource::Github
+        };
         context.check().map_err(anyhow::Error::msg)?;
         remove_cache_dir(cache_path)?;
         std::fs::rename(&staging_path, cache_path).with_context(|| {
@@ -1543,13 +1559,44 @@ fn refresh_repo_with_context(
                 cache_path.display()
             )
         })?;
-        gix::open(cache_path)
-            .with_context(|| format!("failed to open refreshed cache '{}'", cache_path.display()))
+        let repo = gix::open(cache_path).with_context(|| {
+            format!("failed to open refreshed cache '{}'", cache_path.display())
+        })?;
+        Ok((repo, source))
     })();
     if result.is_err() {
         let _ = remove_cache_dir(&staging_path);
     }
     result
+}
+
+fn clone_with_git_cli_in_context(
+    context: &OperationContext,
+    repo_url: &str,
+    branch: &str,
+    staging_path: &Path,
+) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("clone")
+        .arg("--bare")
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg(branch)
+        .arg("--single-branch")
+        .arg(repo_url)
+        .arg(staging_path);
+    let output = command_output(context, &mut command, "clone repository cache")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git clone failed (status: {}) stderr: '{}' stdout: '{}'",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    Ok(())
 }
 
 fn cache_github_repo_from_remote(
@@ -1593,9 +1640,14 @@ fn cache_github_repo_target(
     }
 
     remove_cache_metadata(&metadata_path)?;
-    let repo = recache_repo(&resolved.remote_url, &resolved.branch.name, &cache_path)?;
+    let (repo, source) = recache_repo(
+        &resolved.remote_url,
+        &resolved.branch.name,
+        &resolved.branch.current_sha,
+        &cache_path,
+    )?;
     let now = current_unix_timestamp()?;
-    let metadata = CacheMetadata::new(resolved, now, now);
+    let metadata = CacheMetadata::new(resolved, now, now).filled_from(source);
     write_cache_metadata(&metadata_path, &metadata)?;
     Ok(repo)
 }
@@ -1672,10 +1724,11 @@ fn apply_cache_revalidation(
             match refresh_repo_preserving_existing(
                 &refreshed.remote_url,
                 &refreshed.branch.name,
+                &refreshed.branch.current_sha,
                 &refreshed.target.repo_path(cache_dir),
             ) {
-                Ok(_) => {
-                    let updated = CacheMetadata::new(&refreshed, now, now);
+                Ok((_, source)) => {
+                    let updated = CacheMetadata::new(&refreshed, now, now).filled_from(source);
                     write_cache_metadata(&metadata_path, &updated)?;
                     Ok(())
                 }
@@ -1873,7 +1926,12 @@ fn release_process_cache_lock(lock_path: &Path) {
     }
 }
 
-fn recache_repo(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Result<Repository> {
+fn recache_repo(
+    repo_url: &str,
+    branch: &str,
+    expected_sha: &str,
+    cache_path: &Path,
+) -> anyhow::Result<(Repository, FillSource)> {
     remove_cache_dir(cache_path)?;
 
     if let Some(parent) = cache_path.parent() {
@@ -1881,6 +1939,24 @@ fn recache_repo(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Resu
             .with_context(|| format!("failed to create cache parent '{}'", parent.display()))?;
     }
 
+    if cloud::fill_from_cloud(repo_url, branch, expected_sha, cache_path, None) {
+        let repo = gix::open(cache_path).with_context(|| {
+            format!(
+                "failed to open cloud-filled cache '{}'",
+                cache_path.display()
+            )
+        })?;
+        return Ok((repo, FillSource::Cloud));
+    }
+
+    clone_from_github(repo_url, branch, cache_path).map(|repo| (repo, FillSource::Github))
+}
+
+fn clone_from_github(
+    repo_url: &str,
+    branch: &str,
+    cache_path: &Path,
+) -> anyhow::Result<Repository> {
     match clone_with_gix(repo_url, branch, cache_path) {
         Ok(repo) => Ok(repo),
         Err(err) => {
@@ -1904,16 +1980,17 @@ fn recache_repo(repo_url: &str, branch: &str, cache_path: &Path) -> anyhow::Resu
 fn refresh_repo_preserving_existing(
     repo_url: &str,
     branch: &str,
+    expected_sha: &str,
     cache_path: &Path,
-) -> anyhow::Result<Repository> {
+) -> anyhow::Result<(Repository, FillSource)> {
     let parent = cache_path
         .parent()
         .with_context(|| format!("cache path '{}' has no parent", cache_path.display()))?;
     let staging_path = parent.join("repo.git.tmp");
     remove_cache_dir(&staging_path)?;
 
-    match recache_repo(repo_url, branch, &staging_path) {
-        Ok(_) => {
+    match recache_repo(repo_url, branch, expected_sha, &staging_path) {
+        Ok((_, source)) => {
             remove_cache_dir(cache_path)?;
             std::fs::rename(&staging_path, cache_path).with_context(|| {
                 format!(
@@ -1922,9 +1999,10 @@ fn refresh_repo_preserving_existing(
                     cache_path.display()
                 )
             })?;
-            gix::open(cache_path).with_context(|| {
+            let repo = gix::open(cache_path).with_context(|| {
                 format!("failed to open refreshed cache '{}'", cache_path.display())
-            })
+            })?;
+            Ok((repo, source))
         }
         Err(err) => {
             remove_cache_dir(&staging_path)?;
@@ -3250,6 +3328,63 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn cache_fill_prefers_verified_cloud_pack_and_records_source() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path, query_param},
+        };
+        let fx = cloud::tests::fixture("pub fn from_cloud() {}\n");
+        let server = MockServer::builder().start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/github/octo/demo/{}.pack", fx.commit)))
+            .and(query_param("branch", "main"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(fx.pack.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let config = cloud::CloudCacheConfig::from_values(Some(&server.uri()), None, None, None);
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().to_path_buf();
+        let commit = fx.commit.clone();
+
+        let (head, metadata) = tokio::task::spawn_blocking(move || {
+            cloud::set_test_config(config);
+            let resolved = ResolvedCacheTarget {
+                target: CacheTarget::new("octo/demo", "main").unwrap(),
+                remote_url: "https://github.com/octo/demo".to_string(),
+                branch: ResolvedBranch {
+                    name: "main".to_string(),
+                    current_sha: commit,
+                },
+            };
+            let repo = cache_github_repo_target(
+                &resolved,
+                &cache_dir,
+                CacheAcquisitionMode::ForceInvalidate,
+            )
+            .unwrap();
+            let metadata = read_cache_metadata(&resolved.target.metadata_path(&cache_dir)).unwrap();
+            (repo.head_commit().unwrap().id().to_string(), metadata)
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(head, fx.commit);
+        assert_eq!(metadata.current_sha, fx.commit);
+        assert_eq!(metadata.fill_source, Some(FillSource::Cloud));
+    }
+
+    #[test]
+    fn cache_metadata_without_fill_source_still_parses() {
+        let resolved = resolved_cache_target_for_test("main", "abc");
+        let mut value = serde_json::to_value(CacheMetadata::new(&resolved, 1, 2)).unwrap();
+        assert!(value.get("fill_source").is_none());
+        value["fill_source"] = serde_json::json!("github");
+        let parsed: CacheMetadata = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.fill_source, Some(FillSource::Github));
+    }
+
     #[test]
     fn cache_default_branch_resolution_uses_remote_head_branch_and_sha() {
         let temp = tempfile::tempdir().unwrap();
@@ -4264,6 +4399,7 @@ mod tests {
             &context,
             temp.path().join("missing.git").to_str().unwrap(),
             "main",
+            &"0".repeat(40),
             &cache_path,
         )
         .unwrap_err();
