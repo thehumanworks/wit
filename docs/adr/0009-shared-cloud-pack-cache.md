@@ -115,8 +115,9 @@ no slower than a plain GitHub clone, within network noise.
   upstream request carries one), and the CLI never sends one.
 - **Operator takedown:** `DELETE /v1/github/{owner}/{repo}` with
   `X-Wit-Admin-Key` (a `wrangler secret`, not a user login) deletes every
-  pack for that repo and blocks refills for 30 days. The route is disabled
-  (404) while the secret is unset.
+  pack for that repo and blocks refills for 30 days. A fill already in flight
+  deletes its pack when it completes, and a later negative never shortens
+  the block. The route is disabled (404) while the secret is unset.
 - Error bodies and logs go through `scrubSecrets` / `safeConsole`, copied
   verbatim from `showcase/url-api/lib/auth.js` (a test enforces the copy), and
   are phrased without credential prefixes. Workers observability (persisted
@@ -134,7 +135,7 @@ includes 10M requests and 30M CPU-ms).
 |---|---|---|
 | Retention | 30 days (R2 lifecycle `expire-30d` on `v1/`; ledger rows pruned at 31 days) | Tomas's decision |
 | Storage cap | **3 GB**, oldest filled pack evicted first | Keeps the account at or below about 8.5 GB of the 10 GB free tier, with about 1.5 GB headroom for his other buckets |
-| Max pack | **512 MiB** (Worker and client) | Covers torvalds/linux at depth 1; one pack is at most 1/6 of the store. Over-cap repos get `too_large` for 7 days and clone from GitHub. |
+| Max pack | **512 MiB** (Worker and client) | Covers torvalds/linux at depth 1; one pack is under a fifth of the store (five fit in 3 GB, six do not). Over-cap repos get `too_large` for 7 days and clone from GitHub. |
 | Fills per day | **300** (global, strongly consistent in the coordinator) | Class A and Queue ops |
 | Fill bytes per day | **8 GB** upstream | Worker CPU: 8,000 MB × about 14 ms/MB ≈ 112k CPU-ms/day ≈ 3.4M/month, which leaves plenty of the 30M included |
 | Fills in flight | 4 (queue `max_concurrency` 4, coordinator cap 4) | Memory (one 16 MiB part per fill) and transient multipart storage |
@@ -145,11 +146,18 @@ includes 10M requests and 30M CPU-ms).
 
 Worst-case monthly usage at these caps:
 
-- **R2 storage** ≤ 3 GB for wit, so the account stays ≤ 8.5 GB of 10 GB.
-  Incomplete multipart parts are aborted on failure, or by the 1-day
-  `abort-multipart-1d` rule.
+- **R2 storage:** the ledger holds ≤ 3 GB for wit, so the account stays at
+  about 8.9 GB of 10 GB (reading the 5.5 GB baseline as GiB). R2 briefly holds
+  up to four more packs between a fill's upload and its `complete` (a 5.15 GB
+  peak), each for less than one consumer invocation, so the monthly average
+  stays at or below about 9.0 GB. Incomplete multipart parts are aborted on
+  failure, or by the 1-day `abort-multipart-1d` rule.
 - **R2 Class A** ≤ 300 × (create + complete) + 8 GB / 16 MiB parts ≈ 1.1k/day
-  ≈ 35k/month, of the 1M free (other buckets use about 60k).
+  ≈ 35k/month, of the 1M free (other buckets use about 60k). Queue retries
+  re-run a fill whose `complete` failed, and those runs are not counted
+  against the byte budget. Up to 25k such runs a month still fit. The
+  pathological worst case (every message of a month is a 512 MiB pack whose
+  `complete` fails on every delivery) is about 1.04M.
 - **R2 Class B:** one GET per warm pull plus one HEAD per fill, well under the
   10M free at realistic use. This is the only dimension without a global hard
   cap (a global counter would put the DO on the hit path). Per-IP limits bound
@@ -168,6 +176,36 @@ Worst-case monthly usage at these caps:
 
 Abuse can at most exhaust the daily budgets (clients then clone from GitHub)
 or churn the 3 GB store. It cannot push storage past the cap.
+
+## Formal proofs
+
+The claims above are proved in Lean 4 under [`formal/`](../../formal), with
+the Worker, wrangler, deploy-workflow, and client constants extracted from the
+source by `scripts/check_formal.sh` (ADR 0010 covers the approach, the
+assumptions, and the limits).
+
+| Claim | Theorem |
+|---|---|
+| Single-flight per `repo@commit` | [`Coordinator.single_flight`](../../formal/Wit/Coordinator.lean) |
+| Fills in flight ≤ 4 | [`Coordinator.inflight_le`](../../formal/Wit/Coordinator.lean) |
+| Fills per day ≤ 300; bytes per day ≤ 8 GB plus four fills' overshoot | [`Coordinator.daily_fills_le`, `daily_bytes_le`](../../formal/Wit/Coordinator.lean), [`Budget.deployed_daily_bytes`](../../formal/Wit/Budget.lean) |
+| The ledger stays ≤ the 3 GB cap; R2 exceeds it only by packs mid-write | [`Coordinator.ledger_le_cap`, `r2_le_cap_plus_inflight`, `r2_le_cap_when_quiescent`](../../formal/Wit/Coordinator.lean) |
+| Eviction removes the oldest pack other than the one just stored | [`Coordinator.evict_removes_oldest`](../../formal/Wit/Coordinator.lean) |
+| A takedown holds for 30 days, including against fills in flight | [`Coordinator.takedown_holds`, `takedown_no_fill`](../../formal/Wit/Coordinator.lean) |
+| Storage, Class A/B, requests, CPU, queue ops, memory, and multipart rules fit the free tiers at the deployed and default limits | [`Budget.deployed_fits`, `defaults_fits`](../../formal/Wit/Budget.lean) |
+| One pack is under a fifth of the store | [`Budget.Fits.fivePacksFit`, `six_packs_exceed_cap`](../../formal/Wit/Budget.lean) |
+| A cache can deny service but cannot change content; every failure falls back to GitHub | [`Integrity.fill_matches_github`](../../formal/Wit/Integrity.lean) |
+| The client sends no credentials; the Worker never reads or forwards `Authorization` | [`ReadOnly.client_sends_no_credentials`, `worker_ignores_authorization`, `worker_upstream_anonymous`, `only_takedown_mutates`](../../formal/Wit/ReadOnly.lean) |
+| The verifier sees every byte and rejects packs over the cap; the stored object is the stream, in equal 16 MiB parts | [`Streaming.verifier_state`, `verifier_accepts_le_cap`, `upload_object_eq_stream`](../../formal/Wit/Streaming.lean) |
+| Keys are injective, a takedown's prefix covers exactly that repo, and the lifecycle rule covers every pack | [`Keys.packKey_injective`, `repoPrefix_covers_iff`, `lifecycle_covers_packs`](../../formal/Wit/Keys.lean) |
+
+Modeling the coordinator found four bugs, now fixed:
+
+- A fill request that raced a stored pack dropped the pack's ledger row, so
+  the cap stopped bounding R2.
+- A fill that completed after a takedown restored the pack.
+- A fill that completed while a takedown was listing R2 kept its pack.
+- A later negative with a shorter TTL shortened a takedown's block.
 
 ## Measurements (2026-09-26, cloud VM in the US, release build)
 
