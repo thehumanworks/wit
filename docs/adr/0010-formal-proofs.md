@@ -60,8 +60,8 @@ proved.
 
 | ADR | Module | Theorems |
 |---|---|---|
-| 0009 coordinator | [`Coordinator.lean`](../../formal/Wit/Coordinator.lean) | The FillCoordinator, R2, the queue consumer's writes, the lifecycle rule, and the clock are modeled as one state machine, and each property holds in every reachable state: `single_flight`, `inflight_le`, `daily_fills_le`, `daily_bytes_le`, `ledger_le_cap`, `r2_le_ledger_plus_writing`, `r2_le_cap_plus_inflight`, `r2_le_cap_when_quiescent`, `evict_removes_oldest`, `queued_only_within_limits`, `takedown_holds`, `takedown_no_fill` |
-| 0009 limits and cost | [`Budget.lean`](../../formal/Wit/Budget.lean) | `deployed_fits` and `defaults_fits` check every field of `Fits`: storage headroom and monthly average, Class A (worst case, every queue retry included), Class B, requests, CPU, per-fill CPU, queue ops, part memory, multipart rules, timeouts inside the consumer wall limit and the pending TTL, lifecycle = retention, and the in-flight cap = queue concurrency. Also `params_wf` (the coordinator model's side conditions hold for the real values), `classA_worst_case_le_free_tier` (any month of fill runs, at most `1 + max_retries` per message and each at most `maxFillBytes`, stays within 1M Class A with the baseline) with `deployed_classA_worst_case` / `defaults_classA_worst_case` (= 711,280), `six_packs_exceed_cap`, and `deployed_ledger_le` / `deployed_r2_peak` / `deployed_daily_bytes` / `deployed_daily_fills` |
+| 0009 coordinator | [`Coordinator.lean`](../../formal/Wit/Coordinator.lean) | The FillCoordinator, R2, the queue consumer's writes, the lifecycle rule, and the clock are modeled as one state machine, and each property holds in every reachable state: `single_flight`, `inflight_le`, `daily_fills_le`, `daily_bytes_le` (reservations included), `spent_le_bytes` / `daily_spent_le` (settled and forfeited bytes never exceed the day's charge), `fetched_window_le` (bytes fetched in any _n_ days ≤ (_n_ + 1) days of budget, however many completes fail), `ledger_le_cap`, `r2_le_ledger_plus_writing`, `r2_le_cap_plus_inflight`, `r2_le_cap_when_quiescent`, `evict_removes_oldest`, `queued_only_within_limits`, `takedown_holds`, `takedown_no_fill` |
+| 0009 limits and cost | [`Budget.lean`](../../formal/Wit/Budget.lean) | `deployed_fits` and `defaults_fits` check every field of `Fits`: storage headroom and monthly average, Class A (worst case, every queue retry included), Class B, requests, CPU, per-fill CPU, queue ops, part memory, multipart rules, timeouts inside the consumer wall limit and the pending TTL, lifecycle = retention, and the in-flight cap = queue concurrency. Also `params_wf` (the coordinator model's side conditions hold for the real values), `classA_worst_case_le_free_tier` (any month of fill runs, at most `1 + max_retries` per message and each at most `maxFillBytes`, stays within 1M Class A with the baseline) with `deployed_classA_worst_case` / `defaults_classA_worst_case` (= 711,280), `cpu_worst_case_le_included` (the CPU fetched in any 31 days, plus the baseline and 20M for requests, stays within 30M for every reachable coordinator state, including those where every `complete` failed) with `deployed_cpu_le_included` / `defaults_cpu_le_included` and `deployed_cpu_worst_case` / `defaults_cpu_worst_case` (= 3,584,000 fill CPU-ms), `reserve_matches_deployed` / `reserve_matches_defaults` (the model reserves what `fillReserveBytes` does), `six_packs_exceed_cap`, and `deployed_ledger_le` / `deployed_r2_peak` / `deployed_daily_bytes` / `deployed_daily_fills` |
 | 0009 integrity and fallback | [`Integrity.lean`](../../formal/Wit/Integrity.lean) | `valid_complete_agree`, `fill_matches_github`: for every answer the server can give, the filled cache has the client's commit, branch, and remote, and exactly GitHub's objects on everything reachable from the commit |
 | 0009 read-only | [`ReadOnly.lean`](../../formal/Wit/ReadOnly.lean) | `client_sends_no_credentials`, `worker_ignores_authorization`, `worker_upstream_anonymous`, `only_takedown_mutates`, `no_persisted_logs` |
 | 0009 streaming | [`Streaming.lean`](../../formal/Wit/Streaming.lean) | `verifier_state` (the hash covers every byte but the 20-byte trailer, for any chunking), `verifier_accepts_le_cap`, `upload_object_eq_stream` (the stored object is the stream; parts are exactly `PART_BYTES`; a single PUT happens exactly when the pack is under one part) |
@@ -97,12 +97,28 @@ In the models:
   live. `Fits.runInsidePending` checks the arithmetic behind this: delivery
   plus the consumer wall time is at most `PENDING_TTL_SECONDS`. A queue
   retry after the row expired falls outside the model. The queue's
-  `max_concurrency` still bounds such writes.
+  `max_concurrency` still bounds such writes. `PENDING_TTL_SECONDS` is at
+  most a day (`Params.WF.pending_le_day`), so a fetch is charged to its own
+  or the previous UTC day.
+- **Fetches are covered by a reservation.** The model's `fetch` step needs
+  the fill's pending row live and at most `maxFillBytes` read per
+  reservation, and `complete` must charge at least what was read. The code
+  meets this as follows. The first delivery fetches inside the pending TTL
+  (`Fits.runInsidePending`). The verifier stops a pack one chunk past the cap
+  (`Streaming.verifier_accepts_le_cap`). `fillPack` reports the verifier's
+  count on success and on every failure after the fetch starts, and
+  `settle` keeps the whole reservation when no count arrives. A redelivery
+  never fetches: the generator requires `runFillJob` to send `attempts > 1`
+  to `recheckOutcome`, and requires `recheckOutcome` not to fetch. It also
+  requires `requestFill` to reserve `fillReserveBytes` behind the full-fit
+  gate, `settle` to check the reservation id, `complete` to settle first,
+  and that nothing else charges bytes.
 - **Runs per message.** Cloudflare Queues runs a message at most
   `1 + max_retries` times. The generator reads `max_retries` from
   `wrangler.toml` into `runsPerMessage` and rejects a `dead_letter_queue`,
   whose consumer would add runs. The rare duplicate deliveries of an
-  at-least-once queue are not modeled.
+  at-least-once queue are not modeled; a duplicate first delivery would
+  fetch again outside its reservation.
 - **Operation counts per fill** follow `fill.js`/`store.js`: one HEAD, then
   either one PUT, or a create, the parts, and a complete. Abort and delete
   are free.
@@ -126,14 +142,6 @@ In the models:
   misses) have no global cap, so the proofs only show headroom: 9.5M client
   requests a month fit in requests and Class B, and 20M CPU-ms remain for
   them. Per-IP rate limits are Cloudflare-approximate and are not modeled.
-- **CPU with failed bookkeeping.** The byte budget, and so `Fits.cpu`,
-  counts only runs whose `complete` succeeded. If the coordinator failed
-  every `complete` while still accepting `requestFill`, fills would be bounded
-  only by 300 a day and the 512 MiB cap: about 9,304 × 2 × 7.5 s ≈ 140M
-  CPU-ms a month, over the 30M included (roughly $2.30 of overage). Class A
-  is bounded in this case (`classA_worst_case_le_free_tier`); CPU is not.
-  Reserving `MAX_PACK_BYTES` against the day's bytes at `requestFill` and
-  settling at `complete` would close it.
 - **Unrecorded packs.** If both deliveries of a fill store the pack but fail
   to record it, the pack stays in R2 outside the ledger (and outside the
   cap) until the lifecycle rule expires it.
