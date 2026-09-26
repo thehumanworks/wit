@@ -13,9 +13,14 @@ state, for any interleaving and any fill outcomes:
 * `inflight_le`: pending fills never exceed `MAX_INFLIGHT_FILLS`, and fills
   holding R2 bytes not yet in the ledger are among them.
 * `daily_fills_le`: fills started per UTC day never exceed `DAILY_FILL_LIMIT`.
-* `daily_bytes_le`: bytes counted per UTC day never exceed
-  `DAILY_FILL_BYTES + MAX_INFLIGHT_FILLS × maxFillBytes` (the budget is checked
-  when a fill starts; the fills already running may finish over it).
+* `daily_bytes_le`: bytes charged per UTC day never exceed `DAILY_FILL_BYTES`.
+  A queued fill reserves `maxFillBytes` on its day; `complete` settles the
+  reservation to what the fill read and `release` refunds it; a reservation
+  whose pending row expires stays charged.
+* `spent_le_bytes`, `fetched_window_le`: the bytes the consumer fetches from
+  GitHub are charged: per reservation day they never exceed the day's charge,
+  and in any `n` consecutive UTC days they never exceed `n + 1` days of the
+  budget. Nothing here depends on `complete` ever running.
 * `ledger_le_cap`: the ledger never holds more than `STORAGE_CAP_BYTES`.
 * `r2_le_cap_plus_inflight`: the bytes R2 actually stores never exceed
   `STORAGE_CAP_BYTES + MAX_INFLIGHT_FILLS × MAX_PACK_BYTES`, and never exceed
@@ -78,6 +83,7 @@ structure Params.WF (P : Params) : Prop where
   ledger_outlives : P.lifecycleDays + P.lifecycleDelayDays ≤ P.lim.retentionDays + P.graceDays
   lifecycle_pos : 0 < P.lifecycleDays + P.lifecycleDelayDays
   block_dominates : ∀ r, P.repoScoped r = true → r ≠ .blocked → P.pendingTtl + P.ttl r ≤ P.ttl .blocked
+  pending_le_day : P.pendingTtl ≤ day
 
 structure State where
   clock : Nat
@@ -89,8 +95,15 @@ structure State where
   r2 : List Obj
   /-- Ghost: fills whose pack is in R2 but whose `complete` has not run yet. -/
   writing : List Key
+  /-- Ghost: bytes the pending fill of a key has fetched from GitHub. -/
+  reads : Key → Nat
+  /-- Ghost: bytes fetched by the fills reserved on a UTC day. -/
+  spent : Nat → Nat
+  /-- Ghost: bytes fetched during a UTC day. -/
+  readOn : Nat → Nat
 
-def State.init : State := ⟨0, [], fun _ => 0, fun _ => 0, fun _ => none, [], [], []⟩
+def State.init : State :=
+  ⟨0, [], fun _ => 0, fun _ => 0, fun _ => none, [], [], [], fun _ => 0, fun _ => 0, fun _ => 0⟩
 
 def pendingKeys (s : State) : List Key := s.pending.map Prod.fst
 
@@ -134,11 +147,33 @@ def requestFill (P : Params) (s₀ : State) (k : Key) : Decision × State :=
   if live s (.repo k.repo) || live s (.key k) || live s .global then (.skipped, s)
   else if k ∈ pendingKeys s then (.pending, s)
   else if P.lim.maxInflightFills ≤ s.pending.length then (.busy, s)
-  else if P.lim.dailyFillLimit ≤ s.fills d ∨ P.lim.dailyFillBytes ≤ s.bytes d then (.budget, s)
-  else (.queued, { s with pending := s.pending ++ [(k, s.clock)], fills := bump s.fills d 1 })
+  else if P.lim.dailyFillLimit ≤ s.fills d ∨ P.lim.dailyFillBytes < s.bytes d + P.maxFillBytes then (.budget, s)
+  else (.queued, { s with
+    pending := s.pending ++ [(k, s.clock)]
+    fills := bump s.fills d 1
+    bytes := bump s.bytes d P.maxFillBytes
+    reads := fun k' => if k' = k then 0 else s.reads k' })
 
-def release (s : State) (k : Key) : State :=
-  { s with pending := s.pending.filter (fun p => decide (p.1 ≠ k)), fills := dec s.fills (dayOf s.clock) }
+/-- `m` on the reservation day of `k`'s pending row (0 when `k` is not pending). -/
+def atKey (pending : List (Key × Nat)) (k : Key) (m d : Nat) : Nat :=
+  sumBy (fun p => if p.1 = k ∧ dayOf p.2 = d then m else 0) pending
+
+/-- `settle`: charge `c` of `k`'s reservation, refunding the rest to its day. -/
+def settle (P : Params) (s : State) (k : Key) (c : Nat) : Nat → Nat :=
+  fun d => s.bytes d - atKey s.pending k (P.maxFillBytes - c) d
+
+def release (P : Params) (s : State) (k : Key) : State :=
+  { s with
+    pending := s.pending.filter (fun p => decide (p.1 ≠ k))
+    fills := dec s.fills (dayOf s.clock)
+    bytes := settle P s k 0 }
+
+/-- The consumer streams `m` more bytes of `k`'s pack from GitHub. -/
+def fetch (s : State) (k : Key) (m : Nat) : State :=
+  { s with
+    reads := fun k' => if k' = k then s.reads k + m else s.reads k'
+    spent := fun d => s.spent d + atKey s.pending k m d
+    readOn := bump s.readOn (dayOf s.clock) m }
 
 /-- The consumer's R2 write (single PUT or completed multipart upload). -/
 def store (s : State) (k : Key) (b : Nat) : State :=
@@ -179,8 +214,10 @@ def evict (cap : Nat) (keep : Key) : Nat → List Row → List Obj → List Row 
 def upsertRow (rows : List Row) (row : Row) : List Row :=
   rows.filter (fun r => decide (r.key ≠ row.key)) ++ [row]
 
+/-- A fill's outcome and the bytes `complete` charges for it (`bytesRead`,
+or the stored size when a redelivery found the pack). -/
 inductive Outcome where
-  | ok (bytes : Nat) (reused : Bool)
+  | ok (bytes : Nat) (charge : Nat)
   | fail (reason : Reason) (retryAfter : Nat) (bytesRead : Nat)
 
 def complete (P : Params) (s : State) (k : Key) : Outcome → State
@@ -188,12 +225,12 @@ def complete (P : Params) (s : State) (k : Key) : Outcome → State
     { s with
       pending := s.pending.filter (fun p => decide (p.1 ≠ k))
       negatives := upsertNeg s.negatives (scopeFor P k r) r (s.clock + ttlFor P r retry)
-      bytes := bump s.bytes (dayOf s.clock) n }
-  | .ok b reused =>
+      bytes := settle P s k n }
+  | .ok b c =>
     let base := { s with
       pending := s.pending.filter (fun p => decide (p.1 ≠ k))
       writing := s.writing.erase k
-      bytes := bump s.bytes (dayOf s.clock) (if reused then 0 else b) }
+      bytes := settle P s k c }
     if blocked s k.repo then
       { base with
         r2 := s.r2.filter (fun o => decide (o.key ≠ k))
@@ -221,14 +258,20 @@ def pendingLive (P : Params) (s : State) (t : Nat) (k : Key) : Prop :=
 
 inductive Step (P : Params) : State → State → Prop
   | request (s : State) (k : Key) : Step P s (requestFill P s k).2
-  | release (s : State) (k : Key) (hw : k ∉ s.writing) : Step P s (release s k)
+  | release (s : State) (k : Key) (hw : k ∉ s.writing) (hr : s.reads k = 0) : Step P s (release P s k)
+  /-- Only the first delivery of a job fetches, and it reads at most `maxFillBytes`
+  (`PackVerifier` rejects the chunk that crosses the pack cap). -/
+  | fetch (s : State) (k : Key) (m : Nat) (hk : k ∈ pendingKeys s) (hlive : pendingLive P s s.clock k)
+      (hm : s.reads k + m ≤ P.maxFillBytes) : Step P s (fetch s k m)
   | store (s : State) (k : Key) (b : Nat) (hk : k ∈ pendingKeys s) (hw : k ∉ s.writing)
       (hb : b ≤ P.lim.maxPackBytes) (hlive : pendingLive P s s.clock k) : Step P s (store s k b)
-  | completeOk (s : State) (k : Key) (b : Nat) (reused : Bool) (hk : k ∈ pendingKeys s)
+  /-- The charge covers what the fill read: `bytesRead` on the first delivery,
+  the stored size (which the first delivery streamed) on a redelivery. -/
+  | completeOk (s : State) (k : Key) (b c : Nat) (hk : k ∈ pendingKeys s)
       (hb : b ≤ P.lim.maxPackBytes) (hsize : ∀ o ∈ s.r2, o.key = k → o.bytes ≤ b)
-      (hlive : pendingLive P s s.clock k) : Step P s (complete P s k (.ok b reused))
+      (hc : s.reads k ≤ c) (hlive : pendingLive P s s.clock k) : Step P s (complete P s k (.ok b c))
   | completeFail (s : State) (k : Key) (r : Reason) (retry n : Nat) (hk : k ∈ pendingKeys s)
-      (hw : k ∉ s.writing) (hn : n ≤ P.maxFillBytes) (hlive : pendingLive P s s.clock k) :
+      (hw : k ∉ s.writing) (hn : s.reads k ≤ n) (hlive : pendingLive P s s.clock k) :
       Step P s (complete P s k (.fail r retry n))
   | prune (s : State) : Step P s (prune P s)
   | takedown (s : State) (r : Nat) : Step P s (takedown P s r)
@@ -287,6 +330,37 @@ theorem nodup_map_filter {α β : Type} (f : α → β) (p : α → Bool) {l : L
     ((l.filter p).map f).Nodup :=
   h.sublist (List.filter_sublist.map f)
 
+theorem sumBy_congr {α : Type} {f g : α → Nat} : ∀ {l : List α}, (∀ x ∈ l, f x = g x) → sumBy f l = sumBy g l
+  | [], _ => rfl
+  | x :: xs, h => by
+    simp only [sumBy_cons]
+    rw [h x (by simp), sumBy_congr (fun y hy => h y (by simp [hy]))]
+
+theorem sumBy_mono {α : Type} {f g : α → Nat} : ∀ {l : List α}, (∀ x ∈ l, f x ≤ g x) → sumBy f l ≤ sumBy g l
+  | [], _ => Nat.le_refl _
+  | x :: xs, h => by
+    simp only [sumBy_cons]
+    have := h x (by simp)
+    have := sumBy_mono (l := xs) (fun y hy => h y (by simp [hy]))
+    omega
+
+theorem sumBy_add {α : Type} (f g : α → Nat) : ∀ l : List α,
+    sumBy (fun x => f x + g x) l = sumBy f l + sumBy g l
+  | [] => rfl
+  | x :: xs => by simp only [sumBy_cons]; rw [sumBy_add f g xs]; omega
+
+theorem sumBy_filter_ite {α : Type} (f : α → Nat) (q : α → Bool) : ∀ l : List α,
+    sumBy f (l.filter q) = sumBy (fun x => if q x = true then f x else 0) l
+  | [] => rfl
+  | x :: xs => by
+    cases h : q x <;> simp [h, sumBy_filter_ite f q xs]
+
+theorem sumBy_zero {α : Type} {f : α → Nat} : ∀ {l : List α}, (∀ x ∈ l, f x = 0) → sumBy f l = 0
+  | [], _ => rfl
+  | x :: xs, h => by
+    simp only [sumBy_cons]
+    rw [h x (by simp), sumBy_zero (fun y hy => h y (by simp [hy]))]
+
 /-- Removing the pending row of a key that is pending shortens the list by one. -/
 theorem length_filter_key {k : Key} :
     ∀ {l : List (Key × Nat)}, (l.map Prod.fst).Nodup → k ∈ l.map Prod.fst →
@@ -333,6 +407,123 @@ theorem dominated_sum {xs : List Obj} {rows : List Row} (hx : (xs.map Obj.key).N
       simp [List.mem_filter, hrow, hkey]
     have := le_sumBy_of_mem Row.bytes hin
     simp only [sumBy_cons]
+    omega
+
+/-! ## Reservations -/
+
+/-- Bytes reserved on day `d` that the pending fills have not fetched yet. -/
+def held (P : Params) (s : State) (d : Nat) : Nat :=
+  sumBy (fun p => if dayOf p.2 = d then P.maxFillBytes - s.reads p.1 else 0) s.pending
+
+/-- The reservation of a pending key sits on the day it was made. -/
+theorem atKey_of_mem {m d : Nat} : ∀ {l : List (Key × Nat)} {p : Key × Nat}, (l.map Prod.fst).Nodup → p ∈ l →
+    atKey l p.1 m d = if dayOf p.2 = d then m else 0
+  | [], _, _, h => by cases h
+  | q :: qs, p, hn, hp => by
+    rw [List.map_cons, List.nodup_cons] at hn
+    unfold atKey
+    simp only [sumBy_cons]
+    rcases List.mem_cons.mp hp with h | hp
+    · subst h
+      have : sumBy (fun x : Key × Nat => if x.1 = p.1 ∧ dayOf x.2 = d then m else 0) qs = 0 := by
+        apply sumBy_zero
+        intro x hx
+        have : x.1 ≠ p.1 := fun h => hn.1 (h ▸ List.mem_map_of_mem hx)
+        simp [this]
+      rw [this]
+      by_cases h : dayOf p.2 = d <;> simp [h]
+    · have hq : q.1 ≠ p.1 := fun h => hn.1 (h ▸ List.mem_map_of_mem hp)
+      have ih := atKey_of_mem (m := m) (d := d) hn.2 hp
+      unfold atKey at ih
+      rw [ih]
+      simp [hq]
+
+theorem atKey_mono (l : List (Key × Nat)) (k : Key) {m m' : Nat} (h : m ≤ m') (d : Nat) :
+    atKey l k m d ≤ atKey l k m' d := by
+  unfold atKey
+  apply sumBy_mono
+  intro p _
+  split <;> omega
+
+/-- Dropping `k`'s pending row removes its unfetched reservation from `held`. -/
+theorem held_remove (P : Params) (s : State) (k : Key) (d : Nat) :
+    sumBy (fun p => if dayOf p.2 = d then P.maxFillBytes - s.reads p.1 else 0)
+        (s.pending.filter (fun p => decide (p.1 ≠ k))) +
+      atKey s.pending k (P.maxFillBytes - s.reads k) d = held P s d := by
+  rw [sumBy_filter_ite, atKey, ← sumBy_add]
+  apply sumBy_congr
+  intro p _
+  by_cases h1 : p.1 = k <;> by_cases h2 : dayOf p.2 = d <;> simp [h1, h2]
+
+/-- Settling `k` for at least what it fetched keeps every fetched byte charged. -/
+theorem spent_settle {P : Params} {s : State} (h : ∀ d, s.spent d + held P s d ≤ s.bytes d) (k : Key) (c : Nat)
+    (hc : s.reads k ≤ c) (d : Nat) :
+    s.spent d + sumBy (fun p => if dayOf p.2 = d then P.maxFillBytes - s.reads p.1 else 0)
+        (s.pending.filter (fun p => decide (p.1 ≠ k))) ≤ settle P s k c d := by
+  have h1 := held_remove P s k d
+  have h2 := atKey_mono s.pending k (show P.maxFillBytes - c ≤ P.maxFillBytes - s.reads k by omega) d
+  have h3 := h d
+  simp only [settle]
+  omega
+
+theorem held_queue (P : Params) (s : State) (k : Key) (t d : Nat) (F B : Nat → Nat) (hk : k ∉ pendingKeys s) :
+    held P { s with
+      pending := s.pending ++ [(k, t)]
+      fills := F
+      bytes := B
+      reads := fun k' => if k' = k then 0 else s.reads k' } d =
+      held P s d + (if dayOf t = d then P.maxFillBytes else 0) := by
+  unfold held
+  simp only [sumBy_append, sumBy_cons, sumBy_nil, ite_true, Nat.sub_zero, Nat.add_zero]
+  congr 1
+  apply sumBy_congr
+  intro p hp
+  have : p.1 ≠ k := fun h => hk (h ▸ List.mem_map_of_mem hp)
+  simp [this]
+
+theorem held_fetch (P : Params) (s : State) (k : Key) (m d : Nat) (hm : s.reads k + m ≤ P.maxFillBytes) :
+    held P (fetch s k m) d + atKey s.pending k m d = held P s d := by
+  unfold held atKey fetch
+  rw [← sumBy_add]
+  apply sumBy_congr
+  intro p _
+  by_cases h1 : p.1 = k <;> by_cases h2 : dayOf p.2 = d <;> simp [h1, h2] <;> omega
+
+/-! ## Day windows -/
+
+/-- `f d₀ + f (d₀ + 1) + … + f (d₀ + n - 1)`. -/
+def window (f : Nat → Nat) (d₀ : Nat) : Nat → Nat
+  | 0 => 0
+  | n + 1 => window f d₀ n + f (d₀ + n)
+
+theorem window_add (f g : Nat → Nat) (d₀ : Nat) : ∀ n,
+    window (fun d => f d + g d) d₀ n = window f d₀ n + window g d₀ n
+  | 0 => rfl
+  | n + 1 => by simp only [window]; rw [window_add f g d₀ n]; omega
+
+theorem window_ind (x m d₀ : Nat) : ∀ n,
+    window (fun d => if x = d then m else 0) d₀ n = if d₀ ≤ x ∧ x < d₀ + n then m else 0
+  | 0 => by simp only [window]; split <;> omega
+  | n + 1 => by
+    simp only [window]
+    rw [window_ind x m d₀ n]
+    split <;> split <;> split <;> omega
+
+theorem window_bump (f : Nat → Nat) (x m d₀ : Nat) : ∀ n,
+    window (bump f x m) d₀ n = window f d₀ n + if d₀ ≤ x ∧ x < d₀ + n then m else 0
+  | 0 => by simp only [window]; split <;> omega
+  | n + 1 => by
+    simp only [window]
+    rw [window_bump f x m d₀ n]
+    simp only [bump]
+    split <;> split <;> split <;> omega
+
+theorem window_le (f : Nat → Nat) (c d₀ : Nat) (h : ∀ d, f d ≤ c) : ∀ n, window f d₀ n ≤ n * c
+  | 0 => by simp [window]
+  | n + 1 => by
+    simp only [window, Nat.succ_mul]
+    have := window_le f c d₀ h n
+    have := h (d₀ + n)
     omega
 
 /-! ## Eviction -/
@@ -478,10 +669,11 @@ structure Inv (P : Params) (s : State) : Prop where
   pendingLe : s.pending.length ≤ P.lim.maxInflightFills
   pendingClock : ∀ p ∈ s.pending, p.2 ≤ s.clock
   fillsLe : ∀ d, s.fills d ≤ P.lim.dailyFillLimit
-  bytesToday : s.bytes (dayOf s.clock) + P.maxFillBytes * s.pending.length ≤
-    P.lim.dailyFillBytes + P.maxFillBytes * P.lim.maxInflightFills
-  bytesLe : ∀ d, s.bytes d ≤ P.lim.dailyFillBytes + P.maxFillBytes * P.lim.maxInflightFills
-  bytesFuture : ∀ d, dayOf s.clock < d → s.bytes d = 0
+  bytesLe : ∀ d, s.bytes d ≤ P.lim.dailyFillBytes
+  /-- What a day's fills fetched plus what they may still fetch is charged to that day. -/
+  spentLe : ∀ d, s.spent d + held P s d ≤ s.bytes d
+  /-- A fetch reads for a fill reserved that day or the day before. -/
+  readWindow : ∀ a n, window s.readOn a n ≤ window s.spent (a - 1) (n + 1)
   ledgerNodup : (s.ledger.map Row.key).Nodup
   ledgerCap : sumBy Row.bytes s.ledger ≤ P.lim.storageCapBytes
   r2Nodup : (s.r2.map Obj.key).Nodup
@@ -499,9 +691,12 @@ theorem inv_init (P : Params) : Inv P State.init where
   pendingLe := by simp [State.init]
   pendingClock := by simp [State.init]
   fillsLe := by simp [State.init]
-  bytesToday := by simp [State.init]
   bytesLe := by simp [State.init]
-  bytesFuture := by simp [State.init]
+  spentLe := by simp [State.init, held]
+  readWindow := fun a n => by
+    have := window_le (fun _ => 0) 0 a (fun _ => Nat.le_refl 0) n
+    simp only [Nat.mul_zero] at this
+    exact Nat.le_trans this (Nat.zero_le _)
   ledgerNodup := by simp [State.init]
   ledgerCap := by simp [State.init]
   r2Nodup := by simp [State.init]
@@ -523,13 +718,14 @@ theorem inv_prune {P : Params} (W : P.WF) {s : State} (I : Inv P s) : Inv P (pru
   have hlen : (s.pending.filter (fun p => decide (s.clock < p.2 + P.pendingTtl))).length ≤ s.pending.length :=
     List.length_filter_le _ _
   refine ⟨nodup_map_filter _ _ I.pendingNodup, Nat.le_trans hlen I.pendingLe,
-    fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, I.fillsLe, ?_, I.bytesLe, I.bytesFuture,
+    fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, I.fillsLe, I.bytesLe, ?_, I.readWindow,
     nodup_map_filter _ _ I.ledgerNodup,
     Nat.le_trans (sumBy_filter_le _ _ _) I.ledgerCap, I.r2Nodup, I.r2Le, I.r2Clock, I.r2Fresh, ?_,
     I.writingNodup, ?_, ?_⟩
-  · have := Nat.mul_le_mul_left P.maxFillBytes hlen
-    have := I.bytesToday
-    simp only [prune]; omega
+  · intro d
+    have h1 := I.spentLe d
+    have h2 : held P (prune P s) d ≤ held P s d := sumBy_filter_le _ _ _
+    exact Nat.le_trans (Nat.add_le_add_left h2 _) h1
   · intro o ho
     rcases I.tracked o ho with hw | ⟨row, hrow, hk, hb, hc⟩
     · exact Or.inl hw
@@ -551,11 +747,13 @@ theorem requestFill_cases (P : Params) (s : State) (k : Key) :
         k ∉ pendingKeys (prune P s) ∧
         (prune P s).pending.length < P.lim.maxInflightFills ∧
         (prune P s).fills (dayOf s.clock) < P.lim.dailyFillLimit ∧
-        (prune P s).bytes (dayOf s.clock) < P.lim.dailyFillBytes ∧
+        (prune P s).bytes (dayOf s.clock) + P.maxFillBytes ≤ P.lim.dailyFillBytes ∧
         (live (prune P s) (.repo k.repo) || live (prune P s) (.key k) || live (prune P s) .global) = false ∧
         (requestFill P s k).2 = { prune P s with
           pending := (prune P s).pending ++ [(k, s.clock)]
-          fills := bump (prune P s).fills (dayOf s.clock) 1 }) := by
+          fills := bump (prune P s).fills (dayOf s.clock) 1
+          bytes := bump (prune P s).bytes (dayOf s.clock) P.maxFillBytes
+          reads := fun k' => if k' = k then 0 else (prune P s).reads k' }) := by
   unfold requestFill
   simp only [show (prune P s).clock = s.clock from rfl]
   split
@@ -571,7 +769,7 @@ theorem requestFill_cases (P : Params) (s : State) (k : Key) :
         · exact Or.inl ⟨by simp, rfl⟩
         · rename_i hbudget
           simp only [Bool.not_eq_true] at hlive
-          simp only [not_or, Nat.not_le] at hbudget
+          simp only [not_or, Nat.not_le, Nat.not_lt] at hbudget
           exact Or.inr ⟨rfl, hpend, by omega, hbudget.1, hbudget.2, hlive, rfl⟩
 
 theorem inv_request {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) :
@@ -581,7 +779,7 @@ theorem inv_request {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) 
   · rw [h]; exact I'
   · rw [h]
     have hc : (prune P s).clock = s.clock := rfl
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, I'.bytesFuture, I'.ledgerNodup, I'.ledgerCap, I'.r2Nodup, I'.r2Le,
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, I'.readWindow, I'.ledgerNodup, I'.ledgerCap, I'.r2Nodup, I'.r2Le,
       I'.r2Clock, I'.r2Fresh, I'.tracked, I'.writingNodup, ?_, ?_⟩
     · simp only [pendingKeys, List.map_append, List.map_cons, List.map_nil]
       exact List.nodup_append.mpr ⟨I'.pendingNodup, by simp, by
@@ -594,12 +792,15 @@ theorem inv_request {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) 
     · intro d; simp only [bump]; split
       · subst_vars; omega
       · exact I'.fillsLe d
-    · simp only [List.length_append, List.length_singleton, hc]
-      have := Nat.mul_le_mul_left P.maxFillBytes (show (prune P s).pending.length + 1 ≤ P.lim.maxInflightFills by omega)
-      simp only [Nat.mul_add, Nat.mul_one] at this ⊢
-      omega
+    · intro d; simp only [bump]; split
+      · subst_vars; omega
+      · exact I'.bytesLe d
     · intro d
-      exact I'.bytesLe d
+      rw [held_queue P (prune P s) k s.clock d _ _ hk]
+      have := I'.spentLe d
+      show (prune P s).spent d + _ ≤ bump (prune P s).bytes (dayOf s.clock) P.maxFillBytes d
+      simp only [bump]
+      split <;> split <;> omega
     · intro w hw
       show w ∈ ((prune P s).pending ++ _).map Prod.fst
       rw [List.map_append]
@@ -611,19 +812,17 @@ theorem inv_request {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) 
         simp at hpw; subst hpw
         exact absurd (I'.writingPending _ hw) hk
 
-theorem inv_release {P : Params} {s : State} (I : Inv P s) (k : Key) (hw : k ∉ s.writing) :
-    Inv P (release s k) := by
+theorem inv_release {P : Params} {s : State} (I : Inv P s) (k : Key) (hw : k ∉ s.writing)
+    (hr : s.reads k = 0) : Inv P (release P s k) := by
   have hlen : (s.pending.filter (fun p => decide (p.1 ≠ k))).length ≤ s.pending.length :=
     List.length_filter_le _ _
   refine ⟨nodup_map_filter _ _ I.pendingNodup, Nat.le_trans hlen I.pendingLe,
-    fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, ?_, ?_, I.bytesLe, I.bytesFuture,
+    fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, ?_,
+    fun d => Nat.le_trans (Nat.sub_le _ _) (I.bytesLe d), spent_settle I.spentLe k 0 (by omega), I.readWindow,
     I.ledgerNodup, I.ledgerCap, I.r2Nodup, I.r2Le, I.r2Clock, I.r2Fresh, I.tracked, I.writingNodup, ?_, ?_⟩
   · intro d; simp only [release, dec]; split
     · have := I.fillsLe d; omega
     · exact I.fillsLe d
-  · have := Nat.mul_le_mul_left P.maxFillBytes hlen
-    have := I.bytesToday
-    simp only [release]; omega
   · intro w hww
     obtain ⟨p, hp, hpw⟩ := List.mem_map.mp (I.writingPending w hww)
     refine List.mem_map.mpr ⟨p, List.mem_filter.mpr ⟨hp, ?_⟩, hpw⟩
@@ -637,7 +836,7 @@ theorem inv_store {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) (b
     (hlive : pendingLive P s s.clock k) : Inv P (store s k b) := by
   have hfilt : ∀ o ∈ s.r2.filter (fun o => decide (o.key ≠ k)), o ∈ s.r2 ∧ o.key ≠ k := by
     intro o ho; have := List.mem_filter.mp ho; simpa using this
-  refine ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesToday, I.bytesLe, I.bytesFuture,
+  refine ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesLe, I.spentLe, I.readWindow,
     I.ledgerNodup, I.ledgerCap, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · simp only [store, List.map_append, List.map_cons, List.map_nil]
     refine List.nodup_append.mpr ⟨nodup_map_filter _ _ I.r2Nodup, by simp, ?_⟩
@@ -680,38 +879,13 @@ theorem complete_pending {P : Params} {s : State} (I : Inv P s) {k : Key} (hk : 
     (s.pending.filter (fun p => decide (p.1 ≠ k))).length + 1 = s.pending.length :=
   length_filter_key I.pendingNodup hk
 
-theorem bytes_after_complete {P : Params} {s : State} (I : Inv P s) {k : Key} (hk : k ∈ pendingKeys s)
-    (n : Nat) (hn : n ≤ P.maxFillBytes) :
-    bump s.bytes (dayOf s.clock) n (dayOf s.clock) +
-        P.maxFillBytes * (s.pending.filter (fun p => decide (p.1 ≠ k))).length ≤
-      P.lim.dailyFillBytes + P.maxFillBytes * P.lim.maxInflightFills := by
-  have hlen := complete_pending I hk
-  have := I.bytesToday
-  rw [← hlen, Nat.mul_succ] at this
-  simp only [bump, ite_true]
-  omega
-
-theorem bytesLe_after_complete {P : Params} {s : State} (I : Inv P s) {k : Key} (hk : k ∈ pendingKeys s)
-    (n : Nat) (hn : n ≤ P.maxFillBytes) :
-    ∀ d, bump s.bytes (dayOf s.clock) n d ≤ P.lim.dailyFillBytes + P.maxFillBytes * P.lim.maxInflightFills := by
-  intro d
-  by_cases hd : d = dayOf s.clock
-  · subst hd; have := bytes_after_complete I hk n hn; omega
-  · simp only [bump, hd, ite_false]; exact I.bytesLe d
-
-theorem bytesFuture_after_complete {P : Params} {s : State} (I : Inv P s) (n : Nat) :
-    ∀ d, dayOf s.clock < d → bump s.bytes (dayOf s.clock) n d = 0 := by
-  intro d hd
-  simp only [bump, show d ≠ dayOf s.clock by omega, ite_false]
-  exact I.bytesFuture d hd
-
 theorem inv_completeFail {P : Params} {s : State} (I : Inv P s) (k : Key) (r : Reason) (retry n : Nat)
-    (hk : k ∈ pendingKeys s) (hw : k ∉ s.writing) (hn : n ≤ P.maxFillBytes) :
+    (hk : k ∈ pendingKeys s) (hw : k ∉ s.writing) (hn : s.reads k ≤ n) :
     Inv P (complete P s k (.fail r retry n)) := by
   have hlen := complete_pending I hk
   refine ⟨nodup_map_filter _ _ I.pendingNodup, by simp only [complete]; have := I.pendingLe; omega,
     fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, I.fillsLe,
-    bytes_after_complete I hk n hn, bytesLe_after_complete I hk n hn, bytesFuture_after_complete I n,
+    fun d => Nat.le_trans (Nat.sub_le _ _) (I.bytesLe d), spent_settle I.spentLe k n hn, I.readWindow,
     I.ledgerNodup, I.ledgerCap, I.r2Nodup, I.r2Le, I.r2Clock, I.r2Fresh, I.tracked, I.writingNodup, ?_, ?_⟩
   · intro w hww
     obtain ⟨p, hp, hpw⟩ := List.mem_map.mp (I.writingPending w hww)
@@ -738,14 +912,9 @@ theorem upsertRow_keep {rows : List Row} (row : Row) :
   · have := (List.mem_filter.mp hr).2; simp [hk] at this
   · simpa using hr
 
-theorem inv_completeOk {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) (b : Nat) (reused : Bool)
-    (hk : k ∈ pendingKeys s) (hb : b ≤ P.lim.maxPackBytes) (hsize : ∀ o ∈ s.r2, o.key = k → o.bytes ≤ b) :
-    Inv P (complete P s k (.ok b reused)) := by
-  have hlen := complete_pending I hk
-  have hn : (if reused = true then 0 else b) ≤ P.maxFillBytes := by
-    split
-    · exact Nat.zero_le _
-    · exact Nat.le_trans hb W.pack_le_fill
+theorem inv_completeOk {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) (b c : Nat)
+    (hb : b ≤ P.lim.maxPackBytes) (hsize : ∀ o ∈ s.r2, o.key = k → o.bytes ≤ b)
+    (hc : s.reads k ≤ c) : Inv P (complete P s k (.ok b c)) := by
   -- writing after `erase`
   have hwnd : (s.writing.erase k).Nodup := I.writingNodup.erase k
   have hwmem : ∀ w, w ≠ k → w ∈ s.writing → w ∈ s.writing.erase k :=
@@ -768,7 +937,7 @@ theorem inv_completeOk {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Ke
       intro o ho; have := List.mem_filter.mp ho; simpa using this
     refine ⟨nodup_map_filter _ _ I.pendingNodup, Nat.le_trans (List.length_filter_le _ _) I.pendingLe,
       fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, I.fillsLe,
-      bytes_after_complete I hk _ hn, bytesLe_after_complete I hk _ hn, bytesFuture_after_complete I _,
+      fun d => Nat.le_trans (Nat.sub_le _ _) (I.bytesLe d), spent_settle I.spentLe k c hc, I.readWindow,
       nodup_map_filter _ _ I.ledgerNodup, Nat.le_trans (sumBy_filter_le _ _ _) I.ledgerCap,
       nodup_map_filter _ _ I.r2Nodup, fun o ho => I.r2Le o (hfilt o ho).1,
       fun o ho => I.r2Clock o (hfilt o ho).1, fun o ho => I.r2Fresh o (hfilt o ho).1, ?_, hwnd, hwpend, hwlive⟩
@@ -794,7 +963,7 @@ theorem inv_completeOk {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Ke
       intro o ho; rw [h2] at ho; have := List.mem_filter.mp ho; simpa using this
     refine ⟨nodup_map_filter _ _ I.pendingNodup, Nat.le_trans (List.length_filter_le _ _) I.pendingLe,
       fun p hp => I.pendingClock p (List.mem_filter.mp hp).1, I.fillsLe,
-      bytes_after_complete I hk _ hn, bytesLe_after_complete I hk _ hn, bytesFuture_after_complete I _,
+      fun d => Nat.le_trans (Nat.sub_le _ _) (I.bytesLe d), spent_settle I.spentLe k c hc, I.readWindow,
       by rw [h1]; exact nodup_map_filter _ _ hrows_nd, h3,
       by rw [h2]; exact nodup_map_filter _ _ I.r2Nodup, fun o ho => I.r2Le o (hr2 o ho).1,
       fun o ho => I.r2Clock o (hr2 o ho).1, fun o ho => I.r2Fresh o (hr2 o ho).1, ?_, hwnd, hwpend, hwlive⟩
@@ -815,7 +984,7 @@ theorem inv_completeOk {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Ke
 theorem inv_takedown {P : Params} {s : State} (I : Inv P s) (r : Nat) : Inv P (takedown P s r) := by
   have hfilt : ∀ o ∈ s.r2.filter (fun o => decide (o.key.repo ≠ r)), o ∈ s.r2 ∧ o.key.repo ≠ r := by
     intro o ho; have := List.mem_filter.mp ho; simpa using this
-  refine ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesToday, I.bytesLe, I.bytesFuture,
+  refine ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesLe, I.spentLe, I.readWindow,
     nodup_map_filter _ _ I.ledgerNodup, Nat.le_trans (sumBy_filter_le _ _ _) I.ledgerCap,
     nodup_map_filter _ _ I.r2Nodup, fun o ho => I.r2Le o (hfilt o ho).1,
     fun o ho => I.r2Clock o (hfilt o ho).1, fun o ho => I.r2Fresh o (hfilt o ho).1, ?_,
@@ -829,7 +998,7 @@ theorem inv_takedown {P : Params} {s : State} (I : Inv P s) (r : Nat) : Inv P (t
 theorem inv_expire {P : Params} {s : State} (I : Inv P s) (k : Key) :
     Inv P { s with r2 := s.r2.filter (fun o => decide (o.key ≠ k)) } := by
   have hfilt : ∀ o ∈ s.r2.filter (fun o => decide (o.key ≠ k)), o ∈ s.r2 := fun o ho => (List.mem_filter.mp ho).1
-  exact ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesToday, I.bytesLe, I.bytesFuture,
+  exact ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesLe, I.spentLe, I.readWindow,
     I.ledgerNodup, I.ledgerCap, nodup_map_filter _ _ I.r2Nodup, fun o ho => I.r2Le o (hfilt o ho),
     fun o ho => I.r2Clock o (hfilt o ho), fun o ho => I.r2Fresh o (hfilt o ho),
     fun o ho => I.tracked o (hfilt o ho), I.writingNodup, I.writingPending, I.writingLive⟩
@@ -839,25 +1008,47 @@ theorem inv_tick {P : Params} {s : State} (I : Inv P s) (t : Nat) (ht : s.clock 
   have hfilt : ∀ o ∈ s.r2.filter (fun o => decide (t < o.createdAt + (P.lifecycleDays + P.lifecycleDelayDays) * day)),
       o ∈ s.r2 ∧ t < o.createdAt + (P.lifecycleDays + P.lifecycleDelayDays) * day := by
     intro o ho; have := List.mem_filter.mp ho; simpa using this
-  have hday : dayOf s.clock ≤ dayOf t := Nat.div_le_div_right ht
-  refine ⟨I.pendingNodup, I.pendingLe, fun p hp => Nat.le_trans (I.pendingClock p hp) ht, I.fillsLe, ?_,
-    I.bytesLe, ?_, I.ledgerNodup, I.ledgerCap, nodup_map_filter _ _ I.r2Nodup,
+  exact ⟨I.pendingNodup, I.pendingLe, fun p hp => Nat.le_trans (I.pendingClock p hp) ht, I.fillsLe,
+    I.bytesLe, I.spentLe, I.readWindow, I.ledgerNodup, I.ledgerCap, nodup_map_filter _ _ I.r2Nodup,
     fun o ho => I.r2Le o (hfilt o ho).1, fun o ho => Nat.le_trans (I.r2Clock o (hfilt o ho).1) ht,
     fun o ho => (hfilt o ho).2, fun o ho => I.tracked o (hfilt o ho).1, I.writingNodup, I.writingPending, hw⟩
-  · simp only [tick]
-    by_cases hsame : dayOf t = dayOf s.clock
-    · rw [hsame]; exact I.bytesToday
-    · have hz := I.bytesFuture (dayOf t) (by omega)
-      have := Nat.mul_le_mul_left P.maxFillBytes I.pendingLe
-      rw [hz]; omega
-  · intro d hd; exact I.bytesFuture d (by simp only [tick] at hd; omega)
+
+theorem inv_fetch {P : Params} (W : P.WF) {s : State} (I : Inv P s) (k : Key) (m : Nat)
+    (hk : k ∈ pendingKeys s) (hlive : pendingLive P s s.clock k) (hm : s.reads k + m ≤ P.maxFillBytes) :
+    Inv P (fetch s k m) := by
+  obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hk
+  have hat : (fun d => atKey s.pending p.1 m d) = (fun d => if dayOf p.2 = d then m else 0) :=
+    funext fun _ => atKey_of_mem I.pendingNodup hp
+  refine ⟨I.pendingNodup, I.pendingLe, I.pendingClock, I.fillsLe, I.bytesLe, ?_, ?_, I.ledgerNodup, I.ledgerCap,
+    I.r2Nodup, I.r2Le, I.r2Clock, I.r2Fresh, I.tracked, I.writingNodup, I.writingPending, I.writingLive⟩
+  · intro d
+    have h1 := held_fetch P s p.1 m d hm
+    have h2 := I.spentLe d
+    show s.spent d + atKey s.pending p.1 m d + held P (fetch s p.1 m) d ≤ s.bytes d
+    omega
+  · intro a n
+    have hw := I.readWindow a n
+    have hb := window_bump s.readOn (dayOf s.clock) m a n
+    have hs := window_add s.spent (fun d => atKey s.pending p.1 m d) (a - 1) (n + 1)
+    rw [hat, window_ind] at hs
+    show window (bump s.readOn (dayOf s.clock) m) a n ≤
+      window (fun d => s.spent d + atKey s.pending p.1 m d) (a - 1) (n + 1)
+    rw [hb, hs]
+    have e1 : dayOf p.2 ≤ dayOf s.clock := Nat.div_le_div_right (I.pendingClock p hp)
+    have e2 : dayOf s.clock ≤ dayOf p.2 + 1 := by
+      have hl := hlive p hp rfl
+      have hd := W.pending_le_day
+      simp only [dayOf, day] at *
+      omega
+    split <;> split <;> omega
 
 theorem inv_step {P : Params} (W : P.WF) {s s' : State} (I : Inv P s) (h : Step P s s') : Inv P s' := by
   cases h with
   | request k => exact inv_request W I k
-  | release k hw => exact inv_release I k hw
+  | release k hw hr => exact inv_release I k hw hr
+  | fetch k m hk hlive hm => exact inv_fetch W I k m hk hlive hm
   | store k b hk hw hb hlive => exact inv_store W I k b hk hw hb hlive
-  | completeOk k b reused hk hb hsize _ => exact inv_completeOk W I k b reused hk hb hsize
+  | completeOk k b c _ hb hsize hc _ => exact inv_completeOk W I k b c hb hsize hc
   | completeFail k r retry n hk hw hn _ => exact inv_completeFail I k r retry n hk hw hn
   | prune => exact inv_prune W I
   | takedown r => exact inv_takedown I r
@@ -888,8 +1079,21 @@ theorem inflight_le : s.pending.length ≤ P.lim.maxInflightFills ∧ s.writing.
 
 theorem daily_fills_le (d : Nat) : s.fills d ≤ P.lim.dailyFillLimit := (reachable_inv W R).fillsLe d
 
-theorem daily_bytes_le (d : Nat) :
-    s.bytes d ≤ P.lim.dailyFillBytes + P.maxFillBytes * P.lim.maxInflightFills := (reachable_inv W R).bytesLe d
+theorem daily_bytes_le (d : Nat) : s.bytes d ≤ P.lim.dailyFillBytes := (reachable_inv W R).bytesLe d
+
+/-- Every byte fetched for the fills reserved on a day is charged to that day,
+whether or not their `complete` ever ran. -/
+theorem spent_le_bytes (d : Nat) : s.spent d ≤ s.bytes d := by
+  have := (reachable_inv W R).spentLe d
+  omega
+
+theorem daily_spent_le (d : Nat) : s.spent d ≤ P.lim.dailyFillBytes :=
+  Nat.le_trans (spent_le_bytes W R d) (daily_bytes_le W R d)
+
+/-- Bytes fetched from GitHub in any `n` consecutive UTC days are at most
+`n + 1` days of the byte budget. -/
+theorem fetched_window_le (a n : Nat) : window s.readOn a n ≤ (n + 1) * P.lim.dailyFillBytes :=
+  Nat.le_trans ((reachable_inv W R).readWindow a n) (window_le _ _ _ (daily_spent_le W R) _)
 
 theorem ledger_le_cap : sumBy Row.bytes s.ledger ≤ P.lim.storageCapBytes := (reachable_inv W R).ledgerCap
 
@@ -934,11 +1138,12 @@ theorem r2_le_cap_when_quiescent (h : s.writing = []) : sumBy Obj.bytes s.r2 ≤
 end
 
 /-- A fill starts only for a key that is not already pending, below the
-in-flight cap, and below both daily budgets. -/
+in-flight cap and the daily fill count, and when its whole reservation fits in
+the day's bytes. -/
 theorem queued_only_within_limits {P : Params} {s : State} (k : Key) (h : (requestFill P s k).1 = .queued) :
     k ∉ pendingKeys (prune P s) ∧ (prune P s).pending.length < P.lim.maxInflightFills ∧
       (prune P s).fills (dayOf s.clock) < P.lim.dailyFillLimit ∧
-      (prune P s).bytes (dayOf s.clock) < P.lim.dailyFillBytes := by
+      (prune P s).bytes (dayOf s.clock) + P.maxFillBytes ≤ P.lim.dailyFillBytes := by
   rcases requestFill_cases P s k with ⟨hq, _⟩ | ⟨_, hk, hlen, hf, hb, _, _⟩
   · exact absurd h hq
   · exact ⟨hk, hlen, hf, hb⟩
@@ -998,15 +1203,16 @@ theorem blocks_step {P : Params} (W : P.WF) {r t0 : Nat} {s s' : State}
             · simp [prune, hneg, show ¬ u ≤ s.clock by simp only [prune] at hc; omega]
             · simp only [prune] at hc ⊢; omega
           simp [this] at hlive
-  | release k _ =>
+  | release k _ _ =>
     exact ⟨B.started, B.negative, B.noRows, B.onlyWrites,
       fun hc p hp => B.oldPending hc p (List.mem_filter.mp hp).1⟩
+  | fetch k m _ _ _ => exact ⟨B.started, B.negative, B.noRows, B.onlyWrites, B.oldPending⟩
   | store k b hk _ _ _ =>
     refine ⟨B.started, B.negative, B.noRows, fun hc o ho hr => ?_, B.oldPending⟩
     rcases List.mem_append.mp ho with ho | ho
     · exact List.mem_cons_of_mem _ (B.onlyWrites hc o (List.mem_filter.mp ho).1 hr)
     · simp at ho; subst ho; exact List.mem_cons_self
-  | completeOk k b reused hk _ _ hlive =>
+  | completeOk k b c hk _ _ _ hlive =>
     have hsub : ∀ w, w ≠ k → w ∈ s.writing → w ∈ s.writing.erase k :=
       fun w hne hw => (List.mem_erase_of_ne hne).mpr hw
     simp only [complete]

@@ -102,7 +102,9 @@ function tomlValue(v) {
 
 // --- services/wit-cache/src/config.js (imported, so these are the real values) ---
 const configUrl = pathToFileURL(join(root, "services/wit-cache/src/config.js")).href;
-const { DEFAULTS, NEGATIVE_TTL, REPO_SCOPED, PENDING_TTL_SECONDS } = await import(configUrl);
+const { DEFAULTS, NEGATIVE_TTL, REPO_SCOPED, PENDING_TTL_SECONDS, fillReserveBytes, limitsFromEnv } = await import(
+  configUrl
+);
 
 const limitFields = {
   MAX_PACK_BYTES: "maxPackBytes",
@@ -147,11 +149,49 @@ if (/DELETE FROM packs WHERE key = \?`, key\);\s*this\.rows\(`INSERT INTO pendin
   fail(`${coordinatorRel}: requestFill must not drop the ledger row of the key it queues (Wit.Coordinator)`);
 }
 match(coordinatorRel, coordinator, /if \(this\.isBlocked\(repo, now\)\)/, "the takedown check in complete");
+// Byte reservations (Wit.Coordinator.requestFill / settle / complete).
+const requestFillBody = match(coordinatorRel, coordinator, /\n  requestFill\(job\) \{[\s\S]*?\n  \}\n/, "requestFill")[0];
+match(coordinatorRel, requestFillBody, /const reserve = fillReserveBytes\(this\.limits\);/, "the reservation size");
+match(
+  coordinatorRel,
+  requestFillBody,
+  /used\.bytes \+ reserve > this\.limits\.DAILY_FILL_BYTES\) \{\s*return \{ status: "skipped", reason: "daily_budget" \}/,
+  "the byte gate that admits a fill only when its whole reservation fits",
+);
+match(coordinatorRel, requestFillBody, /this\.bumpDaily\(day, 1, reserve\);/, "the reservation charge");
+const settleBody = match(coordinatorRel, coordinator, /\n  settle\(key, id, charge\) \{[\s\S]*?\n  \}\n/, "settle")[0];
+match(coordinatorRel, settleBody, /if \(!row \|\| \(id !== undefined && row\.id !== id\)\) return false;/, "the reservation id check");
+match(coordinatorRel, settleBody, /Math\.min\(charge, row\.reserved\) : row\.reserved;/, "the settlement cap");
+const byteCharges = [...coordinator.matchAll(/this\.bumpDaily\((.*)\);/g)].filter((m) => !/, 0\)?$/.test(m[1]));
+if (/UPDATE daily SET bytes = [^`]*\+/.test(coordinator) || byteCharges.length !== 1 || byteCharges[0][1] !== "day, 1, reserve") {
+  fail(`${coordinatorRel}: bytes may only be charged by requestFill's reservation (Wit.Coordinator)`);
+}
+match(
+  coordinatorRel,
+  coordinator,
+  /async complete\(outcome\) \{[^}]*?\n    this\.settle\(key, outcome\.reservation, outcome\.bytesRead \?\? \(outcome\.ok \? outcome\.bytes : undefined\)\);/,
+  "complete settling the reservation before anything else",
+);
 const takedownBody = match(coordinatorRel, coordinator, /async takedown\(target\) \{[\s\S]*?\n  \}\n/, "takedown")[0];
 const blockAt = takedownBody.indexOf("INSERT INTO negatives");
 const firstAwait = takedownBody.indexOf("await ");
 if (blockAt < 0 || (firstAwait >= 0 && firstAwait < blockAt)) {
   fail(`${coordinatorRel}: takedown must record the block before its first await (Wit.Coordinator models it as one step)`);
+}
+
+// --- services/wit-cache/src/index.js: a redelivered fill job never fetches (Wit.Coordinator.fetch) ---
+const indexRel = "services/wit-cache/src/index.js";
+const indexSrc = read(indexRel);
+match(
+  indexRel,
+  indexSrc,
+  /const outcome = \(deps\.attempts \?\? 1\) > 1 \? await recheckOutcome\(env, job\) : await fillOutcome\(env, job, deps\);/,
+  "runFillJob dispatching redeliveries to recheckOutcome",
+);
+match(indexRel, indexSrc, /await runFillJob\(env, job, \{ attempts: message\.attempts \}\);/, "the queue passing message.attempts");
+const recheckBody = match(indexRel, indexSrc, /async function recheckOutcome\(env, job\) \{[\s\S]*?\n\}\n/, "recheckOutcome")[0];
+if (/fillPack|fetch|bytesRead/.test(recheckBody)) {
+  fail(`${indexRel}: recheckOutcome must not fetch or report bytes read (one reservation per job)`);
 }
 
 // --- services/wit-cache/wrangler.toml ---
@@ -172,6 +212,8 @@ const limiter = (name) => {
 };
 const readLimiter = limiter("READ_LIMITER");
 const fillLimiter = limiter("FILL_LIMITER");
+const reserveDefaults = nat(fillReserveBytes(DEFAULTS), "fillReserveBytes(DEFAULTS)");
+const reserveDeployed = nat(fillReserveBytes(limitsFromEnv(vars)), "fillReserveBytes(limitsFromEnv(vars))");
 const cpuMs = wrangler.limits?.cpu_ms;
 if (cpuMs == null) fail("wrangler.toml [limits].cpu_ms is missing");
 if (wrangler.observability?.enabled == null) fail("wrangler.toml [observability].enabled is missing");
@@ -322,6 +364,9 @@ for (const reason of REPO_SCOPED) if (!(reason in NEGATIVE_TTL)) fail(`REPO_SCOP
 emit("");
 emit("/-- `PENDING_TTL_SECONDS` in `services/wit-cache/src/config.js`. -/");
 emit(`def pendingTtlSeconds : Nat := ${nat(PENDING_TTL_SECONDS, "PENDING_TTL_SECONDS")}`);
+emit("/-- `fillReserveBytes` in `services/wit-cache/src/config.js`, at `DEFAULTS` and at the deployed limits. -/");
+emit(`def fillReserveDefaults : Nat := ${reserveDefaults}`);
+emit(`def fillReserveDeployed : Nat := ${reserveDeployed}`);
 emit("/-- Retry-After cap in `FillCoordinator.complete`. -/");
 emit(`def rateLimitedTtlCap : Nat := ${nat(rateLimitedCap, "rate limit cap")}`);
 emit("/-- Days a ledger row outlives `RETENTION_DAYS` in `FillCoordinator.prune`. -/");

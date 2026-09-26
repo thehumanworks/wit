@@ -12,10 +12,12 @@ the Worker runs with (`DEFAULTS` overridden by wrangler `[vars]`, as
 cap in either place past what the free tiers allow breaks the build.
 
 The per-day quantities come from `Wit.Coordinator` (`daily_fills_le`,
-`daily_bytes_le`, `r2_le_ledger_plus_writing`); the per-operation counts come
-from `services/wit-cache/src` as described on each field. A month has at most
-`31 × dailyFillLimit` fills started in it plus `maxInflightFills` carried over
-from the previous month.
+`daily_bytes_le`, `fetched_window_le`, `r2_le_ledger_plus_writing`); the
+per-operation counts come from `services/wit-cache/src` as described on each
+field. A month has at most `31 × dailyFillLimit` fills started in it plus
+`maxInflightFills` carried over from the previous month, and the consumer
+fetches at most `32 × dailyFillBytes` in any 31 days, because every fetch is
+covered by a reservation charged to the same or the previous UTC day.
 -/
 
 namespace Wit.Budget
@@ -30,8 +32,9 @@ def deployed : Limits := Src.workerDefaults.override Src.wranglerVars
 `PackVerifier.update` counts a chunk before rejecting it. -/
 def maxFillBytes (l : Limits) : Nat := l.maxPackBytes + (Src.maxPktLen - 5)
 
-/-- `Coordinator.daily_bytes_le`: bytes counted in one UTC day. -/
-def dailyBytesBound (l : Limits) : Nat := l.dailyFillBytes + maxFillBytes l * l.maxInflightFills
+/-- Most bytes fetched from GitHub in `monthDays` consecutive days
+(`Coordinator.fetched_window_le`). -/
+def monthlyFetchBound (l : Limits) : Nat := (Assume.monthDays + 1) * l.dailyFillBytes
 
 /-- Fill messages in one month: the coordinator enqueues one per counted fill. -/
 def monthlyFills (l : Limits) : Nat := Assume.monthDays * l.dailyFillLimit + l.maxInflightFills
@@ -151,12 +154,12 @@ structure Fits (l : Limits) : Prop where
     Assume.baselineStorageBytes + l.storageCapBytes + 1000000000 ≤ Assume.r2FreeStorageBytes
   /-- Monthly average storage. Bytes outside the ledger are a fill's upload between
   its first part and its `complete`, all inside one consumer invocation, so each
-  counted byte spends at most `queueConsumerWallMs` outside the cap. Averaged over
-  the month: `baseline + cap + dailyBytesBound × wall / day ≤ 10 GB`. -/
+  fetched byte spends at most `queueConsumerWallMs` outside the cap. Averaged over
+  the month: `baseline + cap + monthlyFetchBound × wall / month ≤ 10 GB`. -/
   storageMonthlyAverage :
-    (Assume.baselineStorageBytes + l.storageCapBytes) * (86400 * 1000) +
-        dailyBytesBound l * Assume.queueConsumerWallMs ≤
-      Assume.r2FreeStorageBytes * (86400 * 1000)
+    (Assume.baselineStorageBytes + l.storageCapBytes) * (Assume.monthDays * 86400 * 1000) +
+        monthlyFetchBound l * Assume.queueConsumerWallMs ≤
+      Assume.r2FreeStorageBytes * (Assume.monthDays * 86400 * 1000)
   /-- R2 Class A, queue retries included (`month_classA_le`). -/
   classA : classAWorstCase l ≤ Assume.r2FreeClassA
   /-- R2 Class B: one GET or HEAD per client request, one HEAD per fill run. -/
@@ -166,10 +169,13 @@ structure Fits (l : Limits) : Prop where
   requests :
     Assume.baselineRequests + clientRequestHeadroom + runsPerMessage * monthlyFills l ≤
       Assume.workersIncludedRequests
-  /-- Workers CPU: fills at 14 ms/MB over a month of counted bytes leave 20M CPU-ms. -/
+  /-- Workers CPU: fills at 14 ms/MB over a month of fetched bytes leave 20M CPU-ms
+  (`cpu_worst_case_le_included`). -/
   cpu :
-    Assume.baselineCpuMs * 1000000 + Assume.monthDays * dailyBytesBound l * Assume.fillCpuMsPerMB +
+    Assume.baselineCpuMs * 1000000 + monthlyFetchBound l * Assume.fillCpuMsPerMB +
         requestCpuHeadroomMs * 1000000 ≤ Assume.workersIncludedCpuMs * 1000000
+  /-- One reservation fits in a day's byte budget, so fills can be queued at all. -/
+  reserveFits : maxFillBytes l ≤ l.dailyFillBytes
   /-- The largest fill fits in one invocation's `cpu_ms`. -/
   fillCpu : maxFillBytes l * Assume.fillCpuMsPerMB ≤ Src.cpuMsPerInvocation * 1000000
   /-- Queues: a write and an ack per message plus one read per run. -/
@@ -209,6 +215,19 @@ theorem deployed_classA_worst_case : classAWorstCase deployed = 711280 := by dec
 
 theorem defaults_classA_worst_case : classAWorstCase Src.workerDefaults = 711280 := by decide
 
+/-- Worst-case fill CPU in a month, in CPU-ms. -/
+def fillCpuWorstCaseMs (l : Limits) : Nat := monthlyFetchBound l * Assume.fillCpuMsPerMB / 1000000
+
+/-- 32 days × 8 GB fetched at 14 ms/MB. -/
+theorem deployed_cpu_worst_case : fillCpuWorstCaseMs deployed = 3584000 := by decide
+
+theorem defaults_cpu_worst_case : fillCpuWorstCaseMs Src.workerDefaults = 3584000 := by decide
+
+/-- The coordinator reserves `fillReserveBytes(limits)` per fill: the model's `maxFillBytes`. -/
+theorem reserve_matches_defaults : Src.fillReserveDefaults = maxFillBytes Src.workerDefaults := by decide
+
+theorem reserve_matches_deployed : Src.fillReserveDeployed = maxFillBytes deployed := by decide
+
 /-- ADR 0009 once said one pack is at most 1/6 of the store; it is not. -/
 theorem six_packs_exceed_cap : Src.workerDefaults.storageCapBytes < 6 * Src.workerDefaults.maxPackBytes := by
   decide
@@ -223,6 +242,7 @@ theorem params_wf (l : Limits) (h : Fits l) : (params l).WF where
     have : Assume.lifecycleDelayDays ≤ Src.ledgerGraceDays := by decide
     omega
   lifecycle_pos := by simp only [params]; decide
+  pending_le_day := by simp only [params]; decide
   block_dominates := by
     intro r hr hb
     cases r <;> simp_all [params] <;> decide
@@ -242,13 +262,41 @@ theorem deployed_ledger_le : sumBy Row.bytes s.ledger ≤ 3000000000 :=
 theorem deployed_r2_peak : sumBy Obj.bytes s.r2 ≤ 3000000000 + 4 * 536870912 :=
   r2_le_cap_plus_inflight deployed_wf R
 
-/-- Bytes counted per UTC day stay under 8 GB plus four fills' overshoot. -/
-theorem deployed_daily_bytes (d : Nat) : s.bytes d ≤ dailyBytesBound deployed :=
+/-- Bytes charged per UTC day, reservations included, stay under 8 GB. -/
+theorem deployed_daily_bytes (d : Nat) : s.bytes d ≤ 8000000000 :=
   daily_bytes_le deployed_wf R d
 
 theorem deployed_daily_fills (d : Nat) : s.fills d ≤ 300 :=
   daily_fills_le deployed_wf R d
 
 end
+
+/-- ADR 0009: Worker CPU in any 31 consecutive days stays within the 30M CPU-ms
+included, for any limits that pass `Fits` and any reachable coordinator state.
+Reachability allows every `complete` to fail or never arrive: an expired
+reservation stays charged, so the fetches it covered still count against its day. -/
+theorem cpu_worst_case_le_included (l : Limits) (h : Fits l) {s : Coordinator.State}
+    (R : Coordinator.Reachable (params l) s) (a : Nat) :
+    Assume.baselineCpuMs * 1000000 +
+        Coordinator.window s.readOn a Assume.monthDays * Assume.fillCpuMsPerMB +
+        requestCpuHeadroomMs * 1000000 ≤ Assume.workersIncludedCpuMs * 1000000 := by
+  have hw : Coordinator.window s.readOn a Assume.monthDays ≤ monthlyFetchBound l :=
+    Coordinator.fetched_window_le (params_wf l h) R a Assume.monthDays
+  have hm := Nat.mul_le_mul_right Assume.fillCpuMsPerMB hw
+  exact Nat.le_trans (Nat.add_le_add_right (Nat.add_le_add_left hm _) _) h.cpu
+
+theorem deployed_cpu_le_included {s : Coordinator.State} (R : Coordinator.Reachable (params deployed) s)
+    (a : Nat) :
+    Assume.baselineCpuMs * 1000000 +
+        Coordinator.window s.readOn a Assume.monthDays * Assume.fillCpuMsPerMB +
+        requestCpuHeadroomMs * 1000000 ≤ Assume.workersIncludedCpuMs * 1000000 :=
+  cpu_worst_case_le_included deployed deployed_fits R a
+
+theorem defaults_cpu_le_included {s : Coordinator.State}
+    (R : Coordinator.Reachable (params Src.workerDefaults) s) (a : Nat) :
+    Assume.baselineCpuMs * 1000000 +
+        Coordinator.window s.readOn a Assume.monthDays * Assume.fillCpuMsPerMB +
+        requestCpuHeadroomMs * 1000000 ≤ Assume.workersIncludedCpuMs * 1000000 :=
+  cpu_worst_case_le_included Src.workerDefaults defaults_fits R a
 
 end Wit.Budget

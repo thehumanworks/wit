@@ -56,6 +56,9 @@ def repoScoped : Reason → Bool
 
 /-- `PENDING_TTL_SECONDS` in `services/wit-cache/src/config.js`. -/
 def pendingTtlSeconds : Nat := 1200
+/-- `fillReserveBytes` in `services/wit-cache/src/config.js`, at `DEFAULTS` and at the deployed limits. -/
+def fillReserveDefaults : Nat := 536936427
+def fillReserveDeployed : Nat := 536936427
 /-- Retry-After cap in `FillCoordinator.complete`. -/
 def rateLimitedTtlCap : Nat := 3600
 /-- Days a ledger row outlives `RETENTION_DAYS` in `FillCoordinator.prune`. -/
