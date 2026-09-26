@@ -33,3 +33,6 @@ docs/try/wit_snapshot.wasm
 
 # SDK build output (published from CI, never committed)
 sdk/typescript/dist/
+
+# Lean build output (formal/)
+formal/.lake/
