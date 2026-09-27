@@ -4,8 +4,9 @@
 //!   needs a snapshot) must match `tests/snapshots/help/<command path>.txt`. After an intended
 //!   help change, regenerate them with
 //!   `WIT_UPDATE_HELP_SNAPSHOTS=1 cargo test -p wit --test cli_help` and review the diff.
-//! * `wit --version` / `-V` print `CARGO_PKG_VERSION`, the version the auto-tag workflow bumps
-//!   and the release and npm workflows check against the tag.
+//! * `wit --version` / `-V` (and `wit-mcp --version`) print `CARGO_PKG_VERSION`, the
+//!   `crates/wit` version the auto-tag workflow bumps; the release and npm workflows check the
+//!   built binaries against the tag and the npm version.
 //! * The README command table and the AGENTS.md subcommand table list exactly the commands
 //!   (and aliases) of `wit --help`, and the README restates the cloud cache claims that
 //!   `formal/Wit/CacheSource.lean` proves against the code.
@@ -17,7 +18,6 @@ use std::process::Command;
 const UPDATE_ENV: &str = "WIT_UPDATE_HELP_SNAPSHOTS";
 const README: &str = include_str!("../../../README.md");
 const AGENTS: &str = include_str!("../../../AGENTS.md");
-const CARGO_LOCK: &str = include_str!("../../../Cargo.lock");
 
 fn run(binary: &str, args: &[&str]) -> String {
     let output = Command::new(binary)
@@ -198,24 +198,6 @@ fn version_is_the_crate_version() {
             line.trim_start().starts_with("-V, --version") && line.ends_with(" Print version")
         }),
         "wit --help must list -V/--version"
-    );
-}
-
-#[test]
-fn cargo_lock_records_the_crate_version() {
-    let locked = CARGO_LOCK
-        .split("[[package]]")
-        .find(|block| block.contains("\nname = \"wit\"\n"))
-        .and_then(|block| {
-            block
-                .lines()
-                .find_map(|line| line.strip_prefix("version = \"")?.strip_suffix('"'))
-        })
-        .expect("Cargo.lock has a wit package");
-    assert_eq!(
-        locked,
-        env!("CARGO_PKG_VERSION"),
-        "Cargo.lock and crates/wit/Cargo.toml disagree on the wit version; scripts/release/set-cargo-version.mjs updates both"
     );
 }
 

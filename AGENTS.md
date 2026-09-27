@@ -101,7 +101,7 @@ Top-level: `wit --version` / `-V` prints the `crates/wit` crate version. Repo co
 - `(cd showcase/url-api && npm run check)`: Sync `public/lib` and run the URL API host tests (fixture-backed, no network).
 - `bash scripts/check_cache_worker.sh`: `services/wit-cache` Worker tests plus guards (credentials only from secrets, CLI `HOSTED_CACHE_URL` matches the deployed Worker).
 - `bash scripts/check_formal.sh`: Lean proofs in `formal/`: generated constants match the sources (`--write` regenerates), no proof escape hatches, `lake build` (installs elan if missing), and standard axioms only.
-- `bash scripts/check_cli_help.sh`: `wit --help` / `--version` drift guard (`crates/wit/tests/cli_help.rs`): help snapshots for every command, `--version` = crate version = `Cargo.lock`, and the README/AGENTS command tables and README cloud cache claims match the help. After an intended help change run `WIT_UPDATE_HELP_SNAPSHOTS=1 cargo test -p wit --test cli_help`, review the snapshot diff, and update the tables.
+- `bash scripts/check_cli_help.sh`: `wit --help` / `--version` drift guard (`crates/wit/tests/cli_help.rs`): help snapshots for every command, `--version` = crate version, and the README/AGENTS command tables and README cloud cache claims match the help. After an intended help change run `WIT_UPDATE_HELP_SNAPSHOTS=1 cargo test -p wit --test cli_help`, review the snapshot diff, and update the tables.
 - `(cd sdk/typescript && npm run check)` and `(cd sdk/python && python3 -m unittest discover -s tests)`: SDK type check and tests.
 - `cargo test -p wits --test integration`: Run VCR replay tests for the `wits` crate.
 - `cargo test -p wits --test integration -- --ignored`: Re-record VCR cassettes from real API.

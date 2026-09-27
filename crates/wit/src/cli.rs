@@ -2878,9 +2878,11 @@ mod tests {
         ));
 
         let root_help = WitCli::command().render_long_help().to_string();
-        assert!(root_help.contains("--backend memory"));
-        assert!(root_help.contains("WIT_SNAPSHOT_BACKEND=memory"));
-        assert!(root_help.contains("Memory covers tree/ls/cat/rg/sed/head/tail"));
+        assert!(root_help.contains("--backend disk|memory"));
+        assert!(root_help.contains("WIT_SNAPSHOT_BACKEND=disk|memory"));
+        assert!(root_help.contains(
+            "repo commands (cache, branches, tree, ls, cat, rg, sed, head, tail, ast) default to the disk backend"
+        ));
         assert!(
             !root_help.contains("does not cover") && !root_help.to_lowercase().contains("lacks rg"),
             "help must not claim memory lacks rg/sed/head/tail"
