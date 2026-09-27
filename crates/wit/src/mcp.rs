@@ -16,7 +16,6 @@ use rmcp::{
     },
     service::RequestContext,
     tool_handler,
-    transport::stdio,
 };
 use serde_json::json;
 use std::{
@@ -231,6 +230,105 @@ impl ServerHandler for WitMcpServer {
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(text, request.uri).with_mime_type("text/markdown"),
         ]))
+    }
+}
+
+/// Stdio transport for the MCP servers: tokio stdin plus a stdout written by a
+/// dedicated thread.
+///
+/// rmcp's `stdio()` writes through `tokio::io::Stdout`, which runs each write on
+/// the shared blocking pool next to stdin's never-ending blocking read. A
+/// response queued shortly after `notifications/initialized` could then stall
+/// forever with no write in flight (the release smoke caught this on macOS and
+/// it reproduces on Linux in roughly one of four runs).
+pub(crate) fn stdio() -> (tokio::io::Stdin, ThreadStdout) {
+    (tokio::io::stdin(), ThreadStdout::spawn())
+}
+
+enum StdoutCommand {
+    Write(Vec<u8>),
+    Flush(tokio::sync::oneshot::Sender<std::io::Result<()>>),
+}
+
+pub(crate) struct ThreadStdout {
+    commands: std::sync::mpsc::Sender<StdoutCommand>,
+    flushing: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
+}
+
+impl ThreadStdout {
+    fn spawn() -> Self {
+        let (commands, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("wit-mcp-stdout".into())
+            .spawn(move || {
+                use std::io::Write;
+                let mut stdout = std::io::stdout().lock();
+                let mut write_error = None;
+                for command in receiver {
+                    match command {
+                        StdoutCommand::Write(bytes) => {
+                            if write_error.is_none() {
+                                write_error = stdout.write_all(&bytes).err();
+                            }
+                        }
+                        StdoutCommand::Flush(done) => {
+                            let result = match write_error.take() {
+                                Some(error) => Err(error),
+                                None => stdout.flush(),
+                            };
+                            let _ = done.send(result);
+                        }
+                    }
+                }
+            })
+            .expect("spawn MCP stdout writer thread");
+        Self {
+            commands,
+            flushing: None,
+        }
+    }
+
+    fn closed() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "MCP stdout writer stopped")
+    }
+}
+
+impl tokio::io::AsyncWrite for ThreadStdout {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(
+            self.commands
+                .send(StdoutCommand::Write(buf.to_vec()))
+                .map(|()| buf.len())
+                .map_err(|_| Self::closed()),
+        )
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.flushing.is_none() {
+            let (done, flushed) = tokio::sync::oneshot::channel();
+            if self.commands.send(StdoutCommand::Flush(done)).is_err() {
+                return std::task::Poll::Ready(Err(Self::closed()));
+            }
+            self.flushing = Some(flushed);
+        }
+        let flushed = self.flushing.as_mut().expect("flush in flight");
+        let result = std::task::ready!(std::pin::Pin::new(flushed).poll(cx));
+        self.flushing = None;
+        std::task::Poll::Ready(result.unwrap_or_else(|_| Err(Self::closed())))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.poll_flush(cx)
     }
 }
 

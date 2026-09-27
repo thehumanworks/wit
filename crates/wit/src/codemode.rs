@@ -17,7 +17,6 @@ use rmcp::{
     },
     model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo, Tool},
     tool_handler,
-    transport::stdio,
 };
 use serde_json::{Map, Value, json};
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -298,7 +297,7 @@ impl ServerHandler for CodeModeMcpServer {
 pub async fn serve_stdio_with_worker(worker: impl Into<PathBuf>) -> anyhow::Result<()> {
     ensure_rustls_provider();
     let service = CodeModeMcpServer::new(worker)
-        .serve(stdio())
+        .serve(crate::mcp::stdio())
         .await
         .inspect_err(|error| tracing::error!(?error, "Code Mode server failed"))?;
     service.waiting().await?;
