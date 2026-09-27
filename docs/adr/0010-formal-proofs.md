@@ -66,6 +66,7 @@ proved.
 | 0009 read-only | [`ReadOnly.lean`](../../formal/Wit/ReadOnly.lean) | `client_sends_no_credentials`, `worker_ignores_authorization`, `worker_upstream_anonymous`, `only_takedown_mutates`, `no_persisted_logs` |
 | 0009 streaming | [`Streaming.lean`](../../formal/Wit/Streaming.lean) | `verifier_state` (the hash covers every byte but the 20-byte trailer, for any chunking), `verifier_accepts_le_cap`, `upload_object_eq_stream` (the stored object is the stream; parts are exactly `PART_BYTES`; a single PUT happens exactly when the pack is under one part) |
 | 0009 keys | [`Keys.lean`](../../formal/Wit/Keys.lean) | `packKey_injective`, `repoPrefix_covers_iff` (a takedown's prefix listing matches exactly that repo's packs), `lifecycle_covers_packs` |
+| 0009 CLI help | [`CacheSource.lean`](../../formal/Wit/CacheSource.lean) | The claims of `wit --help` (`ROOT_AFTER_HELP`, `BACKEND_HELP`, `BRANCHES_BACKEND_HELP` in `cli.rs`) against a model of backend choice, cloud cache configuration, and disk read order built from `snapshot/mod.rs`, `cloud.rs`, and `ops.rs`: `default_backend_matches_help`, `flag_wins_over_env`, `documented_backends_parse`, `release_default_matches_help`, `debug_default_matches_help`, `env_url_enables_any_build`, `disable_values_match_help`, `help_disable_values_disable`, `disk_read_order_matches_help`, `warm_cache_served_locally`, `cloud_first_when_enabled`, `falls_back_to_github`, `cloud_only_when_enabled`, `debug_build_never_cloud`, `release_build_tries_cloud`, `memory_only_github_api`, `memory_no_disk_no_cloud`, `names_match_help`, `cloud_limits_match_help`, `help_no_credentials` |
 | 0002 | [`Swr.lean`](../../formal/Wit/Swr.lean), [`Keys.lean`](../../formal/Wit/Keys.lean) | `revalidate_sound`, `revalidate_keeps_on_failure`, `revalidate_recaches_only_on_change`, `revalidate_follows_remote`; `encodeBranch_injective`, `encodeBranch_injective_folded`, `encodeBranch_path_safe` |
 
 ## Assumptions
@@ -127,6 +128,12 @@ In the models:
   this for the cloud path. The GitHub clone path clones the branch tip at
   clone time, which can already be a newer commit. The next revalidation
   then sees a different SHA and refreshes again.
+- **Help sentences and URL validation.** `CacheSource.lean` reads the help
+  claims from fixed sentences of `ROOT_AFTER_HELP` (the generator fails when
+  one is reworded or dropped), and treats `parse_base_url` as an abstract
+  validity check; the hosted URL passing it is a hypothesis, covered by the
+  Rust test `config_disable_values_and_url_rules`. The rendered help of every
+  command is snapshotted by `crates/wit/tests/cli_help.rs`.
 
 ## Limits
 
