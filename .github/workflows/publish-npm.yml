@@ -160,7 +160,14 @@ jobs:
             fi
             sleep 15
           done
-          npm install -g "${package}"
+          # The version document can resolve before its tarball does (E404).
+          for attempt in 1 2 3 4 5; do
+            npm install -g "${package}" && break
+            if [ "${attempt}" -eq 5 ]; then
+              exit 1
+            fi
+            sleep 15
+          done
           wit --help
           wit rg --help
           wit-mcp --version
@@ -173,6 +180,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Without this, a failing npm/node exit code never throws, so the
+          # registry wait loop below exits on its first attempt.
+          $PSNativeCommandUseErrorActionPreference = $true
           $package = "${{ needs.publish.outputs.package_name }}@${{ needs.publish.outputs.version }}"
           $maxAttempts = 40
           $attempt = 0
@@ -188,7 +198,17 @@ jobs:
               Start-Sleep -Seconds 15
             }
           }
-          npm install -g $package
+          for ($installAttempt = 1; ; $installAttempt++) {
+            try {
+              npm install -g $package
+              break
+            } catch {
+              if ($installAttempt -ge 5) {
+                throw
+              }
+              Start-Sleep -Seconds 15
+            }
+          }
           wit --help
           wit rg --help
           wit-mcp --version

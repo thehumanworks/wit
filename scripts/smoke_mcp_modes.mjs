@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import path from "node:path";
 import readline from "node:readline";
+
+const TIMEOUT_MS = 15_000;
+// A request that trails `notifications/initialized` by a few tens of milliseconds
+// is the pattern that stalled optimized servers writing via `tokio::io::Stdout`.
+const POST_INITIALIZED_PAUSE_MS = 50;
 
 const binary = process.argv[2];
 const prefixArgs = process.argv.slice(3);
@@ -25,9 +31,21 @@ function fail(message) {
   throw new Error(message);
 }
 
+// npm installs bare commands as `.cmd` shims on Windows, which only a shell can
+// launch. cmd.exe parses `/` in a relative path as a switch, so explicit paths
+// are resolved and spawned directly instead.
+function spawnTarget() {
+  const bare = !/[\\/]/.test(binary);
+  return {
+    command: bare ? binary : path.resolve(binary),
+    shell: process.platform === "win32" && bare,
+  };
+}
+
 async function listTools(mode) {
-  const child = spawn(binary, [...prefixArgs, "--mode", mode], {
-    shell: process.platform === "win32",
+  const { command, shell } = spawnTarget();
+  const child = spawn(command, [...prefixArgs, "--mode", mode], {
+    shell,
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stderr = "";
@@ -35,9 +53,24 @@ async function listTools(mode) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
+  // Writes after an early exit raise EPIPE; the exit handler reports the cause.
+  child.stdin.on("error", () => {});
 
   const responses = new Map();
   const waiters = new Map();
+  let exitError;
+  const failWaiters = (error) => {
+    exitError ??= error;
+    for (const { reject } of waiters.values()) reject(exitError);
+    waiters.clear();
+  };
+  child.once("error", failWaiters);
+  child.once("exit", (code, signal) =>
+    failWaiters(
+      new Error(`${mode} server exited early (code ${code}, signal ${signal}): ${stderr}`),
+    ),
+  );
+
   const lines = readline.createInterface({ input: child.stdout });
   lines.on("line", (line) => {
     const message = JSON.parse(line);
@@ -45,15 +78,14 @@ async function listTools(mode) {
     const waiter = waiters.get(String(message.id));
     if (waiter) {
       waiters.delete(String(message.id));
-      waiter(message);
+      waiter.resolve(message);
     } else {
       responses.set(String(message.id), message);
     }
   });
 
-  const timeout = setTimeout(() => child.kill(), 15_000);
   const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
-  const response = (id) =>
+  const response = (id, method) =>
     new Promise((resolve, reject) => {
       const key = String(id);
       if (responses.has(key)) {
@@ -62,11 +94,26 @@ async function listTools(mode) {
         resolve(message);
         return;
       }
-      waiters.set(key, resolve);
-      child.once("error", reject);
-      child.once("exit", (code) =>
-        reject(new Error(`${mode} server exited early (${code}): ${stderr}`)),
-      );
+      if (exitError) {
+        reject(exitError);
+        return;
+      }
+      const timer = setTimeout(() => {
+        waiters.delete(key);
+        reject(
+          new Error(`${mode} server did not answer ${method} within ${TIMEOUT_MS} ms: ${stderr}`),
+        );
+      }, TIMEOUT_MS);
+      waiters.set(key, {
+        resolve: (message) => {
+          clearTimeout(timer);
+          resolve(message);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
     });
 
   try {
@@ -80,15 +127,15 @@ async function listTools(mode) {
         clientInfo: { name: "wit-release-smoke", version: "1" },
       },
     });
-    const initialized = await response(1);
+    const initialized = await response(1, "initialize");
     if (initialized.error) fail(`${mode} initialize failed: ${JSON.stringify(initialized.error)}`);
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    await new Promise((resolve) => setTimeout(resolve, POST_INITIALIZED_PAUSE_MS));
     send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-    const listed = await response(2);
+    const listed = await response(2, "tools/list");
     if (listed.error) fail(`${mode} tools/list failed: ${JSON.stringify(listed.error)}`);
     return listed.result.tools.map((tool) => tool.name).sort();
   } finally {
-    clearTimeout(timeout);
     child.stdin.end();
     child.kill();
     lines.close();

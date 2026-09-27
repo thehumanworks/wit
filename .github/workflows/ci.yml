@@ -231,6 +231,7 @@ jobs:
             archive: tar.gz
             bin: wit
             mcp_bin: wit-mcp
+            native_smoke: true
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-latest
             use_cross: true
@@ -249,12 +250,14 @@ jobs:
             archive: tar.gz
             bin: wit
             mcp_bin: wit-mcp
+            native_smoke: true
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             use_cross: false
             archive: zip
             bin: wit.exe
             mcp_bin: wit-mcp.exe
+            native_smoke: true
           - target: aarch64-pc-windows-msvc
             runner: windows-latest
             use_cross: false
@@ -304,3 +307,20 @@ jobs:
           if (($entries -join "`n") -ne "wit-mcp.exe`nwit.exe") {
             throw "package must contain exactly wit.exe and wit-mcp.exe; found $entries"
           }
+
+      - name: Smoke direct and Code Mode tools (Unix)
+        if: matrix.native_smoke && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.bin }}" mcp --transport stdio
+
+      - name: Smoke direct and Code Mode tools (Windows)
+        if: matrix.native_smoke && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
+          node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.bin }}" mcp --transport stdio
