@@ -149,6 +149,8 @@ jobs:
         if: matrix.native_smoke && runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
           node scripts/smoke_mcp_modes.mjs "target/${{ matrix.target }}/release/${{ matrix.bin }}" mcp --transport stdio
 

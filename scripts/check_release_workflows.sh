@@ -79,6 +79,18 @@ assert_contains "$mcp_smoke" '["code"]' \
   "MCP smoke test must assert the one-tool Code Mode surface"
 assert_contains "$mcp_smoke" '"wit_open"' \
   "MCP smoke test must assert the direct tool surface"
+assert_not_contains "$mcp_smoke" 'shell: process.platform === "win32",' \
+  "MCP smoke test must not route explicit binary paths through cmd.exe (it parses / as a switch)"
+assert_contains "$mcp_smoke" 'path.resolve(binary)' \
+  "MCP smoke test must spawn explicit binary paths directly"
+assert_contains "$ci_workflow" 'native_smoke: true' \
+  "pull-request CI must run the MCP smoke test on native package targets"
+for workflow in "$release_workflow" "$npm_workflow" "$ci_workflow"; do
+  if grep -Fq 'shell: pwsh' "$workflow" && grep -Fq 'smoke_mcp_modes.mjs' "$workflow"; then
+    assert_contains "$workflow" '$PSNativeCommandUseErrorActionPreference = $true' \
+      "$workflow pwsh smoke steps must fail on native command exit codes"
+  fi
+done
 assert_contains "$npm_builder" 'must contain exactly the two configured binaries' \
   "npm package validation must reject release archives containing a third binary"
 assert_contains "$npm_builder" 'archiveFileEntries' \
