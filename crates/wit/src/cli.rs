@@ -26,13 +26,34 @@ use wit_snapshot::{
     DirEntry, EntryKind, MemoryBackend, RepoSnapshot, SnapshotBackend, SnapshotProvenance,
 };
 
+// `scripts/gen_formal_constants.mjs` extracts the claims in ROOT_AFTER_HELP and BACKEND_HELP
+// (default backend, disk read order, cloud cache defaults and disable values) and
+// `formal/Wit/CacheSource.lean` proves them against the code, so rewording a claimed sentence
+// means updating the generator; `crates/wit/tests/cli_help.rs` snapshots the rendered help.
+const ROOT_ABOUT: &str = "Explore GitHub repositories without cloning. Reads come from a local shallow bare-repo cache (the default disk backend) or from the GitHub API into RAM (--backend memory).";
+
+const ROOT_AFTER_HELP: &str = "\
+Snapshot backends: repo commands (cache, branches, tree, ls, cat, rg, sed, head, tail, ast) default to the disk backend. Choose with --backend disk|memory or WIT_SNAPSHOT_BACKEND=disk|memory; --backend wins over WIT_SNAPSHOT_BACKEND. The memory backend loads a public repo over the GitHub REST API into RAM, with no WIT_CACHE_DIR writes and no shared cloud cache; it maps cache to an in-memory pin/prefetch and lists branches via the GitHub API.
+
+Disk cache: shallow bare repos in .wit/cache under the system temp directory (override with WIT_CACHE_DIR). Disk read order: local cache, then shared cloud pack cache, then GitHub clone. A cold cache, a moved branch, --refresh-cache, or wit cache resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache, verifies it locally, and falls back to a depth-1 GitHub clone when the cloud cache is off, misses, or fails verification.
+
+Cache freshness: disk reads use a branch-keyed stale-while-revalidate cache by default: a warm local cache is served at once and revalidated in the background. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, tail, or ast to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.
+
+Shared cloud cache: WIT_CACHE_URL sets its base URL (https://, or http:// on loopback); a valid URL turns it on in any build. Release builds default WIT_CACHE_URL to https://wit-cache.rodat-human-ada.workers.dev; debug builds (cargo run, cargo test) default to off. Packagers can bake another default with WIT_DEFAULT_CACHE_URL at build time. Disable it with WIT_CACHE_URL=off (also: empty, 0, false, no, none, disabled; any case). WIT_CACHE_TIMEOUT_MS (default 60000) bounds the pack download and WIT_CACHE_MAX_BYTES (default 536870912) caps its size. Requests to the cloud cache carry no credentials.
+
+Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.
+
+search always uses the GitHub REST API (no disk cache). search and the memory backend send GITHUB_TOKEN when set, for higher GitHub rate limits. Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match).";
+
+const BACKEND_HELP: &str = "Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND";
+
+const BRANCHES_BACKEND_HELP: &str = "Snapshot backend: disk (default; git fetch from GitHub into a temporary directory) or memory (GitHub REST API). Overrides WIT_SNAPSHOT_BACKEND";
+
+const REFRESH_CACHE_HELP: &str = "Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory";
+
 #[derive(Parser)]
-#[command(name = "wit")]
-#[command(
-    about = "Explore GitHub repositories without cloning. Repos are cached as shallow bare clones in your system temp directory (override with WIT_CACHE_DIR).",
-    long_about = None,
-    after_help = "Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: repo-reading commands default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory covers tree/ls/cat/rg/sed/head/tail, maps cache to an in-memory pin/prefetch, and lists branches via the GitHub API. search always uses the GitHub REST API (no disk cache). Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match)."
-)]
+#[command(name = "wit", version)]
+#[command(about = ROOT_ABOUT, long_about = None, after_help = ROOT_AFTER_HELP)]
 struct WitCli {
     /// Exclude files, directories, or glob patterns (repeatable)
     #[arg(
@@ -83,7 +104,7 @@ enum Commands {
         about = "List remote branches with default-branch comparison metadata",
         override_usage = "wit branches [OPTIONS] [REPO]",
         group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
-        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nWith --backend memory (or WIT_SNAPSHOT_BACKEND=memory), branch listing uses the GitHub REST API and does not write WIT_CACHE_DIR.\n\nExamples:\n  wit branches ratatui/ratatui\n  wit branches -r ratatui/ratatui\n  wit branches octocat/Hello-World --backend memory"
+        after_help = "Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nWith the disk backend (default), branch listing fetches the branch graph from GitHub into a temporary directory; it neither reads nor writes the WIT_CACHE_DIR cache or the shared cloud cache. With --backend memory (or WIT_SNAPSHOT_BACKEND=memory), branch listing uses the GitHub REST API.\n\nExamples:\n  wit branches ratatui/ratatui\n  wit branches -r ratatui/ratatui\n  wit branches octocat/Hello-World --backend memory"
     )]
     Branches {
         /// Repository in "owner/repo" format
@@ -94,17 +115,16 @@ enum Commands {
         #[arg(value_name = "REPO")]
         repo_positional: Option<String>,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BRANCHES_BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
         name = "cache",
         visible_alias = "c",
-        about = "Pin a repository snapshot (disk cache refresh, or memory open/prefetch)",
+        about = "Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot",
         override_usage = "wit <cache|c> [OPTIONS] [REPO]",
         group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
-        after_help = "Disk backend: force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache octocat/Hello-World --backend memory"
+        after_help = "Disk backend (default): force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. The refill resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache (WIT_CACHE_URL; on by default in release builds) and verifies it locally, and falls back to a depth-1 GitHub clone. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes, no shared cloud cache).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast when a disk read must wait for a fresh cache.\n\nRun wit --help for the cloud cache variables and how to disable it.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache octocat/Hello-World --backend memory"
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -119,8 +139,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -139,8 +158,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and optional path: `owner/repo [path]`, or just `[path]` when using -r/--repo
@@ -151,8 +169,7 @@ enum Commands {
         #[arg(short = 'l', long = "long")]
         long: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -170,8 +187,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and optional path: `owner/repo [path]`, or just `[path]` when using -r/--repo
@@ -182,8 +198,7 @@ enum Commands {
         #[arg(short = 'l', long = "long")]
         long: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -201,8 +216,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
@@ -233,8 +247,7 @@ enum Commands {
         #[arg(short = 'A', long = "show-all")]
         show_all: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -260,8 +273,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Case insensitive search
@@ -312,8 +324,7 @@ enum Commands {
         #[arg(long = "long")]
         long_format: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -327,8 +338,7 @@ enum Commands {
         #[arg(short = 'n', long = "quiet", alias = "silent")]
         quiet: bool,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Add script to the commands to be executed
@@ -347,8 +357,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
 
         /// Positionals: with -r, `<SCRIPT> <PATH>` or `<PATH>` (-e/-f); without -r, `<SCRIPT> <REPO> <PATH>` or `<REPO> <PATH>` (-e/-f)
@@ -370,8 +379,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
@@ -386,8 +394,7 @@ enum Commands {
         #[arg(short = 'N', long = "number")]
         number: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -405,8 +412,7 @@ enum Commands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
@@ -425,8 +431,7 @@ enum Commands {
         #[arg(short = 'N', long = "number")]
         number: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -500,8 +505,7 @@ enum AstCommands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and optional file or directory: `owner/repo [path]`, or just `[path]` when using -r/--repo
@@ -532,8 +536,7 @@ enum AstCommands {
         #[arg(long = "json")]
         json: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
     #[command(
@@ -552,8 +555,7 @@ enum AstCommands {
         #[arg(long = "branch", value_name = "BRANCH")]
         branch: Option<String>,
 
-        /// Force refresh the branch cache before reading
-        #[arg(long = "refresh-cache", action = ArgAction::SetTrue)]
+        #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
         refresh_cache: bool,
 
         /// Repository and optional file or directory: `owner/repo [path]`, or just `[path]` when using -r/--repo
@@ -576,8 +578,7 @@ enum AstCommands {
         #[arg(long = "json")]
         json: bool,
 
-        /// Snapshot backend: disk (default cache) or memory (no filesystem cache)
-        #[arg(long = "backend", value_name = "disk|memory")]
+        #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
     },
 }
