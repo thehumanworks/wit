@@ -159,6 +159,16 @@ assert_contains "$ci_workflow" 'name: wit_snapshot.wasm' \
   "CI must upload artifact named wit_snapshot.wasm"
 assert_contains "$ci_workflow" 'path: wit_snapshot.wasm' \
   "CI must upload path wit_snapshot.wasm"
+assert_contains "$release_workflow" 'node scripts/npm/assert-release-version.mjs --tag "${GITHUB_REF_NAME}" --cargo-toml crates/wit/Cargo.toml' \
+  "release workflow must check the tag against the crate version wit --version prints"
+assert_contains "$release_workflow" '[ "${actual}" = "wit ${GITHUB_REF_NAME#v}" ]' \
+  "release smoke must check that wit --version prints the tag version"
+assert_contains "$npm_workflow" '[ "${actual}" = "wit ${{ needs.publish.outputs.version }}" ]' \
+  "npm smoke (Unix) must check that wit --version prints the npm version"
+assert_contains "$npm_workflow" 'if ($actual -ne "wit ${{ needs.publish.outputs.version }}")' \
+  "npm smoke (Windows) must check that wit --version prints the npm version"
+assert_contains "$ci_workflow" 'run: bash scripts/check_cli_help.sh' \
+  "CI must run the wit --help / --version drift guard"
 
 target_count="$(grep -c '"id":' "$npm_targets")"
 [ "$target_count" -eq 6 ] || fail "npm targets must contain exactly six release targets"

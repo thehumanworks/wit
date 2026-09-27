@@ -1,6 +1,6 @@
 # wit
 
-GitHub for AI Agents -- explore GitHub repositories without cloning. Repos are cached as shallow bare clones under your system temp directory by default (override with `WIT_CACHE_DIR`).
+GitHub for AI Agents -- explore GitHub repositories without cloning. By default (the disk backend) repos are cached as shallow bare clones under your system temp directory (override with `WIT_CACHE_DIR`); release builds fill that cache from a [shared cloud pack cache](#shared-cloud-cache) when they can and clone from GitHub otherwise. `--backend memory` reads public repos over the GitHub API into RAM instead.
 
 ## Status
 
@@ -117,6 +117,7 @@ wit ast query '(impl_item type: (type_identifier) @t)' ratatui/ratatui src --lan
 wit branches -r ratatui/ratatui                               # List branches before choosing --branch
 wit cat --branch main -r ratatui/ratatui README.md            # Read a named branch
 wit tree --refresh-cache -r ratatui/ratatui src               # Force fresh cache before reading
+wit --version                                                 # Installed version (also -V)
 wit rg 'TODO' -r ratatui/ratatui --ignore '.git' --ignore '*.png'  # Exclude paths
 ```
 
@@ -314,7 +315,27 @@ wit cat -r ratatui/ratatui src/main.rs --ignore 'src/main.rs'   # blocked (expli
 
 `search` ignores `--ignore`, because repository discovery is done through GitHub's repository search API rather than cached file traversal.
 
+`wit --version` (or `-V`) prints the installed version, which is the `crates/wit` crate version; the release and npm workflows check it against the release tag and the npm package version.
+
 ## Commands
+
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `search` | `s` | Find GitHub repositories via the GitHub REST search API |
+| `branches` | | List remote branches with default-branch comparison metadata |
+| `cache` | `c` | Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot |
+| `tree` | `t` | Show the file tree of a repository (or subtree). Use -l for line counts |
+| `ls` | | List directory contents (non-recursive). Use -l for file sizes |
+| `cat` | | Print a file's contents. Use -n for line numbers |
+| `rg` | | Search file contents (ripgrep-style). Use -l to find files, -g to filter by type |
+| `sed` | | Extract or transform file content using sed scripts (POSIX-style, Rust regex) |
+| `head` | | Print the first N lines of a file (default: 10) |
+| `tail` | | Print the last N lines of a file, or from line N onward |
+| `ast` | | AST-backed search: list definitions or run tree-sitter queries |
+| `skill` | | Manage the wit agent skill |
+| `mcp` | | Start wit MCP (direct by default; Code Mode experimental) |
+
+This table mirrors `wit --help`; `crates/wit/tests/cli_help.rs` fails when they differ, and snapshots every command's `--help` under `crates/wit/tests/snapshots/help/` (regenerate with `WIT_UPDATE_HELP_SNAPSHOTS=1 cargo test -p wit --test cli_help`).
 
 ### search (alias: s)
 
@@ -347,10 +368,10 @@ The output includes branch name, default marker, tip SHA, tip commit author, tip
 
 ### cache (alias: c)
 
-Clone a repository into the local cache (or refresh an existing one). Pass the repository with `-r` / `--repo` (`owner/repo`). Repos are auto-cached on first use by other commands.
+Refill the local disk cache for a repository (or pin a memory snapshot with `--backend memory`). Pass the repository with `-r` / `--repo` (`owner/repo`). Repos are auto-cached on first use by other commands. The refill tries the [shared cloud cache](#shared-cloud-cache) for the branch commit first and clones from GitHub when that fails.
 
 ```bash
-wit cache -r ratatui/ratatui                    # Force re-clone of the default branch
+wit cache -r ratatui/ratatui                    # Force refresh of the default branch
 wit cache -r ratatui/ratatui --branch main      # Force refresh a named branch
 ```
 
@@ -379,7 +400,7 @@ wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
 
 ### Shared cloud cache
 
-When the local cache is cold (or the branch moved), `wit` first asks a shared, read-only, no-login pack cache for the commit it just resolved with `git ls-remote`, and only clones from GitHub when that fails. Release builds use the hosted instance (`https://wit-cache.rodat-human-ada.workers.dev`, source in [`services/wit-cache`](services/wit-cache)); debug builds leave it off.
+A disk read tries the local cache, then the shared cloud pack cache, then a GitHub clone. When the local cache is cold (or the branch moved, or `--refresh-cache` / `wit cache` forces a refill), `wit` first asks a shared, read-only, no-login pack cache for the commit it just resolved with `git ls-remote`, and only clones from GitHub when that fails. Release builds use the hosted instance (`https://wit-cache.rodat-human-ada.workers.dev`, source in [`services/wit-cache`](services/wit-cache)); debug builds leave it off (`cargo run`, `cargo test`). Setting `WIT_CACHE_URL` to a valid URL turns it on in any build, and packagers can bake another default with `WIT_DEFAULT_CACHE_URL` at build time. The memory backend never uses it.
 
 - The cache stores one depth-1 git pack per public `owner/repo` + commit. A miss answers `404` right away and queues an anonymous fill, so the first reader clones from GitHub as before and later readers download the pack.
 - The pack is untrusted: `wit` rebuilds the bare cache itself (own `shallow`, refs, HEAD, and config) and accepts it only after `git index-pack --strict`, a connectivity walk, and a HEAD check against the commit GitHub reported. A miss, corrupt or truncated pack, wrong commit, oversize pack, timeout, or any HTTP error falls back to the normal GitHub clone.
@@ -388,7 +409,7 @@ When the local cache is cold (or the branch moved), `wit` first asks a shared, r
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WIT_CACHE_URL` | hosted instance (release builds) | Cache base URL. Set to empty, `off`, `0`, or `false` to disable. Must be `https://` (or `http://` on loopback) without embedded credentials. |
+| `WIT_CACHE_URL` | hosted instance (release builds), off (debug builds) | Cache base URL. Set to `off`, empty, `0`, `false`, `no`, `none`, or `disabled` (any case) to disable. Must be `https://` (or `http://` on loopback) without embedded credentials, query, or fragment; anything else also disables it. |
 | `WIT_CACHE_TIMEOUT_MS` | `60000` | Total time allowed for the pack download before falling back (connect timeout is 3 s). |
 | `WIT_CACHE_MAX_BYTES` | `536870912` (512 MiB) | Largest pack the client will download. |
 
@@ -398,13 +419,13 @@ WIT_CACHE_URL=http://127.0.0.1:8787 wit tree -r openai/codex        # local `wra
 curl -s https://wit-cache.rodat-human-ada.workers.dev/v1/stats       # storage and budget counters
 ```
 
-Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning. Its invariants (single-flight, daily budgets, the storage cap, takedowns, content integrity, and the free-tier arithmetic at the deployed limits) are proved in Lean under `formal/` and checked against the code by `scripts/check_formal.sh` ([ADR 0010](docs/adr/0010-formal-proofs.md)).
+Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning. Its invariants (single-flight, daily budgets, the storage cap, takedowns, content integrity, and the free-tier arithmetic at the deployed limits) are proved in Lean under `formal/` and checked against the code by `scripts/check_formal.sh` ([ADR 0010](docs/adr/0010-formal-proofs.md)). So are the claims `wit --help` makes about this section and the next (default backend, read order, release and debug defaults, disable values): `formal/Wit/CacheSource.lean` proves them against values extracted from both the help text and the code.
 
 ### Snapshot backends (disk vs memory)
 
-Repo-reading commands default to the **disk** cache backend. Pass `--backend memory` (or set `WIT_SNAPSHOT_BACKEND=memory`) to load a **public** repository over the GitHub REST API into RAM with **zero** `WIT_CACHE_DIR` writes. Provenance (`commit_sha`, `tree_sha`, backend label) is printed on stderr.
+Repo commands (`cache`, `branches`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, `tail`, `ast`) default to the **disk** backend: the local bare-repo cache above, filled from the shared cloud cache or a GitHub clone. Pass `--backend memory` (or set `WIT_SNAPSHOT_BACKEND=memory`; the flag wins over the variable) to load a **public** repository over the GitHub REST API into RAM with **zero** `WIT_CACHE_DIR` writes and no shared cloud cache. Provenance (`commit_sha`, `tree_sha`, backend label) is printed on stderr.
 
-Memory covers `tree` / `ls` / `cat` / `rg` / `sed` / `head` / `tail` (including `--branch`, `--ignore`, `-l`, and `-n` where those flags apply). `wit cache --backend memory` pins/opens the in-memory snapshot (prefetch tree; optional root-blob warm) instead of cloning. `wit branches --backend memory` lists branches via the GitHub API. `wit search` always uses the GitHub REST API and never needs the disk cache.
+Memory covers `tree` / `ls` / `cat` / `rg` / `sed` / `head` / `tail` / `ast` (including `--branch`, `--ignore`, `-l`, and `-n` where those flags apply). `wit cache --backend memory` pins/opens the in-memory snapshot (prefetch tree; optional root-blob warm) instead of cloning. `wit branches --backend memory` lists branches via the GitHub API. `wit search` always uses the GitHub REST API and never needs the disk cache.
 
 Pass the repository as a positional `owner/repo` or with `-r/--repo` (if both are given they must match):
 
@@ -534,8 +555,8 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end
 - Every push to `main` triggers `.github/workflows/auto-tag.yml`, which increments the patch version in `Cargo.toml`, creates a new `vX.Y.Z` tag, and pushes it.
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
 - `.github/workflows/release.yml` can also be triggered manually with `workflow_dispatch` (select a `vX.Y.Z` tag ref).
-- `.github/workflows/release.yml` validates the tag ref, builds Linux/macOS/Windows artifacts on GitHub-hosted runners, uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
-- `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the attached GitHub release assets and can be re-run manually for an existing release tag without rebuilding Rust binaries.
+- `.github/workflows/release.yml` validates the tag ref (and that it equals the `crates/wit/Cargo.toml` version), builds Linux/macOS/Windows artifacts on GitHub-hosted runners, checks that the natively smoked binaries' `wit --version` prints the tag version, uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
+- `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the attached GitHub release assets (the npm version is the tag version), checks that the installed `wit --version` prints it, and can be re-run manually for an existing release tag without rebuilding Rust binaries.
 - `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 
 ## Architecture

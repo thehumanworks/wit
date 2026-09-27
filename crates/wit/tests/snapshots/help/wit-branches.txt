@@ -1,0 +1,23 @@
+List remote branches with default-branch comparison metadata
+
+Usage: wit branches [OPTIONS] [REPO]
+
+Arguments:
+  [REPO]  Repository in "owner/repo" format (alternative to -r/--repo)
+
+Options:
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>            Repository in "owner/repo" format
+      --backend <disk|memory>  Snapshot backend: disk (default; git fetch from GitHub into a temporary directory) or memory (GitHub REST API). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                   Print help
+
+Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.
+
+Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
+
+With the disk backend (default), branch listing fetches the branch graph from GitHub into a temporary directory; it neither reads nor writes the WIT_CACHE_DIR cache or the shared cloud cache. With --backend memory (or WIT_SNAPSHOT_BACKEND=memory), branch listing uses the GitHub REST API.
+
+Examples:
+  wit branches ratatui/ratatui
+  wit branches -r ratatui/ratatui
+  wit branches octocat/Hello-World --backend memory
