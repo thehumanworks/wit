@@ -326,6 +326,175 @@ for (const alt of safeArm.split("|").map((s) => s.trim())) {
 }
 match(opsRel, encodeFn, /_ => encoded\.push_str\(&format!\("%\{byte:02X\}"\)\)/, "the %XX escape");
 
+// --- Cache source resolution (Wit.CacheSource): backend choice, cloud defaults, disk read order ---
+const strConst = (rel, text, name) =>
+  match(rel, text, new RegExp(`pub const ${name}: &str = "([^"\\\\]*)";`), name)[1];
+const body = (rel, text, signature, what) =>
+  match(rel, text, new RegExp(`\\n( *)(?:pub(?:\\(crate\\))? )?(?:async )?fn ${signature}[\\s\\S]*?\\n\\1\\}\\n`), what)[0];
+const quotedAlts = (alts, what) =>
+  alts.split("|").map((s) => {
+    const m = s.trim().match(/^"([^"\\]*)"$/);
+    if (!m) fail(`${what}: unsupported pattern '${s.trim()}'`);
+    return m[1];
+  });
+
+const snapRel = "crates/wit/src/snapshot/mod.rs";
+const snap = read(snapRel);
+const fromEnvOrFlag = body(snapRel, snap, "from_env_or_flag\\(", "CliSnapshotBackend::from_env_or_flag");
+const flagFirst = match(
+  snapRel,
+  fromEnvOrFlag,
+  /if let Some\(value\) = flag \{\s*return Self::parse\(value\);\s*\}/,
+  "--backend taking precedence over the environment",
+).index;
+const backendEnvMatch = match(snapRel, fromEnvOrFlag, /std::env::var\("(WIT_[A-Z_]+)"\)\s*&& !value\.trim\(\)\.is_empty\(\)\s*\{\s*return Self::parse\(value\.trim\(\)\);\s*\}/, "the blank-aware environment read");
+if (backendEnvMatch.index < flagFirst) fail(`${snapRel}: from_env_or_flag must read --backend before the environment`);
+const backendEnvVar = backendEnvMatch[1];
+const backendCtor = (rust) => ({ Disk: ".disk", Memory: ".memory" })[rust] ?? fail(`unknown backend ${rust}`);
+const backendDefault = backendCtor(
+  match(snapRel, fromEnvOrFlag, /\n\s*Ok\(Self::(\w+)\)\s*\n\s*\}\n$/, "the default backend")[1],
+);
+const parseBackendFn = body(snapRel, snap, "parse\\(value: &str\\)", "CliSnapshotBackend::parse");
+match(snapRel, parseBackendFn, /match value\.trim\(\)\.to_ascii_lowercase\(\)\.as_str\(\) \{/, "trimmed, ASCII-lowercased backend values");
+const aliases = (ctor) =>
+  quotedAlts(
+    match(snapRel, parseBackendFn, new RegExp(`\\n\\s*([^\\n]+?)\\s*=> Ok\\(Self::${ctor}\\)`), `the ${ctor} aliases`)[1],
+    `${ctor} aliases`,
+  );
+const diskAliases = aliases("Disk");
+const memoryAliases = aliases("Memory");
+
+const cloudUrlEnv = strConst(cloudRel, cloud, "WIT_CACHE_URL_ENV");
+const cloudTimeoutEnv = strConst(cloudRel, cloud, "WIT_CACHE_TIMEOUT_MS_ENV");
+const cloudMaxBytesEnv = strConst(cloudRel, cloud, "WIT_CACHE_MAX_BYTES_ENV");
+const hostedCacheUrl = strConst(cloudRel, cloud, "HOSTED_CACHE_URL");
+const builtIn = match(
+  cloudRel,
+  cloud,
+  /fn built_in_default\(\) -> Option<&'static str> \{\s*match option_env!\("(WIT_[A-Z_]+)"\) \{\s*Some\(url\) => Some\(url\),\s*None if cfg!\(debug_assertions\) => (None|Some\(HOSTED_CACHE_URL\)),\s*None => (None|Some\(HOSTED_CACHE_URL\)),\s*\}\s*\}/,
+  "built_in_default (baked value, then debug, then release)",
+);
+const bakedDefaultEnv = builtIn[1];
+const profileDefault = (arm) => (arm === "None" ? "none" : `some ${JSON.stringify(hostedCacheUrl)}`);
+const debugDefault = profileDefault(builtIn[2]);
+const releaseDefault = profileDefault(builtIn[3]);
+match(cloudRel, cloud, /let url = std::env::var\(WIT_CACHE_URL_ENV\)\.ok\(\);[\s\S]*?built_in_default\(\),/, "from_env passing WIT_CACHE_URL and the built-in default");
+match(
+  cloudRel,
+  cloud,
+  /let raw = url\.or\(default_url\)\?\.trim\(\);\s*if is_disabled\(raw\) \{\s*return None;\s*\}\s*let base_url = parse_base_url\(raw\)\?;/,
+  "from_values: WIT_CACHE_URL over the default, then the disable check, then URL validation",
+);
+
+const cacheDirEnv = strConst(opsRel, ops, "WIT_CACHE_DIR_ENV");
+const cacheSubdir = strConst(opsRel, ops, "WIT_CACHE_SUBDIR");
+match(
+  opsRel,
+  ops,
+  /pub fn wit_cache_dir\(\) -> PathBuf \{\s*if let Some\(path\) = std::env::var_os\(WIT_CACHE_DIR_ENV\)\.filter\(\|value\| !value\.is_empty\(\)\) \{\s*return PathBuf::from\(path\);\s*\}\s*std::env::temp_dir\(\)\.join\(WIT_CACHE_SUBDIR\)\s*\}/,
+  "wit_cache_dir (non-empty WIT_CACHE_DIR, else the temp directory)",
+);
+// Disk reads: a usable local entry returns before any fill; a fill tries the cloud pack first
+// and clones from GitHub only when it fails. Both the CLI and the operation (MCP) paths.
+const markerOrder = (rel, text, markers, what) => {
+  const found = Object.entries(markers)
+    .map(([source, needle]) => [source, text.indexOf(needle)])
+    .filter(([, at]) => at >= 0)
+    .sort((a, b) => a[1] - b[1])
+    .map(([source]) => source);
+  if (!found.length) fail(`${rel}: ${what} reaches no fill source`);
+  return found;
+};
+const fillOrders = [
+  ["recache_repo(", { cloud: "cloud::fill_from_cloud(", github: "clone_from_github(" }],
+  ["refresh_repo_with_context(", { cloud: "cloud::fill_from_cloud(", github: "clone_with_git_cli_in_context(" }],
+].map(([fn, markers]) => markerOrder(opsRel, body(opsRel, ops, fn.replace("(", "\\("), fn), markers, fn).join(","));
+if (new Set(fillOrders).size !== 1) fail(`${opsRel}: recache_repo and refresh_repo_with_context try fill sources in different orders`);
+match(
+  opsRel,
+  body(opsRel, ops, "recache_repo\\(", "recache_repo"),
+  /if cloud::fill_from_cloud\([\s\S]*?\) \{[\s\S]*?return Ok\(\(repo, FillSource::Cloud\)\);\s*\}\s*clone_from_github\(/,
+  "recache_repo returning the verified cloud fill before cloning",
+);
+match(
+  opsRel,
+  body(opsRel, ops, "refresh_repo_with_context\\(", "refresh_repo_with_context"),
+  /let source = if cloud::fill_from_cloud\([\s\S]*?\) \{\s*FillSource::Cloud\s*\} else \{\s*clone_with_git_cli_in_context\(/,
+  "refresh_repo_with_context cloning only when the cloud fill fails",
+);
+for (const [fn, fill] of [
+  ["cache_github_repo_target(", "recache_repo("],
+  ["cache_github_repo_target_with_context(", "refresh_repo_with_context("],
+]) {
+  const src = body(opsRel, ops, fn.replace("(", "\\("), fn);
+  const warm = src.search(/if cache_path\.exists\(\)\s*&& !mode\.is_force_invalidate\(\)/);
+  const served = src.indexOf("return Ok(repo);");
+  const filled = src.indexOf(fill);
+  if (warm < 0 || served < warm || filled < served) {
+    fail(`${opsRel}: ${fn} must serve a usable local cache before calling ${fill}`);
+  }
+}
+const sourceCtor = { localCache: ".localCache", cloud: ".cloud", github: ".github" };
+const diskReadOrder = ["localCache", ...fillOrders[0].split(",")];
+
+// The memory backend (`--backend memory`) never reaches the disk cache or the cloud client.
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+const cliRel = "crates/wit/src/cli.rs";
+const cli = read(cliRel);
+const memorySources = [
+  read("crates/wit/src/snapshot/memory_ops.rs"),
+  read("crates/wit-snapshot/src/memory.rs"),
+  body(cliRel, cli, "open_memory_snapshot\\(", "open_memory_snapshot"),
+].map(stripComments);
+const memoryUsesDisk = memorySources.some((s) => /cache_github_repo|wit_cache_dir|WIT_CACHE_DIR|std::fs::|File::create|create_dir/.test(s));
+const memoryUsesCloud = memorySources.some((s) => /fill_from_cloud|cloud::|WIT_CACHE_URL|CloudCacheConfig/.test(s));
+
+// --- crates/wit/src/cli.rs: the claims `wit --help` makes about the above ---
+function rustLiteral(rel, text, name) {
+  const raw = match(rel, text, new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\[\\s\\S])*)";`), name)[1];
+  return raw.replace(/\\(\n\s*|.)/g, (_, esc) => {
+    if (esc.startsWith("\n")) return "";
+    const plain = { n: "\n", t: "\t", '"': '"', "\\": "\\", "'": "'" }[esc];
+    if (plain === undefined) fail(`${rel}: unsupported escape \\${esc} in ${name}`);
+    return plain;
+  });
+}
+const rootHelp = rustLiteral(cliRel, cli, "ROOT_AFTER_HELP");
+const claim = (re, what, text = rootHelp, name = "ROOT_AFTER_HELP") =>
+  match(cliRel, text, re, `the ${name} claim about ${what}`);
+const backendWord = (w) => ({ disk: ".disk", memory: ".memory" })[w];
+const helpDefaultBackend = backendWord(
+  claim(/Snapshot backends: repo commands \([^)]+\) default to the (disk|memory) backend\./, "the default backend")[1],
+);
+const helpBackendEnvVar = claim(/--backend wins over (WIT_[A-Z_]+)\./, "--backend precedence")[1];
+const helpMemoryDir = claim(/The memory backend [^.]*with no (WIT_[A-Z_]+) writes and no shared cloud cache/, "the memory backend")[1];
+const helpCacheDir = claim(
+  /Disk cache: shallow bare repos in (\S+) under the system temp directory \(override with (WIT_[A-Z_]+)\)\./,
+  "the cache directory",
+);
+const sourceWords = { "local cache": "localCache", "shared cloud pack cache": "cloud", "GitHub clone": "github" };
+const helpDiskReadOrder = claim(/Disk read order: ([^.]+)\./, "the disk read order")[1]
+  .split(/, then /)
+  .map((w) => sourceWords[w] ?? fail(`${cliRel}: ROOT_AFTER_HELP names unknown source '${w}' in the disk read order`));
+claim(/falls back to a depth-1 GitHub clone when the cloud cache is off, misses, or fails verification\./, "the GitHub fallback");
+const helpCloudUrlEnv = claim(/Shared cloud cache: (WIT_[A-Z_]+) sets its base URL[^;]*; a valid URL turns it on in any build\./, "the cloud URL")[1];
+const helpDefaults = claim(
+  /Release builds default (WIT_[A-Z_]+) to (\S+?); debug builds \([^)]*\) default to (off|\S+?)\./,
+  "the release and debug defaults",
+);
+const helpBakedEnv = claim(/bake another default with (WIT_[A-Z_]+) at build time\./, "the build-time default")[1];
+const helpDisable = claim(/Disable it with (WIT_[A-Z_]+)=(\S+) \(also: ([^;)]+); any case\)\./, "the disable values");
+const helpDisableValues = [helpDisable[2], ...helpDisable[3].split(",").map((s) => s.trim())].map((v) =>
+  v === "empty" ? "" : v,
+);
+const helpTimeout = claim(/(WIT_[A-Z_]+) \(default (\d+)\) bounds the pack download/, "the download timeout");
+const helpMaxBytes = claim(/(WIT_[A-Z_]+) \(default (\d+)\) caps its size/, "the pack size cap");
+claim(/Requests to the cloud cache carry no credentials\./, "credentials");
+const flagHelps = ["BACKEND_HELP", "BRANCHES_BACKEND_HELP"].map((name) => {
+  const m = claim(/^Snapshot backend: (disk|memory) \(default;[^)]*\) or \w+ \([^)]*\)\. Overrides (WIT_[A-Z_]+)$/, "--backend", rustLiteral(cliRel, cli, name), name);
+  return { name, backend: backendWord(m[1]), env: m[2] };
+});
+
 // --- Emit Lean ---
 const str = (s) => JSON.stringify(s);
 const list = (xs, f = String) => `[${xs.map(f).join(", ")}]`;
@@ -416,6 +585,46 @@ emit("");
 emit("/-- `encode_branch_for_path` in `crates/wit/src/gitops/ops.rs` (ADR 0002). -/");
 emit(`def branchDirPrefix : String := ${str(branchPrefix)}`);
 emit(`def branchSafeBytes : List Nat := ${list(branchSafe)}`);
+emit("");
+emit("/-- `CliSnapshotBackend` in `crates/wit/src/snapshot/mod.rs`. -/");
+emit(`def backendEnvVar : String := ${str(backendEnvVar)}`);
+emit(`def backendDefault : Backend := ${backendDefault}`);
+emit(`def diskBackendAliases : List String := ${list(diskAliases, str)}`);
+emit(`def memoryBackendAliases : List String := ${list(memoryAliases, str)}`);
+emit("/-- `crates/wit/src/gitops/cloud.rs`: variable names and `built_in_default` per build profile. -/");
+emit(`def cloudUrlEnvVar : String := ${str(cloudUrlEnv)}`);
+emit(`def cloudTimeoutEnvVar : String := ${str(cloudTimeoutEnv)}`);
+emit(`def cloudMaxBytesEnvVar : String := ${str(cloudMaxBytesEnv)}`);
+emit(`def bakedDefaultEnvVar : String := ${str(bakedDefaultEnv)}`);
+emit(`def hostedCacheUrl : String := ${str(hostedCacheUrl)}`);
+emit(`def debugDefaultUrl : Option String := ${debugDefault}`);
+emit(`def releaseDefaultUrl : Option String := ${releaseDefault}`);
+emit("/-- `crates/wit/src/gitops/ops.rs`: cache directory and the sources a disk read tries, in order. -/");
+emit(`def cacheDirEnvVar : String := ${str(cacheDirEnv)}`);
+emit(`def cacheSubdir : String := ${str(cacheSubdir)}`);
+emit(`def diskReadOrder : List Source := ${list(diskReadOrder, (s) => sourceCtor[s])}`);
+emit("/-- Whether the memory backend's code reaches the disk cache or the cloud client. -/");
+emit(`def memoryUsesDiskCache : Bool := ${memoryUsesDisk}`);
+emit(`def memoryUsesCloud : Bool := ${memoryUsesCloud}`);
+emit("");
+emit("/-- Claims of `ROOT_AFTER_HELP`, `BACKEND_HELP`, and `BRANCHES_BACKEND_HELP` in `crates/wit/src/cli.rs`. -/");
+emit(`def helpDefaultBackend : Backend := ${helpDefaultBackend}`);
+emit(`def helpBackendEnvVar : String := ${str(helpBackendEnvVar)}`);
+emit(`def helpFlagDefaultBackends : List Backend := ${list(flagHelps, (f) => f.backend)}`);
+emit(`def helpFlagEnvVars : List String := ${list(flagHelps, (f) => str(f.env))}`);
+emit(`def helpMemoryCacheDirEnvVar : String := ${str(helpMemoryDir)}`);
+emit(`def helpCacheSubdir : String := ${str(helpCacheDir[1])}`);
+emit(`def helpCacheDirEnvVar : String := ${str(helpCacheDir[2])}`);
+emit(`def helpDiskReadOrder : List Source := ${list(helpDiskReadOrder, (s) => sourceCtor[s])}`);
+emit(`def helpCloudUrlEnvVars : List String := ${list([helpCloudUrlEnv, helpDefaults[1], helpDisable[1]], str)}`);
+emit(`def helpReleaseDefaultUrl : Option String := some ${str(helpDefaults[2])}`);
+emit(`def helpDebugDefaultUrl : Option String := ${helpDefaults[3] === "off" ? "none" : `some ${str(helpDefaults[3])}`}`);
+emit(`def helpBakedDefaultEnvVar : String := ${str(helpBakedEnv)}`);
+emit(`def helpDisableValues : List String := ${list(helpDisableValues, str)}`);
+emit(`def helpCloudTimeoutEnvVar : String := ${str(helpTimeout[1])}`);
+emit(`def helpCloudTimeoutMs : Nat := ${nat(Number(helpTimeout[2]), "help timeout")}`);
+emit(`def helpCloudMaxBytesEnvVar : String := ${str(helpMaxBytes[1])}`);
+emit(`def helpCloudMaxBytes : Nat := ${nat(Number(helpMaxBytes[2]), "help max bytes")}`);
 emit("");
 emit("end Wit.Src");
 

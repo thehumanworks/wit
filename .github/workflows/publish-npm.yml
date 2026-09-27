@@ -170,6 +170,8 @@ jobs:
           done
           wit --help
           wit rg --help
+          actual="$(wit --version)"
+          [ "${actual}" = "wit ${{ needs.publish.outputs.version }}" ] || { echo "wit --version printed '${actual}', expected npm version ${{ needs.publish.outputs.version }}"; exit 1; }
           wit-mcp --version
           node scripts/smoke_mcp_modes.mjs wit-mcp
           node scripts/smoke_mcp_modes.mjs wit mcp --transport stdio
@@ -211,6 +213,10 @@ jobs:
           }
           wit --help
           wit rg --help
+          $actual = (wit --version | Out-String).Trim()
+          if ($actual -ne "wit ${{ needs.publish.outputs.version }}") {
+            throw "wit --version printed '$actual', expected npm version ${{ needs.publish.outputs.version }}"
+          }
           wit-mcp --version
           node scripts/smoke_mcp_modes.mjs wit-mcp
           node scripts/smoke_mcp_modes.mjs wit mcp --transport stdio

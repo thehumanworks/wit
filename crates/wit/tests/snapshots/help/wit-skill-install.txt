@@ -1,0 +1,8 @@
+Install the wit skill as a directory at the given path
+
+Usage: wit skill install [OPTIONS] --path <DIR>
+
+Options:
+      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
+      --path <DIR>          Directory in which to create the wit-skill folder
+  -h, --help                Print help

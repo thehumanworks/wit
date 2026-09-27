@@ -23,6 +23,21 @@ inductive Reason where
   | blocked
   deriving DecidableEq, Repr
 
+/-- `CliSnapshotBackend` in `crates/wit/src/snapshot/mod.rs`. -/
+inductive Backend where
+  | disk
+  | memory
+  deriving DecidableEq, Repr
+
+/-- Where the bytes of a read come from: the local bare-repo cache, a verified
+cloud pack, a GitHub clone (disk backend), or the GitHub REST API (memory). -/
+inductive Source where
+  | localCache
+  | cloud
+  | github
+  | githubApi
+  deriving DecidableEq, Repr
+
 /-- The Worker limits of `DEFAULTS` in `services/wit-cache/src/config.js`. -/
 structure Limits where
   maxPackBytes : Nat

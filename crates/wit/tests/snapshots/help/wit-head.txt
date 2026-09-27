@@ -1,0 +1,26 @@
+Print the first N lines of a file (default: 10)
+
+Usage: wit head [OPTIONS] [REPO] <PATH>
+
+Arguments:
+  [REPO|PATH]...  Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
+
+Options:
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>            Repository in "owner/repo" format
+      --branch <BRANCH>        Branch name under refs/heads to read instead of the repository default branch
+      --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -n, --lines <LINES>          Number of lines to show (default: 10) [default: 10]
+  -N, --number                 Number all output lines
+      --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                   Print help
+
+Use to preview a file before deciding whether to read it fully. Pair with tail to read specific sections by position.
+
+Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
+
+Examples:
+  wit head ratatui/ratatui src/lib.rs
+  wit head -n 50 -r ratatui/ratatui Cargo.toml
+  wit head -N ratatui/ratatui README.md
+  wit head -n 5 octocat/Hello-World README --backend memory

@@ -1,0 +1,7 @@
+Print the wit skill (SKILL.md) to stdout
+
+Usage: wit skill load [OPTIONS]
+
+Options:
+      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
+  -h, --help                Print help

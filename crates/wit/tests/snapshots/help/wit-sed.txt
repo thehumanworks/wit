@@ -1,0 +1,27 @@
+Extract or transform file content using sed scripts (POSIX-style, Rust regex)
+
+Usage: wit sed [OPTIONS] [<SCRIPT>] [REPO] <PATH>
+
+Arguments:
+  [ARGS]...  Positionals: with -r, `<SCRIPT> <PATH>` or `<PATH>` (-e/-f); without -r, `<SCRIPT> <REPO> <PATH>` or `<REPO> <PATH>` (-e/-f)
+
+Options:
+      --ignore <PATH|GLOB>        Exclude files, directories, or glob patterns (repeatable)
+  -n, --quiet                     Suppress automatic printing of pattern space
+      --refresh-cache             Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -e, --expression <EXPRESSIONS>  Add script to the commands to be executed
+  -f, --file <FILE>               Add script file to the commands to be executed
+  -r, --repo <REPO>               Repository in "owner/repo" format
+      --branch <BRANCH>           Branch name under refs/heads to read instead of the repository default branch
+      --backend <disk|memory>     Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                      Print help
+
+Use for precise line-range extraction or text transformation. Regex uses Rust syntax, not POSIX BRE. Supports addresses, substitution, hold space, branching, and most POSIX commands.
+
+Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match. Trailing --backend/--repo after the script/path are accepted (same as tree/ls/cat).
+
+Examples:
+  wit sed -n '320,460p' modal-labs/modal-client modal/image.py
+  wit sed -n '1,5p' octocat/Hello-World README --backend memory
+  wit sed --backend memory -e 's/Hello/Hi/' octocat/Hello-World README
+  wit sed -r ratatui/ratatui 's/Widget/Component/g' src/lib.rs
