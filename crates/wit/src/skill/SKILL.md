@@ -290,3 +290,13 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs      # from line 100 to EOF
 wit tree -r ratatui/ratatui --ignore '.github' --ignore 'assets/**'
 wit rg 'TODO' -r ratatui/ratatui --ignore '*.lock'
 ```
+
+## GitHub host selection
+
+Use `wit --hostname HOST ...` or `wit-mcp --hostname HOST` for GitHub Enterprise.
+Precedence: flag, `GH_HOST`, `GITHUB_HOST`, then `github.com`. GitHub.com and
+`*.ghe.com` use `GH_TOKEN` then `GITHUB_TOKEN`; Enterprise Server uses
+`GH_ENTERPRISE_TOKEN` then `GITHUB_ENTERPRISE_TOKEN`. An existing local
+`gh auth login --hostname HOST` is the fallback. Credentials stay in the local
+Rust parent; never place them in generated code. Login/logout is managed locally
+by gh. Hosted Workers do not store these credentials.

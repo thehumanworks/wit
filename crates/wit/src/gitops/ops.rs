@@ -131,7 +131,7 @@ impl CacheTarget {
     }
 
     fn branch_dir(&self, cache_dir: &Path) -> PathBuf {
-        cache_dir
+        host_cache_root(cache_dir)
             .join(&self.owner)
             .join(&self.repo)
             .join("branches")
@@ -306,15 +306,66 @@ fn is_safe_repo_component(component: &str) -> bool {
 
 fn repo_cache_root(cache_dir: &Path, owner_repo: &str) -> anyhow::Result<PathBuf> {
     let (owner, repo) = split_owner_repo(owner_repo)?;
-    Ok(cache_dir.join(owner).join(repo))
+    Ok(host_cache_root(cache_dir).join(owner).join(repo))
+}
+
+fn host_cache_root(cache_dir: &Path) -> PathBuf {
+    let host = wit_snapshot::auth::hostname().expect("validated GitHub hostname");
+    host_cache_root_for(cache_dir, &host)
+}
+
+fn host_cache_root_for(cache_dir: &Path, host: &str) -> PathBuf {
+    if host == "github.com" {
+        cache_dir.to_path_buf()
+    } else {
+        cache_dir.join("hosts").join(host)
+    }
 }
 
 fn github_remote_url(owner_repo: &str) -> String {
-    format!("https://github.com/{owner_repo}", owner_repo = owner_repo)
+    format!(
+        "https://{}/{owner_repo}",
+        wit_snapshot::auth::hostname().expect("validated GitHub hostname")
+    )
+}
+
+// Configuration is process-local: never written to git config or remote URLs.
+pub(crate) fn github_git_command() -> Command {
+    use base64::Engine;
+    let mut command = Command::new("git");
+    command.arg("-c").arg("http.followRedirects=false");
+    for key in [
+        "GIT_TRACE",
+        "GIT_TRACE_CURL",
+        "GIT_CURL_VERBOSE",
+        "GIT_TRACE_PACKET",
+        "GIT_TRACE2",
+        "GIT_TRACE2_EVENT",
+        "GIT_TRACE2_PERF",
+    ] {
+        command.env_remove(key);
+    }
+    if let Ok(host) = wit_snapshot::auth::hostname()
+        && let Some(token) = wit_snapshot::auth::token(&host)
+    {
+        let header = format!(
+            "Authorization: Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"))
+        );
+        command
+            .env("GIT_CONFIG_COUNT", "1")
+            .env(
+                "GIT_CONFIG_KEY_0",
+                format!("http.https://{host}/.extraHeader"),
+            )
+            .env("GIT_CONFIG_VALUE_0", header);
+    }
+    command
 }
 
 pub fn list_remote_branches(owner_repo: &str) -> anyhow::Result<Vec<BranchMetadata>> {
     split_owner_repo(owner_repo)?;
+    wit_snapshot::auth::hostname()?;
     let remote_url = github_remote_url(owner_repo);
     list_remote_branches_from_remote(owner_repo, &remote_url)
 }
@@ -566,8 +617,8 @@ where
 {
     let output = git_output(args, workdir, action)?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = "git diagnostic omitted".trim().to_string();
+        let stdout = "git diagnostic omitted";
         anyhow::bail!(
             "git failed to {action} (status: {}) stderr: '{}' stdout: '{}'",
             output.status,
@@ -596,7 +647,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut command = Command::new("git");
+    let mut command = github_git_command();
     command.args(args);
     if let Some(dir) = workdir {
         command.current_dir(dir);
@@ -729,7 +780,7 @@ fn default_cache_target(owner_repo: &str, remote_url: &str) -> anyhow::Result<Re
 }
 
 fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
-    let output = Command::new("git")
+    let output = github_git_command()
         .arg("ls-remote")
         .arg("--symref")
         .arg(remote_url)
@@ -738,8 +789,8 @@ fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
         .context("failed to invoke git for default branch resolution")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = "git diagnostic omitted".trim().to_string();
+        let stdout = "git diagnostic omitted";
         anyhow::bail!(
             "git ls-remote failed (status: {}) stderr: '{}' stdout: '{}'",
             output.status,
@@ -756,7 +807,7 @@ fn resolve_default_branch_with_context(
     context: &OperationContext,
     remote_url: &str,
 ) -> anyhow::Result<ResolvedBranch> {
-    let mut command = Command::new("git");
+    let mut command = github_git_command();
     command
         .arg("ls-remote")
         .arg("--symref")
@@ -767,8 +818,8 @@ fn resolve_default_branch_with_context(
         anyhow::bail!(
             "git ls-remote failed (status: {}) stderr: '{}' stdout: '{}'",
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            String::from_utf8_lossy(&output.stdout).trim()
+            "git diagnostic omitted".trim(),
+            "git diagnostic omitted"
         );
     }
     parse_default_branch_ls_remote(&String::from_utf8_lossy(&output.stdout))
@@ -776,7 +827,7 @@ fn resolve_default_branch_with_context(
 
 fn resolve_branch_sha(remote_url: &str, branch: &str) -> anyhow::Result<String> {
     let branch_ref = format!("refs/heads/{branch}");
-    let output = Command::new("git")
+    let output = github_git_command()
         .arg("ls-remote")
         .arg(remote_url)
         .arg(&branch_ref)
@@ -784,8 +835,8 @@ fn resolve_branch_sha(remote_url: &str, branch: &str) -> anyhow::Result<String> 
         .with_context(|| format!("failed to invoke git for branch '{branch}' resolution"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = "git diagnostic omitted".trim().to_string();
+        let stdout = "git diagnostic omitted";
         anyhow::bail!(
             "git ls-remote failed for branch '{}' (status: {}) stderr: '{}' stdout: '{}'",
             branch,
@@ -805,7 +856,7 @@ fn resolve_branch_sha_with_context(
     branch: &str,
 ) -> anyhow::Result<String> {
     let branch_ref = format!("refs/heads/{branch}");
-    let mut command = Command::new("git");
+    let mut command = github_git_command();
     command.arg("ls-remote").arg(remote_url).arg(&branch_ref);
     let output = command_output(context, &mut command, "resolve cache branch")?;
     if !output.status.success() {
@@ -813,8 +864,8 @@ fn resolve_branch_sha_with_context(
             "git ls-remote failed for branch '{}' (status: {}) stderr: '{}' stdout: '{}'",
             branch,
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            String::from_utf8_lossy(&output.stdout).trim()
+            "git diagnostic omitted".trim(),
+            "git diagnostic omitted"
         );
     }
     parse_branch_sha_ls_remote(&String::from_utf8_lossy(&output.stdout), branch)
@@ -1039,6 +1090,7 @@ pub fn revalidate_github_repo(
     branch: CacheBranchSelection,
 ) -> anyhow::Result<()> {
     split_owner_repo(owner_repo)?;
+    wit_snapshot::auth::hostname()?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
     revalidate_github_repo_from_remote(owner_repo, &remote_url, &cache_dir, branch)
@@ -1331,6 +1383,7 @@ pub async fn cache_github_repo(
     mode: CacheAcquisitionMode,
 ) -> anyhow::Result<Repository> {
     split_owner_repo(owner_repo)?;
+    wit_snapshot::auth::hostname()?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
     cache_github_repo_from_remote(owner_repo, &remote_url, &cache_dir, branch, mode)
@@ -1346,6 +1399,7 @@ pub async fn cache_github_repo_with_context(
 ) -> anyhow::Result<Repository> {
     context.check().map_err(anyhow::Error::msg)?;
     split_owner_repo(owner_repo)?;
+    wit_snapshot::auth::hostname()?;
     let remote_url = github_remote_url(owner_repo);
     let cache_dir = wit_cache_dir();
     remove_legacy_repo_cache_if_present(&cache_dir, owner_repo)?;
@@ -1576,7 +1630,7 @@ fn clone_with_git_cli_in_context(
     branch: &str,
     staging_path: &Path,
 ) -> anyhow::Result<()> {
-    let mut command = Command::new("git");
+    let mut command = github_git_command();
     command
         .arg("clone")
         .arg("--bare")
@@ -1592,8 +1646,8 @@ fn clone_with_git_cli_in_context(
         anyhow::bail!(
             "git clone failed (status: {}) stderr: '{}' stdout: '{}'",
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            String::from_utf8_lossy(&output.stdout).trim()
+            "git diagnostic omitted".trim(),
+            "git diagnostic omitted"
         );
     }
     Ok(())
@@ -1661,6 +1715,7 @@ fn spawn_cache_revalidation(
     Command::new(exe)
         .args(cache_revalidation_args(resolved))
         .env(WIT_CACHE_DIR_ENV, cache_dir)
+        .env("GH_HOST", wit_snapshot::auth::hostname()?)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1957,6 +2012,13 @@ fn clone_from_github(
     branch: &str,
     cache_path: &Path,
 ) -> anyhow::Result<Repository> {
+    if wit_snapshot::auth::hostname()
+        .ok()
+        .and_then(|h| wit_snapshot::auth::token(&h))
+        .is_some()
+    {
+        return clone_with_git_cli(repo_url, branch, cache_path);
+    }
     match clone_with_gix(repo_url, branch, cache_path) {
         Ok(repo) => Ok(repo),
         Err(err) => {
@@ -2041,7 +2103,7 @@ fn clone_with_git_cli(
     branch: &str,
     cache_path: &Path,
 ) -> anyhow::Result<Repository> {
-    let output = Command::new("git")
+    let output = github_git_command()
         .arg("clone")
         .arg("--bare")
         .arg("--depth")
@@ -2055,8 +2117,8 @@ fn clone_with_git_cli(
         .context("failed to invoke git for cache fallback")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = "git diagnostic omitted".trim().to_string();
+        let stdout = "git diagnostic omitted";
         anyhow::bail!(
             "git clone fallback failed (status: {}) stderr: '{}' stdout: '{}'",
             output.status,
@@ -2875,6 +2937,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hosts_do_not_share_repository_caches() {
+        let root = Path::new("cache");
+        assert_eq!(host_cache_root_for(root, "github.com"), root);
+        assert_ne!(
+            host_cache_root_for(root, "one.example"),
+            host_cache_root_for(root, "two.example")
+        );
+        assert_eq!(
+            host_cache_root_for(root, "one.example"),
+            root.join("hosts/one.example")
+        );
+    }
+
+    #[test]
     fn cache_branch_paths_include_owner_repo_and_branch() {
         let cache_dir = Path::new("/tmp/wit-cache");
         let main = CacheTarget::new("owner/repo", "main").unwrap();
@@ -3156,7 +3232,7 @@ mod tests {
             output.status.success(),
             "git {:?} failed: {}",
             args,
-            String::from_utf8_lossy(&output.stderr)
+            "git diagnostic omitted"
         );
     }
 
@@ -3171,7 +3247,7 @@ mod tests {
             output.status.success(),
             "git {:?} failed: {}",
             args,
-            String::from_utf8_lossy(&output.stderr)
+            "git diagnostic omitted"
         );
     }
 
@@ -3186,7 +3262,7 @@ mod tests {
             output.status.success(),
             "git {:?} failed: {}",
             args,
-            String::from_utf8_lossy(&output.stderr)
+            "git diagnostic omitted"
         );
         String::from_utf8(output.stdout)
             .expect("git stdout should be utf-8")
