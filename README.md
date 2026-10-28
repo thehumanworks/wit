@@ -569,3 +569,67 @@ formal/              # Lean 4 proofs of ADR 0002/0009 invariants (ADR 0010)
 - `colored` - Terminal output formatting
 - `tokio` - Async runtime
 - `serde` - JSON serialization
+
+## GitHub hosts and local authentication
+
+`wit --hostname git.example.com tree owner/repo` selects a GitHub Enterprise
+Server. Host precedence is `--hostname` > nonempty `GH_HOST` > nonempty
+`GITHUB_HOST` > `github.com`. `GITHUB_HOST` is a wit alias; it is not a documented
+GitHub CLI variable. Hosts are DNS names, without a scheme, port or path.
+The same flag works on `wit-mcp` and `wit mcp`.
+
+Credentials follow [GitHub CLI environment precedence](https://cli.github.com/manual/gh_help_environment):
+
+| Selected host | Credential precedence |
+| --- | --- |
+| github.com or a subdomain of ghe.com | `GH_TOKEN`, `GITHUB_TOKEN`, local gh login |
+| GitHub Enterprise Server | `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, local gh login |
+
+Empty token variables are skipped. Enterprise variables never fall back to
+public-host variables. These variables select credentials for the chosen host;
+use separate local gh logins when working with multiple enterprise hosts.
+With no credential, wit attempts anonymous access.
+
+To save a login **on your own machine**, run `gh auth login --hostname HOST`.
+wit reads it using `gh auth token --hostname HOST`; it never writes credentials.
+Remove a saved login with `gh auth logout --hostname HOST` (environment credentials
+still take precedence). GitHub CLI uses the system credential store, with a local
+plaintext-file fallback when unavailable; see [gh auth login](https://cli.github.com/manual/gh_auth_login).
+`GH_CONFIG_DIR` is honored by gh. No login or logout occurs automatically. A running local MCP parent keeps its selected
+credentials in memory; restart it after login/logout or changing token variables.
+The local gh lookup has a two-second deadline.
+
+```sh
+# Public GitHub, anonymous or an existing local login
+wit search -q 'language:Rust' --limit 5
+# Enterprise repository, using its existing local login or enterprise env token
+wit --hostname git.example.com tree owner/repo
+GH_HOST=git.example.com wit cat owner/repo README.md --backend memory
+wit-mcp --hostname git.example.com --mode direct
+```
+
+REST routing uses `https://api.github.com`, `https://api.HOST` for `*.ghe.com`,
+and `https://HOST/api/v3` for Enterprise Server, including paginated requests.
+Redirects are disabled and API destinations are restricted to the selected origin
+and prefix. A nonempty legacy `WIT_GITHUB_API_URL` now fails with migration
+instructions before authentication or network access; it is never silently ignored.
+Unset it and select a standard GitHub host with `--hostname`, `GH_HOST`, or
+`GITHUB_HOST`. This previously undocumented production override also allowed
+custom proxies/ports/API paths; there is no equivalent CLI configuration for
+those endpoints. Rust embedding applications and tests can explicitly inject a
+client base URL with `ReqwestGitHubClient::new`. DNS-only host selection cannot
+represent a custom port or API path.
+Disk caches for enterprise hosts live under `hosts/HOST` beneath `WIT_CACHE_DIR`.
+Git authentication is passed in child-process environment configuration, never in
+remote URLs, command-line arguments, or persisted git configuration. Authenticated
+requests skip the shared cloud pack cache.
+
+The CLI and local stdio MCP Rust parent hold credentials only in process memory.
+Generated Code Mode workers still have no environment, network, or credential
+access. Hosted URL API and cache Workers do not gain local-login access or a
+credential store. This change supports GitHub hosts, not other git providers.
+
+Hosted URL API credential handling is separate from the local CLI login. Explicit
+caller credentials are used only in the request, with request-owned redaction and
+no shared/KV cache access for sensitive requests. Existing operator Worker secrets
+remain unchanged. See the [hosted authentication and logging limits](showcase/url-api/README.md#credentials-and-hosted-request-isolation), including the limits of application-level protection for external URL/access logs.

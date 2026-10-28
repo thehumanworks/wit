@@ -56,7 +56,7 @@ impl SnapshotError {
             }
             429 => Self::RateLimited(message),
             401 | 403 | 404 => Self::PrivateRepo(format!(
-                "{repo} (HTTP {status}); public repos only on the memory path"
+                "{repo} (HTTP {status}); check host and local credentials"
             )),
             _ => Self::Api {
                 status,

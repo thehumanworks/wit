@@ -34,6 +34,9 @@ use wit_snapshot::{
     after_help = "Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.\n\nCache behavior: repo-reading commands use a branch-keyed stale-while-revalidate cache by default. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, or tail to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, or tail to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.\n\nSnapshot backends: repo-reading commands default to the disk cache backend. Pass --backend memory (or set WIT_SNAPSHOT_BACKEND=memory) to load a public repo over the GitHub API into RAM with zero WIT_CACHE_DIR writes. Memory covers tree/ls/cat/rg/sed/head/tail, maps cache to an in-memory pin/prefetch, and lists branches via the GitHub API. search always uses the GitHub REST API (no disk cache). Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match)."
 )]
 struct WitCli {
+    /// GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
+    #[arg(long, global = true)]
+    hostname: Option<String>,
     /// Exclude files, directories, or glob patterns (repeatable)
     #[arg(
         long = "ignore",
@@ -1188,6 +1191,7 @@ async fn async_main() -> anyhow::Result<()> {
     ensure_rustls_provider();
     let argv: Vec<String> = std::env::args().collect();
     let cli = WitCli::parse();
+    wit_snapshot::auth::configure_host(cli.hostname.as_deref())?;
     let ignore_patterns = cli.ignore;
 
     match cli.command {

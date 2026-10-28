@@ -11,6 +11,8 @@ use wit::gitops::ops::{CacheBranchSelection, revalidate_github_repo};
     after_help = "Direct mode is recommended for simple calls and exposes eight typed snapshot-first tools. Experimental Code Mode exposes one bounded native JavaScript code tool. Neither requires an external JavaScript runtime. Protocol frames are written to stdout; diagnostics are written to stderr."
 )]
 struct ServeArgs {
+    #[arg(long)]
+    hostname: Option<String>,
     /// MCP tool surface to expose
     #[arg(long, value_enum, default_value = "direct")]
     mode: McpMode,
@@ -41,11 +43,13 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         StartupMode::Worker => wit_quickjs_spike::worker::run_worker_process().await,
-        StartupMode::Serve(McpMode::Direct) => {
+        StartupMode::Serve(McpMode::Direct, hostname) => {
+            wit_snapshot::auth::configure_host(hostname.as_deref())?;
             init_tracing();
             wit::mcp::serve_stdio().await
         }
-        StartupMode::Serve(McpMode::Code) => {
+        StartupMode::Serve(McpMode::Code, hostname) => {
+            wit_snapshot::auth::configure_host(hostname.as_deref())?;
             init_tracing();
             wit::codemode::serve_stdio_with_worker(std::env::current_exe()?).await
         }
@@ -69,7 +73,7 @@ enum StartupMode {
         branch: CacheBranchSelection,
     },
     Worker,
-    Serve(McpMode),
+    Serve(McpMode, Option<String>),
 }
 
 fn startup_mode() -> anyhow::Result<StartupMode> {
@@ -100,13 +104,19 @@ where
             Ok(StartupMode::Worker)
         }
         Some(argument)
-            if argument != "--mode"
+            if argument != "--hostname"
+                && !argument.starts_with("--hostname=")
+                && argument != "--mode"
                 && !argument.starts_with("--mode=")
                 && !matches!(argument, "-h" | "--help" | "-V" | "--version") =>
         {
             anyhow::bail!("unsupported argument {argument}; run `wit-mcp --help` for usage")
         }
-        _ => Ok(StartupMode::Serve(ServeArgs::try_parse_from(args)?.mode)),
+        _ => {
+            let parsed = ServeArgs::try_parse_from(args)?;
+            // Parsing helpers are also exercised repeatedly by tests; configure in main.
+            Ok(StartupMode::Serve(parsed.mode, parsed.hostname))
+        }
     }
 }
 
@@ -118,7 +128,7 @@ wit-mcp {}
 Stdio wit MCP server (direct by default; Code Mode experimental).
 
 USAGE:
-    wit-mcp [--mode <direct|code>]
+    wit-mcp [--hostname HOST] [--mode <direct|code>]
     wit-mcp --version
 
 OPTIONS:
@@ -172,15 +182,15 @@ mod tests {
     fn public_modes_parse_and_direct_is_default() {
         assert!(matches!(
             startup_mode_from(["wit-mcp"]),
-            Ok(StartupMode::Serve(McpMode::Direct))
+            Ok(StartupMode::Serve(McpMode::Direct, None))
         ));
         assert!(matches!(
             startup_mode_from(["wit-mcp", "--mode", "direct"]),
-            Ok(StartupMode::Serve(McpMode::Direct))
+            Ok(StartupMode::Serve(McpMode::Direct, None))
         ));
         assert!(matches!(
             startup_mode_from(["wit-mcp", "--mode", "code"]),
-            Ok(StartupMode::Serve(McpMode::Code))
+            Ok(StartupMode::Serve(McpMode::Code, None))
         ));
     }
 

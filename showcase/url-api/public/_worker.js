@@ -49,7 +49,7 @@ export default {
       return env.ASSETS.fetch(request);
     } catch (err) {
       // Last-resort host log — never echo raw PATs from URL/headers.
-      safeConsole.error("worker fetch failed", err?.message || err, String(request.url));
+      safeConsole.error("worker fetch failed");
       return new Response("error: internal\n", {
         status: 500,
         headers: { "content-type": "text/plain; charset=utf-8" },

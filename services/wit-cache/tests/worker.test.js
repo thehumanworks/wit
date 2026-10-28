@@ -60,14 +60,18 @@ describe("read path and lazy fill", () => {
     const gh = fakeGitHub({ "o/r": { refs: { main: SHA_A }, packs: { [SHA_A]: pack } } });
     const { env } = makeEnv();
     const res = await call(env, `/v1/github/o/r/${SHA_A}.pack?branch=main`, {
-      headers: { authorization: "Bearer ghp_callerSecretValue123" },
+      headers: { authorization: "Bearer ghp_callerSecretValue123", cookie: "session=synthetic-cookie", "proxy-authorization": "Basic c3ludGhldGlj" },
     });
     assert.equal(res.status, 404);
     const job = env.FILL_QUEUE.sent[0];
     assert.equal(JSON.stringify(job).includes("ghp_"), false, "fill job carries no caller credentials");
+    assert.equal(JSON.stringify(job).includes("synthetic-cookie"), false);
+    assert.equal(JSON.stringify(job).includes("c3ludGhldGlj"), false);
     await runFillJob(env, job, { fetchImpl: gh.fetchImpl });
     assert.ok(gh.requests.length >= 2);
-    for (const req of gh.requests) assert.equal(req.headers.get("authorization"), null);
+    for (const req of gh.requests) {
+      for (const name of ["authorization", "cookie", "proxy-authorization"]) assert.equal(req.headers.get(name), null);
+    }
   });
 
   it("with an execution context the miss answers first and requests the fill afterwards", async () => {

@@ -12,9 +12,9 @@
 import {
   extractToken,
   SafeError,
-  safeConsole,
   scrubSecrets,
   withActiveSecrets,
+  requestSecrets,
 } from "./auth.js";
 import { apiIndexText, llmsText, openApiDocument } from "./discovery.js";
 import {
@@ -65,7 +65,8 @@ export const API_VERSION = "2";
  * @typedef {{
  *   loadWasmBytes: () => Promise<BufferSource | Response | WebAssembly.Module>,
  *   cache?: import('./repo-cache.js').RepoSnapshotCache,
- *   persistentCache?: import('./persistent-cache.js').KvRepoCache,
+ *   persistentCache?: import('./persistent-cache.js').KvRepoCache | null,
+ *   redaction?: { scrub: (text: string) => string, console: typeof import('./auth.js').safeConsole },
  *   waitUntil?: (promise: Promise<unknown>) => void,
  *   serverToken?: string | null,
  *   rawBlobs?: boolean,
@@ -106,12 +107,23 @@ export async function handleRequest(request, deps) {
   }
 
   const token = extractToken({ headers: request.headers, url });
-  // Scrub the winning Authorization PAT, any ?token= fallback, and the host's
-  // own token so a mistaken log of request.url cannot leak any of them.
-  const queryToken = url.searchParams.get("token") || url.searchParams.get("access_token");
-  const secrets = [token, queryToken, deps?.serverToken].filter(Boolean);
-
-  return withActiveSecrets(secrets, () => handleRequestInner(request, deps, url, token));
+  const secrets = requestSecrets(request, deps?.serverToken);
+  return withActiveSecrets(secrets, async (redaction) => {
+    // Caller-authenticated or sensitive-header requests never touch shared/KV caches.
+    const privateRequest = Boolean(token || request.headers.has("authorization") || request.headers.has("proxy-authorization") || request.headers.has("cookie"));
+    const requestDeps = { ...deps, redaction };
+    if (privateRequest) {
+      requestDeps.cache = createHostCache();
+      requestDeps.persistentCache = null;
+      requestDeps.waitUntil = undefined;
+    }
+    try {
+      return await handleRequestInner(request, requestDeps, url, token);
+    } finally {
+      secrets.fill("");
+      secrets.length = 0;
+    }
+  });
 }
 
 /**
@@ -165,9 +177,9 @@ async function handleRequestInner(request, deps, url, callerToken) {
     const result = await runSnapshotVerb(route, deps, auth, ttlMs);
     return respond(request, route.format, result, { ...baseHeaders, ...result.headers }, auth);
   } catch (err) {
-    const { status, body, retryAfter } = errorBody(err, { format });
+    const { status, body, retryAfter } = errorBody(err, { format, scrub: deps.redaction.scrub });
     // Never log raw token-bearing URLs / PATs (safeConsole scrubs every arg).
-    safeConsole.error("url-api error", err?.message || err, String(url));
+    deps.redaction.console.error("url-api error", err?.message || err);
     /** @type {Record<string, string>} */
     const extra = {};
     if (retryAfter != null) extra["retry-after"] = String(retryAfter);
@@ -219,7 +231,7 @@ async function runSnapshotVerb(route, deps, auth, ttlMs) {
     try {
       await persistent.hydrateOpen(cache, route.ownerRepo, route.branch);
     } catch (err) {
-      safeConsole.error("persistent cache hydrate failed", err?.message || err);
+      deps.redaction.console.error("persistent cache hydrate failed", err?.message || err);
     }
   }
 
@@ -295,7 +307,7 @@ async function runSnapshotVerb(route, deps, auth, ttlMs) {
     const persisted = persistent
       .persistRepo(cache, route.ownerRepo)
       .catch((err) => {
-        safeConsole.error("persistent cache write failed", err?.message || err);
+        deps.redaction.console.error("persistent cache write failed", err?.message || err);
       });
     if (deps.waitUntil) deps.waitUntil(persisted);
     else await persisted;
@@ -438,7 +450,7 @@ async function readFileText(ctx, path) {
     try {
       await persistent.hydrateBlob(cache, route.ownerRepo, sha);
     } catch (err) {
-      safeConsole.error("persistent blob hydrate failed", err?.message || err);
+      deps.redaction.console.error("persistent blob hydrate failed", err?.message || err);
     }
   }
   await prefetchBlob(cache, route.ownerRepo, sha, auth.token, {
@@ -599,7 +611,7 @@ async function verbRg(ctx) {
           try {
             await persistent.hydrateBlob(cache, route.ownerRepo, row.sha);
           } catch (err) {
-            safeConsole.error("persistent blob hydrate failed", err?.message || err);
+            deps.redaction.console.error("persistent blob hydrate failed", err?.message || err);
           }
         }
         await prefetchBlob(cache, route.ownerRepo, row.sha, auth.token, {
@@ -860,7 +872,7 @@ async function searchRepositories(route, auth) {
  */
 function respond(request, format, result, headers, auth) {
   const cacheControl =
-    auth.source === "caller" ? "private, no-store" : "public, max-age=60, stale-while-revalidate=600";
+    (auth.source === "caller" || request.headers.has("authorization") || request.headers.has("proxy-authorization") || request.headers.has("cookie")) ? "private, no-store" : "public, max-age=60, stale-while-revalidate=600";
   if (format === "json") {
     return bodyResponse(request, `${JSON.stringify(result.json)}\n`, {
       contentType: "application/json; charset=utf-8",

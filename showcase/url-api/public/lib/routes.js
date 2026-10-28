@@ -415,14 +415,15 @@ export function isApiPath(pathname) {
 /**
  * Build a safe error response body (never includes tokens).
  * @param {unknown} err
- * @param {{ format?: 'text' | 'json' }} [opts]
+ * @param {{ format?: 'text' | 'json', scrub?: (text: string) => string }} [opts]
  */
 export function errorBody(err, opts = {}) {
   const status = err && typeof err === "object" && "status" in err ? Number(err.status) || 500 : 500;
-  const message = scrubSecrets(
+  const scrub = opts.scrub ?? scrubSecrets;
+  const message = scrub(
     err instanceof Error ? err.message : String(err ?? "error"),
   );
-  const code = err && typeof err === "object" && "code" in err ? String(err.code || "") : "";
+  const code = err && typeof err === "object" && "code" in err ? scrub(String(err.code || "")) : "";
   const retryAfter =
     err && typeof err === "object" && "retryAfterSeconds" in err && err.retryAfterSeconds != null
       ? Number(err.retryAfterSeconds)

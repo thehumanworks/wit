@@ -1,5 +1,6 @@
 use anyhow::{Context, ensure};
 use octocrab::{Octocrab, models::Repository};
+use wit_snapshot::{GitHubHttpClient, ReqwestGitHubClient};
 
 use crate::{ensure_rustls_provider, operation_context::OperationContext};
 
@@ -28,9 +29,10 @@ pub struct RepositorySummary {
     pub html_url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GitHubSearchClient {
-    octocrab: Octocrab,
+    octocrab: Option<Octocrab>,
+    http: Option<Result<ReqwestGitHubClient, String>>,
 }
 
 impl Default for GitHubSearchClient {
@@ -43,22 +45,78 @@ impl GitHubSearchClient {
     /// Build a client using `GITHUB_TOKEN` when set (higher rate limits); otherwise unauthenticated.
     pub fn new() -> Self {
         ensure_rustls_provider();
-        let mut builder = Octocrab::builder();
-        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-            let token = token.trim();
-            if !token.is_empty() {
-                builder = builder.personal_token(token.to_string());
-            }
+        Self {
+            octocrab: None,
+            http: Some(ReqwestGitHubClient::from_env().map_err(|e| e.to_string())),
         }
-        let octo = builder
-            .build()
-            .context("failed to build GitHub client")
-            .unwrap();
-        Self::with_octocrab(octo)
     }
 
     pub fn with_octocrab(octocrab: Octocrab) -> Self {
-        Self { octocrab }
+        Self {
+            octocrab: Some(octocrab),
+            http: None,
+        }
+    }
+
+    pub fn with_http(http: ReqwestGitHubClient) -> Self {
+        Self {
+            octocrab: None,
+            http: Some(Ok(http)),
+        }
+    }
+
+    async fn search_http(
+        &self,
+        client: &ReqwestGitHubClient,
+        context: &OperationContext,
+        query: &str,
+        limit: usize,
+    ) -> anyhow::Result<RepositorySearchResults> {
+        let mut result = RepositorySearchResults {
+            total_count: 0,
+            incomplete_results: false,
+            repositories: Vec::new(),
+        };
+        let per_page = limit.min(100);
+        for page in 1..=limit.div_ceil(per_page) {
+            // Construct each page beneath the configured API prefix; never follow untrusted Link URLs.
+            let mut url = reqwest::Url::parse("https://placeholder.invalid/search/repositories")?;
+            url.query_pairs_mut()
+                .append_pair("q", query)
+                .append_pair("sort", DEFAULT_SORT)
+                .append_pair("order", DEFAULT_ORDER)
+                .append_pair("per_page", &per_page.to_string())
+                .append_pair("page", &page.to_string());
+            let path = format!("/search/repositories?{}", url.query().unwrap_or_default());
+            let (status, body) = context
+                .wait(client.get_json(&path))
+                .await
+                .map_err(anyhow::Error::msg)??;
+            ensure!(
+                (200..300).contains(&status),
+                "GitHub search returned HTTP {status}"
+            );
+            #[derive(serde::Deserialize)]
+            struct Page {
+                total_count: u64,
+                #[serde(default)]
+                incomplete_results: bool,
+                items: Vec<Repository>,
+            }
+            let page: Page = serde_json::from_str(&body)
+                .map_err(|_| anyhow::anyhow!("invalid GitHub search response"))?;
+            result.total_count = page.total_count;
+            result.incomplete_results |= page.incomplete_results;
+            let count = page.items.len();
+            result
+                .repositories
+                .extend(page.items.into_iter().map(RepositorySummary::from));
+            if count < per_page || result.repositories.len() as u64 >= result.total_count {
+                break;
+            }
+        }
+        result.repositories.truncate(limit);
+        Ok(result)
     }
 
     pub async fn search(
@@ -82,9 +140,15 @@ impl GitHubSearchClient {
 
         let limit = limit.min(MAX_GITHUB_REPOS);
         let per_page = limit.min(usize::from(DEFAULT_PER_PAGE)) as u8;
+        if let Some(http) = &self.http {
+            let client = http
+                .as_ref()
+                .map_err(|message| anyhow::anyhow!(message.clone()))?;
+            return self.search_http(client, context, query, limit).await;
+        }
+        let octocrab = self.octocrab.as_ref().expect("injected search client");
 
-        let request = self
-            .octocrab
+        let request = octocrab
             .search()
             .repositories(query)
             .sort(DEFAULT_SORT)
@@ -108,7 +172,7 @@ impl GitHubSearchClient {
 
         while repositories.len() < limit {
             let Some(mut page) = context
-                .wait(self.octocrab.get_page::<Repository>(&next_page))
+                .wait(octocrab.get_page::<Repository>(&next_page))
                 .await
                 .map_err(anyhow::Error::msg)?
                 .context("failed to fetch additional GitHub repository search pages")?
@@ -253,6 +317,41 @@ mod tests {
             "language": language,
             "stargazers_count": stars,
         })
+    }
+
+    #[tokio::test]
+    async fn enterprise_search_pages_keep_prefix_and_auth() {
+        ensure_rustls_provider();
+        let server = MockServer::start().await;
+        for page in 1..=2 {
+            let items: Vec<_> = (0..if page == 1 { 100 } else { 1 })
+                .map(|n| repo_json(n + 1, "r", "o/r", "description", "Rust", 1))
+                .collect();
+            Mock::given(path("/api/v3/search/repositories"))
+                .and(query_param("page", page.to_string()))
+                .and(wiremock::matchers::header(
+                    "Authorization",
+                    "Bearer synthetic-only",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"total_count":101,"items":items})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let client = GitHubSearchClient::with_http(
+            ReqwestGitHubClient::new(
+                format!("{}/api/v3", server.uri()),
+                Some("synthetic-only".into()),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            client.search("rust", 101).await.unwrap().repositories.len(),
+            101
+        );
     }
 
     fn search_client(uri: &str) -> GitHubSearchClient {

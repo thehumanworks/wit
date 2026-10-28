@@ -807,3 +807,48 @@ fn git_command(args: &[&str], workdir: Option<&Path>) -> Command {
     }
     command
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn enterprise_refs_use_selected_host_and_local_auth() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = lock_stdio_child_tests().await;
+    let temp = tempfile::tempdir()?;
+    let git = temp.path().join("git");
+    std::fs::write(
+        &git,
+        r#"#!/bin/sh
+[ "$GIT_CONFIG_KEY_0" = 'http.https://git.example/.extraHeader' ] || exit 41
+[ "$GIT_CONFIG_VALUE_0" = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46c3ludGhldGlj' ] || exit 42
+case "$*" in
+  *'http.followRedirects=false ls-remote --symref https://git.example/owner/repo'*) ;;
+  *) exit 43 ;;
+esac
+printf 'ref: refs/heads/main\tHEAD\n1111111111111111111111111111111111111111\tHEAD\n1111111111111111111111111111111111111111\trefs/heads/main\n'
+"#,
+    )?;
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o700))?;
+    let transport = TokioChildProcess::new(
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_wit-mcp")).configure(|cmd| {
+            cmd.args(["--hostname", "git.example"])
+                .env_clear()
+                .env("PATH", temp.path())
+                .env("GH_HOST", "wrong.example")
+                .env("GH_TOKEN", "wrong-public-credential")
+                .env("GH_ENTERPRISE_TOKEN", "synthetic")
+                .kill_on_drop(true);
+        }),
+    )?;
+    let client = ().serve(transport).await?;
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("wit_refs").with_arguments(object!({"repo":"owner/repo"})),
+        )
+        .await?;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let text = serde_json::to_string(&result)?;
+    assert!(text.contains("main"));
+    assert!(!text.contains("synthetic"));
+    shutdown_client(client).await?;
+    Ok(())
+}

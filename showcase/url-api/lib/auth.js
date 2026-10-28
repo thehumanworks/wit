@@ -6,26 +6,52 @@
 
 const TOKEN_QUERY_KEYS = new Set(["token", "access_token"]);
 
-/** @type {string[]} */
-let activeSecrets = [];
-
 /**
- * Run `fn` while treating `secrets` as redaction targets for scrubSecrets / safeConsole.
- * Nested calls restore the previous set. Awaits async `fn` so secrets stay active
- * through the full request (including catch-path console.error).
+ * Request-owned redaction context. No module/global credential registry.
+ * The context is cleared on success or failure; late callbacks fail closed.
  * @template T
  * @param {Array<string | null | undefined>} secrets
- * @param {() => T | Promise<T>} fn
+ * @param {(scope: { scrub: (text: string) => string, console: typeof safeConsole }) => T | Promise<T>} fn
  * @returns {Promise<T>}
  */
 export async function withActiveSecrets(secrets, fn) {
-  const prev = activeSecrets;
-  activeSecrets = secrets.filter((s) => typeof s === "string" && s.length > 0);
+  const values = secrets.filter((s) => typeof s === "string" && s.length > 0);
+  let closed = false;
+  const scrub = (text) => closed ? "[REDACTED]" : scrubSecrets(text, values);
+  const scope = { scrub, console: createSafeConsole(scrub) };
   try {
-    return await fn();
+    return await fn(scope);
   } finally {
-    activeSecrets = prev;
+    values.fill("");
+    values.length = 0;
+    closed = true;
   }
+}
+
+/** Collect sensitive request values for exact, request-local redaction only. */
+export function requestSecrets(request, serverToken = null) {
+  const url = new URL(request.url);
+  const values = [serverToken, extractToken({ headers: request.headers, url })];
+  for (const key of TOKEN_QUERY_KEYS) values.push(...url.searchParams.getAll(key));
+  for (const name of ["authorization", "proxy-authorization", "cookie"]) {
+    const value = request.headers.get(name);
+    if (!value) continue;
+    values.push(value);
+    if (name === "cookie") {
+      for (const part of value.split(";")) {
+        const separator = part.indexOf("=");
+        if (separator >= 0) {
+          const cookie = part.slice(separator + 1).trim();
+          values.push(cookie);
+          if (cookie.startsWith('"') && cookie.endsWith('"')) values.push(cookie.slice(1, -1));
+        }
+      }
+    } else {
+      // Include the opaque credential after any scheme (Basic is never forwarded).
+      values.push(value.replace(/^\S+\s+/, ""));
+    }
+  }
+  return values;
 }
 
 /**
@@ -51,15 +77,18 @@ function formatLogArg(value) {
  * Strip secrets from a string (query tokens, bearer values, active PATs).
  * @param {string} text
  */
-export function scrubSecrets(text) {
+export function scrubSecrets(text, secrets = []) {
   if (text == null) return text;
   let out = String(text);
   // Exact active secrets first (header PAT, query PAT, etc.)
-  for (const secret of activeSecrets) {
+  for (const secret of secrets) {
     if (secret && out.includes(secret)) {
       out = out.split(secret).join("[REDACTED]");
     }
   }
+  // Header-shaped diagnostics, including JSON objects, must not expose any scheme
+  // or cookie values. Request contexts additionally redact exact opaque values.
+  out = out.replace(/((?:["']?(?:authorization|proxy-authorization|cookie|set-cookie)["']?)\s*:\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\r\n]+)/gi, "$1[REDACTED]");
   // ?token=... / &token=... (and access_token)
   out = out.replace(
     /([?&](?:token|access_token)=)([^&#\s]*)/gi,
@@ -92,28 +121,12 @@ export function scrubLogArgs(args) {
  * console.* wrappers that always scrubSecrets every argument.
  * Use these for every log line in the showcase host.
  */
-export const safeConsole = {
-  /** @param {...unknown} args */
-  log(...args) {
-    console.log(...scrubLogArgs(args));
-  },
-  /** @param {...unknown} args */
-  info(...args) {
-    console.info(...scrubLogArgs(args));
-  },
-  /** @param {...unknown} args */
-  warn(...args) {
-    console.warn(...scrubLogArgs(args));
-  },
-  /** @param {...unknown} args */
-  error(...args) {
-    console.error(...scrubLogArgs(args));
-  },
-  /** @param {...unknown} args */
-  debug(...args) {
-    console.debug(...scrubLogArgs(args));
-  },
-};
+function createSafeConsole(scrub) {
+  return Object.fromEntries(["log", "info", "warn", "error", "debug"].map((level) => [
+    level, (...args) => console[level](...args.map((arg) => scrub(formatLogArg(arg)))),
+  ]));
+}
+export const safeConsole = createSafeConsole(scrubSecrets);
 
 /**
  * Safe Error whose message is scrubbed.

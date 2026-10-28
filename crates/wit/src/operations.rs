@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, Mutex},
 };
 use tempfile::TempDir;
@@ -182,8 +181,10 @@ fn validate_repo(repo: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn github_remote_url(repo: &str) -> String {
-    format!("https://github.com/{repo}")
+fn github_remote_url(repo: &str) -> Result<String, String> {
+    wit_snapshot::auth::hostname()
+        .map(|host| format!("https://{host}/{repo}"))
+        .map_err(|e| e.to_string())
 }
 
 fn snapshot_id(repo: &str, commit_sha: &str) -> String {
@@ -248,7 +249,7 @@ fn is_full_sha(value: &str) -> bool {
 }
 
 fn query_remote_refs(context: &OperationContext, remote: &str) -> Result<RemoteRefs, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     command.args([
         "ls-remote",
         "--symref",
@@ -262,7 +263,7 @@ fn query_remote_refs(context: &OperationContext, remote: &str) -> Result<RemoteR
     if !output.status.success() {
         return Err(format!(
             "git ls-remote failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "git diagnostic omitted"
         ));
     }
     let stdout = String::from_utf8(output.stdout)
@@ -346,7 +347,7 @@ fn clone_snapshot(
         .tempdir()
         .map_err(|err| format!("failed to create snapshot directory: {err}"))?;
     let repo_path = temp_dir.path().join("repo.git");
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     command
         .args(["clone", "--bare", "--no-hardlinks"])
         .arg(source)
@@ -356,7 +357,7 @@ fn clone_snapshot(
     if !output.status.success() {
         return Err(format!(
             "failed to clone immutable snapshot: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "git diagnostic omitted"
         ));
     }
     let actual = git_stdout_with_context(
@@ -470,7 +471,7 @@ fn cache_provenance(repo_path: &Path, freshness: Freshness) -> CacheProvenance {
 
 #[cfg(test)]
 fn run_git(repo_path: Option<&Path>, args: &[&str], action: &str) -> Result<(), String> {
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     if let Some(repo_path) = repo_path {
         command.arg("-C").arg(repo_path);
     }
@@ -479,27 +480,21 @@ fn run_git(repo_path: Option<&Path>, args: &[&str], action: &str) -> Result<(), 
         .output()
         .map_err(|err| format!("failed to {action}: {err}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "failed to {action}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err(format!("failed to {action}: {}", "git diagnostic omitted"));
     }
     Ok(())
 }
 
 #[cfg(test)]
 fn git_stdout(repo_path: &Path, args: &[&str], action: &str) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = crate::gitops::ops::github_git_command()
         .arg("-C")
         .arg(repo_path)
         .args(args)
         .output()
         .map_err(|err| format!("failed to {action}: {err}"))?;
     if !output.status.success() {
-        return Err(format!(
-            "failed to {action}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err(format!("failed to {action}: {}", "git diagnostic omitted"));
     }
     String::from_utf8(output.stdout)
         .map(|value| value.trim().to_string())
@@ -512,17 +507,14 @@ fn run_git_with_context(
     args: &[&str],
     action: &str,
 ) -> Result<(), String> {
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     if let Some(repo_path) = repo_path {
         command.arg("-C").arg(repo_path);
     }
     command.args(args);
     let output = command_output(context, &mut command, action).map_err(|err| err.to_string())?;
     if !output.status.success() {
-        return Err(format!(
-            "failed to {action}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err(format!("failed to {action}: {}", "git diagnostic omitted"));
     }
     Ok(())
 }
@@ -533,14 +525,11 @@ fn git_stdout_with_context(
     args: &[&str],
     action: &str,
 ) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     command.arg("-C").arg(repo_path).args(args);
     let output = command_output(context, &mut command, action).map_err(|err| err.to_string())?;
     if !output.status.success() {
-        return Err(format!(
-            "failed to {action}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err(format!("failed to {action}: {}", "git diagnostic omitted"));
     }
     String::from_utf8(output.stdout)
         .map(|value| value.trim().to_string())
@@ -589,7 +578,7 @@ fn walk_tree(
     let SnapshotHandle::Disk { repo_path, .. } = snapshot else {
         return Err("walk_tree requires a disk or memory snapshot".to_string());
     };
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     command
         .arg("-C")
         .arg(repo_path)
@@ -599,7 +588,7 @@ fn walk_tree(
     if !output.status.success() {
         return Err(format!(
             "failed to list snapshot tree: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "git diagnostic omitted"
         ));
     }
     for record in output
@@ -1068,7 +1057,7 @@ fn blob_text(
             "blob {oid} is {size} bytes, above this operation's {max_bytes}-byte safety limit"
         ));
     }
-    let mut command = Command::new("git");
+    let mut command = crate::gitops::ops::github_git_command();
     command
         .arg("-C")
         .arg(repo_path)
@@ -1078,7 +1067,7 @@ fn blob_text(
     if !output.status.success() {
         return Err(format!(
             "failed to read blob {oid}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "git diagnostic omitted"
         ));
     }
     if output.stdout.contains(&0) {
@@ -2835,7 +2824,7 @@ impl WitOperations {
             return self.open_memory(context, args.repo, requested).await;
         }
 
-        let remote = github_remote_url(&args.repo);
+        let remote = github_remote_url(&args.repo)?;
         let resolved = resolve_requested_ref(context, &remote, &requested)?;
         let (record, commit_sha, cache) = match &resolved.kind {
             ResolvedRefKind::DefaultBranch(branch) | ResolvedRefKind::Branch(branch) => {
@@ -2959,7 +2948,7 @@ impl WitOperations {
         validate_repo(&args.repo)?;
         let max_items = validate_page_items(args.max_items)?;
         let max_bytes = validate_budget(args.max_bytes)?;
-        let remote = github_remote_url(&args.repo);
+        let remote = github_remote_url(&args.repo)?;
         let mut refs = list_remote_refs(context, &args.repo, &remote)?;
         if let Some(reference) = args.reference.as_deref() {
             let resolved = resolve_requested_ref(context, &remote, reference)?;

@@ -60,6 +60,7 @@ pub struct ReqwestGitHubClient {
 impl ReqwestGitHubClient {
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> SnapshotResult<Self> {
         let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent("wit-snapshot/0.1 (+https://github.com/thehumanworks/wit)")
             .build()
             .map_err(|err| SnapshotError::Other(format!("failed to build HTTP client: {err}")))?;
@@ -72,15 +73,9 @@ impl ReqwestGitHubClient {
 
     pub fn from_env() -> SnapshotResult<Self> {
         crate_tls_note();
-        let token = std::env::var("GITHUB_TOKEN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let base = std::env::var("WIT_GITHUB_API_URL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "https://api.github.com".to_string());
+        let host = crate::auth::hostname()?;
+        let base = crate::auth::api_base(&host);
+        let token = crate::auth::token(&host);
         Self::new(base, token)
     }
 }
@@ -93,6 +88,21 @@ impl GitHubHttpClient for ReqwestGitHubClient {
         } else {
             format!("{}/{}", self.base_url, path.trim_start_matches('/'))
         };
+        let base = reqwest::Url::parse(&self.base_url)
+            .map_err(|_| SnapshotError::Other("invalid API base".into()))?;
+        let target = reqwest::Url::parse(&url)
+            .map_err(|_| SnapshotError::Other("invalid API request".into()))?;
+        if base.origin() != target.origin()
+            || !target.username().is_empty()
+            || target.password().is_some()
+            || !target
+                .path()
+                .starts_with(&format!("{}/", base.path().trim_end_matches('/')))
+        {
+            return Err(SnapshotError::Other(
+                "GitHub request outside configured API boundary".into(),
+            ));
+        }
         let mut request = self
             .client
             .get(&url)
@@ -103,12 +113,17 @@ impl GitHubHttpClient for ReqwestGitHubClient {
         let response = request
             .send()
             .await
-            .map_err(|err| SnapshotError::Other(format!("GitHub request failed: {err}")))?;
+            .map_err(|_| SnapshotError::Other("GitHub request failed".into()))?;
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
             .map_err(|err| SnapshotError::Other(format!("failed to read GitHub body: {err}")))?;
+        let body = if let Some(token) = &self.token {
+            body.replace(token, "[REDACTED]")
+        } else {
+            body
+        };
         Ok((status, body))
     }
 }

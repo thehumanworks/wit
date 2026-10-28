@@ -120,3 +120,6 @@ mod tests {
         assert!(split_owner_repo("owner/repo").is_ok());
     }
 }
+
+#[cfg(feature = "http")]
+pub mod auth;

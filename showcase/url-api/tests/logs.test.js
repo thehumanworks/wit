@@ -119,8 +119,7 @@ describe("console log scrubbing", () => {
   it("safeConsole redacts active secrets across log/warn/error", async () => {
     installConsoleSpies();
     try {
-      await withActiveSecrets(["ghp_ACTIVE_SECRET"], async () => {
-        const { safeConsole } = await import("../lib/auth.js");
+      await withActiveSecrets(["ghp_ACTIVE_SECRET"], async ({ console: safeConsole }) => {
         safeConsole.log("see", "ghp_ACTIVE_SECRET", { token: "ghp_ACTIVE_SECRET" });
         safeConsole.warn("Bearer ghp_ACTIVE_SECRET");
         safeConsole.error("url?token=ghp_ACTIVE_SECRET");
@@ -140,4 +139,40 @@ describe("console log scrubbing", () => {
     assert.equal(s.includes("ghp_LEAK"), false);
     assert.match(s, /\[REDACTED\]/);
   });
+  it("concurrent request failures redact their own opaque credentials in either completion order", async () => {
+    installConsoleSpies();
+    const savedFetch = globalThis.fetch;
+    try {
+      for (const order of [["a", "b"], ["b", "a"]]) {
+        const gates = new Map();
+        let bothStarted;
+        const started = new Promise((resolve) => { bothStarted = resolve; });
+        globalThis.fetch = async (_url, init) => {
+          const headers = new Headers(init.headers);
+          assert.equal(headers.get("cookie"), null);
+          const id = headers.get("authorization").endsWith("opaque-a") ? "a" : "b";
+          await new Promise((resolve) => { gates.set(id, resolve); if (gates.size === 2) bothStarted(); });
+          throw new Error(`opaque-${id} query-${id} cookie-${id}`);
+        };
+        const pending = Object.fromEntries(["a", "b"].map((id) => [id, handleRequest(
+          new Request(`https://example.test/api/cat/demo/repo?path=README.md&token=query-${id}&format=json`, {
+            headers: { Authorization: `Bearer opaque-${id}`, Cookie: `session="cookie-${id}"` },
+          }), { cache: createHostCache(), loadWasmBytes: async () => wasmBytes },
+        )]));
+        await started;
+        for (const id of order) {
+          gates.get(id)();
+          const response = await pending[id];
+          assert.equal(response.status, 502);
+          const body = await response.text();
+          assert.doesNotMatch(body, /opaque-[ab]|query-[ab]|cookie-[ab]/);
+        }
+        assert.doesNotMatch(flattenCaptured(), /opaque-[ab]|query-[ab]|cookie-[ab]/);
+      }
+    } finally {
+      globalThis.fetch = savedFetch;
+      restoreConsole();
+    }
+  });
+
 });

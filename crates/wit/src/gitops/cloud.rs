@@ -181,6 +181,13 @@ pub(crate) fn fill_from_cloud(
     dest: &Path,
     deadline: Option<Instant>,
 ) -> bool {
+    if wit_snapshot::auth::hostname()
+        .ok()
+        .and_then(|h| wit_snapshot::auth::token(&h))
+        .is_some()
+    {
+        return false;
+    }
     fill_with(active_config(), remote_url, branch, commit, dest, deadline)
 }
 
