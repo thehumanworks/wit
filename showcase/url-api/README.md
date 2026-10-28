@@ -119,3 +119,38 @@ curl -sS "http://127.0.0.1:8787/api/stats/octocat/Hello-World"
 ```
 
 `npm run check` (sync-lib + tests) is what CI runs on pull requests.
+
+## Credentials and hosted request isolation
+
+The native CLI and local stdio MCP parent use credentials on the user's machine.
+The hosted URL API does not read that local login. If a caller explicitly supplies
+an Authorization credential, the URL API uses it in memory for that request's
+GitHub fetches. It does not save a login or store request headers/cookies.
+Caller credentials take precedence over the existing operator-managed
+`GITHUB_TOKEN` Worker secret. That operator credential must have public-read-only
+access; it is separate from user authentication and is not created or changed by
+this feature.
+
+Redaction state belongs to each request, including overlapping requests, and is
+cleared in `finally` on success or failure. Deferred use of a completed redactor
+fails closed. Authorization, Proxy-Authorization, Cookie values, and legacy
+query credentials are redaction inputs; Basic credentials and cookies are not
+GitHub authentication inputs and are not forwarded upstream. Requests containing
+caller credentials or those sensitive headers use a fresh request-local cache,
+skip shared memory/KV hydration and persistence, schedule no cache writes, and
+receive `Cache-Control: private, no-store` for successful repository responses.
+Anonymous/public operator requests retain the existing public cache behavior.
+
+Application error logging omits raw request URLs and headers. The outer Worker
+failure path logs only a fixed event string. The separate pack-cache Worker
+continues to ignore caller Authorization/cookies and to fetch GitHub anonymously;
+its queue and R2/DO storage do not receive user credentials.
+
+These are application-code guarantees, not an audit of the live hosting account.
+The checked-in pack-cache Wrangler config disables observability; the Pages
+config does not establish account-wide access-log retention settings. Cloudflare
+dashboard overrides, edge/proxy logs, external telemetry, and browser history
+were not inspected or changed. Prefer the Authorization header: legacy `?token=`
+and `?access_token=` remain supported but can expose credentials in external URL
+logs or history before the request reaches application redaction. Do not infer
+that passing the application tests verifies those external systems.

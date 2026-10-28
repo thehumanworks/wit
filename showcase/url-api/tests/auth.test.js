@@ -63,14 +63,14 @@ describe("scrubSecrets", () => {
 
 describe("safeConsole", () => {
   it("scrubs every console.error argument", async () => {
-    const { safeConsole, withActiveSecrets } = await import("../lib/auth.js");
+    const { withActiveSecrets } = await import("../lib/auth.js");
     const seen = [];
     const orig = console.error;
     console.error = (...args) => {
       seen.push(args);
     };
     try {
-      await withActiveSecrets(["ghp_LOG_SECRET"], async () => {
+      await withActiveSecrets(["ghp_LOG_SECRET"], async ({ console: safeConsole }) => {
         safeConsole.error("hit", "ghp_LOG_SECRET", "url?token=ghp_LOG_SECRET");
       });
       const flat = seen.flat().join(" ");
@@ -80,4 +80,43 @@ describe("safeConsole", () => {
       console.error = orig;
     }
   });
+});
+
+it("request contexts isolate overlapping secrets and clear on success and failure", async () => {
+  const { withActiveSecrets, scrubSecrets } = await import("../lib/auth.js");
+  let endA, endB, contextA, contextB;
+  const a = withActiveSecrets(["synthetic-first"], async (scope) => {
+    contextA = scope;
+    await new Promise((resolve) => { endA = resolve; });
+    assert.equal(scope.scrub("synthetic-first"), "[REDACTED]");
+  });
+  const b = withActiveSecrets(["synthetic-second"], async (scope) => {
+    contextB = scope;
+    await new Promise((resolve) => { endB = resolve; });
+    assert.equal(scope.scrub("synthetic-second"), "[REDACTED]");
+    throw new Error("controlled failure");
+  });
+  endA(); await a;
+  assert.equal(contextB.scrub("synthetic-second"), "[REDACTED]");
+  endB(); await assert.rejects(b, /controlled failure/);
+  assert.equal(scrubSecrets("synthetic-first synthetic-second"), "synthetic-first synthetic-second", "no module-level secret registration survives");
+  assert.equal(contextA.scrub("late callback"), "[REDACTED]");
+  assert.equal(contextB.scrub("late callback"), "[REDACTED]");
+});
+
+it("scrubs Cookie and arbitrary Authorization schemes without forwarding them", async () => {
+  const { requestSecrets, withActiveSecrets, extractToken, scrubSecrets } = await import("../lib/auth.js");
+  const request = new Request("https://example.test/api/tree/o/r?token=synthetic-query&access_token=synthetic-other", {
+    headers: { Authorization: "Basic c3ludGhldGlj", Cookie: 'session="synthetic-cookie"; other=synthetic-extra' },
+  });
+  assert.equal(extractToken({ headers: request.headers }), null);
+  await withActiveSecrets(requestSecrets(request), async ({ scrub }) => {
+    for (const value of ["c3ludGhldGlj", "synthetic-cookie", "synthetic-extra", "synthetic-query", "synthetic-other"]) {
+      assert.equal(scrub(value), "[REDACTED]");
+    }
+  });
+  for (const value of [JSON.stringify({ Cookie: 'session="synthetic-cookie"' }), "Cookie: session=synthetic-cookie", '"Authorization":"Basic c3ludGhldGlj"', "Proxy-Authorization: Custom opaque-value", "Set-Cookie: session=synthetic-cookie"]) {
+    assert.match(scrubSecrets(value), /\[REDACTED\]/);
+    assert.doesNotMatch(scrubSecrets(value), /synthetic-cookie|c3ludGhldGlj|opaque-value/);
+  }
 });

@@ -54,7 +54,7 @@ export function makeHostImports(getExports, cache) {
         const result = cache.getOrFetch(path, () => null);
         if (!result) {
           // Do not echo secrets (paths are API paths; scrub anyway).
-          safeConsole.error("http_get miss", path);
+          safeConsole.error("http_get miss");
           return 3;
         }
         const bodyBytes = new TextEncoder().encode(result.body);

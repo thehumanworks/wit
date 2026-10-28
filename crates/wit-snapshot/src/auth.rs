@@ -33,13 +33,21 @@ pub fn resolve_host(
     }
     Ok(host)
 }
+fn reject_api_override(value: Option<&str>) -> SnapshotResult<()> {
+    if value.is_some_and(|value| !value.trim().is_empty()) {
+        return Err(SnapshotError::Other("WIT_GITHUB_API_URL is no longer supported. Unset it and use --hostname, GH_HOST or GITHUB_HOST for a GitHub DNS hostname (custom ports and API paths are unsupported). Rust callers needing a custom API endpoint must explicitly inject ReqwestGitHubClient::new.".into()));
+    }
+    Ok(())
+}
 pub fn hostname() -> SnapshotResult<String> {
+    reject_api_override(std::env::var("WIT_GITHUB_API_URL").ok().as_deref())?;
     HOST.get()
         .cloned()
         .map(Ok)
         .unwrap_or_else(|| resolve_host(None, |k| std::env::var(k).ok()))
 }
 pub fn configure_host(flag: Option<&str>) -> SnapshotResult<()> {
+    reject_api_override(std::env::var("WIT_GITHUB_API_URL").ok().as_deref())?;
     let host = resolve_host(flag, |k| std::env::var(k).ok())?;
     let credential = token(&host);
     HOST.set(host)
@@ -131,6 +139,16 @@ fn cached_token(host: &str, executable: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_api_override_fails_with_migration_without_exposing_value() {
+        let error = reject_api_override(Some("https://synthetic-secret@proxy.invalid/custom"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unset it"));
+        assert!(error.contains("--hostname"));
+        assert!(!error.contains("synthetic-secret"));
+        assert!(reject_api_override(Some("  ")).is_ok());
+    }
     #[cfg(unix)]
     #[test]
     fn inherited_stdout_does_not_extend_lookup_deadline() {

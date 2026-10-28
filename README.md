@@ -611,8 +611,14 @@ wit-mcp --hostname git.example.com --mode direct
 REST routing uses `https://api.github.com`, `https://api.HOST` for `*.ghe.com`,
 and `https://HOST/api/v3` for Enterprise Server, including paginated requests.
 Redirects are disabled and API destinations are restricted to the selected origin
-and prefix. The old `WIT_GITHUB_API_URL` environment override is no longer used;
-embedding applications and tests can explicitly inject a client base URL.
+and prefix. A nonempty legacy `WIT_GITHUB_API_URL` now fails with migration
+instructions before authentication or network access; it is never silently ignored.
+Unset it and select a standard GitHub host with `--hostname`, `GH_HOST`, or
+`GITHUB_HOST`. This previously undocumented production override also allowed
+custom proxies/ports/API paths; there is no equivalent CLI configuration for
+those endpoints. Rust embedding applications and tests can explicitly inject a
+client base URL with `ReqwestGitHubClient::new`. DNS-only host selection cannot
+represent a custom port or API path.
 Disk caches for enterprise hosts live under `hosts/HOST` beneath `WIT_CACHE_DIR`.
 Git authentication is passed in child-process environment configuration, never in
 remote URLs, command-line arguments, or persisted git configuration. Authenticated
@@ -622,3 +628,8 @@ The CLI and local stdio MCP Rust parent hold credentials only in process memory.
 Generated Code Mode workers still have no environment, network, or credential
 access. Hosted URL API and cache Workers do not gain local-login access or a
 credential store. This change supports GitHub hosts, not other git providers.
+
+Hosted URL API credential handling is separate from the local CLI login. Explicit
+caller credentials are used only in the request, with request-owned redaction and
+no shared/KV cache access for sensitive requests. Existing operator Worker secrets
+remain unchanged. See the [hosted authentication and logging limits](showcase/url-api/README.md#credentials-and-hosted-request-isolation), including the limits of application-level protection for external URL/access logs.
