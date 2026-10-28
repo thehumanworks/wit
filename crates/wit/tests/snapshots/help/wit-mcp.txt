@@ -1,0 +1,31 @@
+Start wit MCP (direct by default; Code Mode experimental)
+
+Usage: wit mcp [OPTIONS]
+
+Options:
+      --ignore <PATH|GLOB>
+          Exclude files, directories, or glob patterns (repeatable)
+
+      --transport <TRANSPORT>
+          MCP transport to use
+          
+          [default: stdio]
+          [possible values: stdio]
+
+      --mode <MODE>
+          MCP tool surface to expose
+
+          Possible values:
+          - direct: Recommended default: eight snapshot-first repository tools
+          - code:   Experimental: one bounded native JavaScript code tool
+          
+          [default: direct]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Direct mode exposes eight typed snapshot-first tools, is the default, and is recommended for simple calls. Experimental Code Mode exposes one native JavaScript code tool. Both are structured, bounded, and resumable; neither requires an external JavaScript runtime.
+
+Examples:
+  wit mcp --transport stdio --mode direct   # Default eight-tool surface
+  wit mcp --transport stdio --mode code     # Experimental one-tool surface

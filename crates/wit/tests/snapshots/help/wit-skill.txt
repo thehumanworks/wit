@@ -1,0 +1,16 @@
+Manage the wit agent skill
+
+Usage: wit skill [OPTIONS] <COMMAND>
+
+Commands:
+  load     Print the wit skill (SKILL.md) to stdout
+  install  Install the wit skill as a directory at the given path
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
+  -h, --help                Print help
+
+Examples:
+  wit skill load                        # Print the skill to stdout
+  wit skill install --path ~/skills     # Install skill directory to ~/skills/wit-skill

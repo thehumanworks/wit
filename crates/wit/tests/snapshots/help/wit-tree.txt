@@ -1,0 +1,26 @@
+Show the file tree of a repository (or subtree). Use -l for line counts
+
+Usage: wit <tree|t> [OPTIONS] [REPO] [PATH]
+
+Arguments:
+  [REPO|PATH]...  Repository and optional path: `owner/repo [path]`, or just `[path]` when using -r/--repo
+
+Options:
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>            Repository in "owner/repo" format
+      --branch <BRANCH>        Branch name under refs/heads to read instead of the repository default branch
+      --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -l, --long                   Show file sizes: lines and approximate token count
+      --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                   Print help
+
+Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.
+
+Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
+
+Examples:
+  wit tree ratatui/ratatui
+  wit tree ratatui/ratatui src/widgets
+  wit tree -r ratatui/ratatui src
+  wit tree -l ratatui/ratatui src
+  wit tree octocat/Hello-World --backend memory

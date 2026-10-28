@@ -1,0 +1,20 @@
+List definitions (functions, types, methods, ...) with exact line ranges
+
+Usage: wit ast symbols [OPTIONS] [REPO] [PATH]
+
+Arguments:
+  [REPO|PATH]...  Repository and optional file or directory: `owner/repo [path]`, or just `[path]` when using -r/--repo
+
+Options:
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>            Repository in "owner/repo" format
+      --branch <BRANCH>        Branch name under refs/heads to read instead of the repository default branch
+      --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -k, --kind <KIND>            Keep only these kind labels (fn, struct, class, method, ...); repeatable
+      --name <REGEX>           Keep only definitions whose name matches this regex
+  -g, --glob <GLOB>            Glob pattern to filter files (e.g., "*.rs", "src/**")
+      --lang <LANG>            Restrict to one language (rust, python, javascript, typescript, tsx, go, java, c)
+      --max-files <MAX_FILES>  Maximum files to parse (default: 500) [default: 500]
+      --json                   Emit JSON instead of plaintext
+      --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                   Print help

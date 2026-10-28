@@ -1,0 +1,56 @@
+Search file contents (ripgrep-style). Use -l to find files, -g to filter by type
+
+Usage: wit rg [OPTIONS] <PATTERN> [REPO]
+
+Arguments:
+  <PATTERN>  Regex pattern to search for
+  [REPO]     Repository in "owner/repo" format (alternative to -r/--repo)
+
+Options:
+      --ignore <PATH|GLOB>
+          Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>
+          Repository in "owner/repo" format
+      --branch <BRANCH>
+          Branch name under refs/heads to search instead of the repository default branch
+      --refresh-cache
+          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -i, --ignore-case
+          Case insensitive search
+  -S, --smart-case
+          Smart case: case-insensitive if pattern is all lowercase
+  -w, --word-regexp
+          Match whole words only
+  -v, --invert-match
+          Invert match (show non-matching lines)
+  -m, --max-count <MAX_COUNT>
+          Maximum number of matches to show (-m 0 disables searching, like rg)
+  -C, --context <CONTEXT>
+          Lines of context to show before and after matches [default: 0]
+  -B, --before-context <BEFORE_CONTEXT>
+          Lines of context to show before matches [default: 0]
+  -A, --after-context <AFTER_CONTEXT>
+          Lines of context to show after matches [default: 0]
+  -g, --glob <GLOB>
+          Glob pattern to filter files (e.g., "*.rs", "src/**")
+  -l, --files-with-matches
+          Only show file names with matches
+  -c, --count
+          Only show count of matches per file
+      --long
+          Show file sizes alongside file names (useful with -l)
+      --backend <disk|memory>
+          Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help
+          Print help
+
+The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.
+
+Pass the repository as a positional `owner/repo` after the pattern, or with -r/--repo. If both are given they must match.
+
+Examples:
+  wit rg 'impl Widget' ratatui/ratatui
+  wit rg -l 'struct.*Frame' -r ratatui/ratatui
+  wit rg -g '*.rs' -i 'todo' ratatui/ratatui
+  wit rg -C 3 'fn render' ratatui/ratatui
+  wit rg 'Hello' octocat/Hello-World --backend memory

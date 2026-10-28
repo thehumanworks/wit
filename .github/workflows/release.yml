@@ -24,6 +24,12 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the crate version wit --version prints
+        shell: bash
+        run: node scripts/npm/assert-release-version.mjs --tag "${GITHUB_REF_NAME}" --cargo-toml crates/wit/Cargo.toml
+
   build:
     name: build ${{ matrix.platform }}-${{ matrix.arch }}
     needs: validate_ref
@@ -136,6 +142,14 @@ jobs:
             "target/${{ matrix.target }}/release/${{ matrix.mcp_bin }}"
           )
           Compress-Archive -Path $files -DestinationPath $artifact -Force
+
+      - name: wit --version matches the release tag
+        if: matrix.native_smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$("target/${{ matrix.target }}/release/${{ matrix.bin }}" --version | tr -d '\r')"
+          [ "${actual}" = "wit ${GITHUB_REF_NAME#v}" ] || { echo "wit --version printed '${actual}', expected 'wit ${GITHUB_REF_NAME#v}'"; exit 1; }
 
       - name: Smoke direct and Code Mode tools (Unix)
         if: matrix.native_smoke && runner.os != 'Windows'

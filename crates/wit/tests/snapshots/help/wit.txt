@@ -1,0 +1,36 @@
+Explore GitHub repositories without cloning. Reads come from a local shallow bare-repo cache (the default disk backend) or from the GitHub API into RAM (--backend memory).
+
+Usage: wit [OPTIONS] <COMMAND>
+
+Commands:
+  search    Find GitHub repositories via the GitHub REST search API [aliases: s]
+  branches  List remote branches with default-branch comparison metadata
+  cache     Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot [aliases: c]
+  tree      Show the file tree of a repository (or subtree). Use -l for line counts [aliases: t]
+  ls        List directory contents (non-recursive). Use -l for file sizes
+  cat       Print a file's contents. Use -n for line numbers
+  rg        Search file contents (ripgrep-style). Use -l to find files, -g to filter by type
+  sed       Extract or transform file content using sed scripts (POSIX-style, Rust regex)
+  head      Print the first N lines of a file (default: 10)
+  tail      Print the last N lines of a file, or from line N onward
+  ast       AST-backed search: list definitions or run tree-sitter queries
+  skill     Manage the wit agent skill
+  mcp       Start wit MCP (direct by default; Code Mode experimental)
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
+  -h, --help                Print help
+  -V, --version             Print version
+
+Snapshot backends: repo commands (cache, branches, tree, ls, cat, rg, sed, head, tail, ast) default to the disk backend. Choose with --backend disk|memory or WIT_SNAPSHOT_BACKEND=disk|memory; --backend wins over WIT_SNAPSHOT_BACKEND. The memory backend loads a public repo over the GitHub REST API into RAM, with no WIT_CACHE_DIR writes and no shared cloud cache; it maps cache to an in-memory pin/prefetch and lists branches via the GitHub API.
+
+Disk cache: shallow bare repos in .wit/cache under the system temp directory (override with WIT_CACHE_DIR). Disk read order: local cache, then shared cloud pack cache, then GitHub clone. A cold cache, a moved branch, --refresh-cache, or wit cache resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache, verifies it locally, and falls back to a depth-1 GitHub clone when the cloud cache is off, misses, or fails verification.
+
+Cache freshness: disk reads use a branch-keyed stale-while-revalidate cache by default: a warm local cache is served at once and revalidated in the background. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, tail, or ast to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.
+
+Shared cloud cache: WIT_CACHE_URL sets its base URL (https://, or http:// on loopback); a valid URL turns it on in any build. Release builds default WIT_CACHE_URL to https://wit-cache.rodat-human-ada.workers.dev; debug builds (cargo run, cargo test) default to off. Packagers can bake another default with WIT_DEFAULT_CACHE_URL at build time. Disable it with WIT_CACHE_URL=off (also: empty, 0, false, no, none, disabled; any case). WIT_CACHE_TIMEOUT_MS (default 60000) bounds the pack download and WIT_CACHE_MAX_BYTES (default 536870912) caps its size. Requests to the cloud cache carry no credentials.
+
+Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.
+
+search always uses the GitHub REST API (no disk cache). search and the memory backend send GITHUB_TOKEN when set, for higher GitHub rate limits. Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match).

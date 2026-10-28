@@ -1,0 +1,21 @@
+AST-backed search: list definitions or run tree-sitter queries
+
+Usage: wit ast [OPTIONS] <COMMAND>
+
+Commands:
+  symbols  List definitions (functions, types, methods, ...) with exact line ranges
+  query    Run a tree-sitter S-expression query and print every capture
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
+  -h, --help                Print help
+
+Structural search built on tree-sitter (rust, python, javascript, typescript, tsx, go, java, c). `symbols` indexes definitions with exact line ranges and nesting so you can read precisely the lines you need; `query` runs a raw tree-sitter S-expression query and prints every capture with its position.
+
+Examples:
+  wit ast symbols ratatui/ratatui src/widgets/block.rs
+  wit ast symbols ratatui/ratatui src/widgets --kind fn --name '^render'
+  wit ast symbols -r ratatui/ratatui --glob '*.rs' --json
+  wit ast query '(call_expression function: (identifier) @callee (#eq? @callee "render"))' ratatui/ratatui src --lang rust
+  wit ast query '(function_definition name: (identifier) @name)' owner/repo app.py

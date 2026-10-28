@@ -1,0 +1,30 @@
+Print a file's contents. Use -n for line numbers
+
+Usage: wit cat [OPTIONS] [REPO] <PATH>
+
+Arguments:
+  [REPO|PATH]...  Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
+
+Options:
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>            Repository in "owner/repo" format
+      --branch <BRANCH>        Branch name under refs/heads to read instead of the repository default branch
+      --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -n, --number                 Number all output lines
+  -b, --number-nonblank        Number non-blank output lines only (overrides -n)
+  -s, --squeeze-blank          Suppress repeated empty output lines
+  -E, --show-ends              Display $ at end of each line
+  -T, --show-tabs              Display TAB characters as ^I
+  -A, --show-all               Equivalent to -ET (show ends and tabs)
+      --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                   Print help
+
+Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.
+
+Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
+
+Examples:
+  wit cat ratatui/ratatui Cargo.toml
+  wit cat -n -r ratatui/ratatui src/lib.rs
+  wit cat -b ratatui/ratatui README.md
+  wit cat octocat/Hello-World README --backend memory

@@ -109,4 +109,44 @@ def clientMethods : List String := ["GET"]
 def branchDirPrefix : String := "b-"
 def branchSafeBytes : List Nat := [97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 45, 95]
 
+/-- `CliSnapshotBackend` in `crates/wit/src/snapshot/mod.rs`. -/
+def backendEnvVar : String := "WIT_SNAPSHOT_BACKEND"
+def backendDefault : Backend := .disk
+def diskBackendAliases : List String := ["disk", "cache"]
+def memoryBackendAliases : List String := ["memory", "mem", "no-fs", "nofs"]
+/-- `crates/wit/src/gitops/cloud.rs`: variable names and `built_in_default` per build profile. -/
+def cloudUrlEnvVar : String := "WIT_CACHE_URL"
+def cloudTimeoutEnvVar : String := "WIT_CACHE_TIMEOUT_MS"
+def cloudMaxBytesEnvVar : String := "WIT_CACHE_MAX_BYTES"
+def bakedDefaultEnvVar : String := "WIT_DEFAULT_CACHE_URL"
+def hostedCacheUrl : String := "https://wit-cache.rodat-human-ada.workers.dev"
+def debugDefaultUrl : Option String := none
+def releaseDefaultUrl : Option String := some "https://wit-cache.rodat-human-ada.workers.dev"
+/-- `crates/wit/src/gitops/ops.rs`: cache directory and the sources a disk read tries, in order. -/
+def cacheDirEnvVar : String := "WIT_CACHE_DIR"
+def cacheSubdir : String := ".wit/cache"
+def diskReadOrder : List Source := [.localCache, .cloud, .github]
+/-- Whether the memory backend's code reaches the disk cache or the cloud client. -/
+def memoryUsesDiskCache : Bool := false
+def memoryUsesCloud : Bool := false
+
+/-- Claims of `ROOT_AFTER_HELP`, `BACKEND_HELP`, and `BRANCHES_BACKEND_HELP` in `crates/wit/src/cli.rs`. -/
+def helpDefaultBackend : Backend := .disk
+def helpBackendEnvVar : String := "WIT_SNAPSHOT_BACKEND"
+def helpFlagDefaultBackends : List Backend := [.disk, .disk]
+def helpFlagEnvVars : List String := ["WIT_SNAPSHOT_BACKEND", "WIT_SNAPSHOT_BACKEND"]
+def helpMemoryCacheDirEnvVar : String := "WIT_CACHE_DIR"
+def helpCacheSubdir : String := ".wit/cache"
+def helpCacheDirEnvVar : String := "WIT_CACHE_DIR"
+def helpDiskReadOrder : List Source := [.localCache, .cloud, .github]
+def helpCloudUrlEnvVars : List String := ["WIT_CACHE_URL", "WIT_CACHE_URL", "WIT_CACHE_URL"]
+def helpReleaseDefaultUrl : Option String := some "https://wit-cache.rodat-human-ada.workers.dev"
+def helpDebugDefaultUrl : Option String := none
+def helpBakedDefaultEnvVar : String := "WIT_DEFAULT_CACHE_URL"
+def helpDisableValues : List String := ["off", "", "0", "false", "no", "none", "disabled"]
+def helpCloudTimeoutEnvVar : String := "WIT_CACHE_TIMEOUT_MS"
+def helpCloudTimeoutMs : Nat := 60000
+def helpCloudMaxBytesEnvVar : String := "WIT_CACHE_MAX_BYTES"
+def helpCloudMaxBytes : Nat := 536870912
+
 end Wit.Src

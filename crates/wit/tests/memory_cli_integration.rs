@@ -184,8 +184,8 @@ fn help_documents_memory_rg_sed_head_tail() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(
-        help.contains("Memory covers tree/ls/cat/rg/sed/head/tail")
-            || help.contains("tree/ls/cat/rg/sed/head/tail"),
+        help.contains("repo commands (cache, branches, tree, ls, cat, rg, sed, head, tail, ast)")
+            && help.contains("--backend disk|memory"),
         "wit --help should document memory rg/sed/head/tail coverage"
     );
     assert!(

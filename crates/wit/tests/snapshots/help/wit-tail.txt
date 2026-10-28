@@ -1,0 +1,27 @@
+Print the last N lines of a file, or from line N onward
+
+Usage: wit tail [OPTIONS] [REPO] <PATH>
+
+Arguments:
+  [REPO|PATH]...  Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
+
+Options:
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+  -r, --repo <REPO>            Repository in "owner/repo" format
+      --branch <BRANCH>        Branch name under refs/heads to read instead of the repository default branch
+      --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
+  -n, --lines <LINES>          Number of lines to show (default: 10) [default: 10]
+  -p, --plus <LINE>            Start from line N (like tail -n +N)
+  -N, --number                 Number all output lines
+      --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
+  -h, --help                   Print help
+
+Use -p to read from a specific line to end-of-file -- useful when you know a line number from rg output and want the surrounding code.
+
+Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
+
+Examples:
+  wit tail ratatui/ratatui src/lib.rs
+  wit tail -n 20 -r ratatui/ratatui Cargo.toml
+  wit tail -p 100 ratatui/ratatui src/lib.rs
+  wit tail -n 5 octocat/Hello-World README --backend memory
