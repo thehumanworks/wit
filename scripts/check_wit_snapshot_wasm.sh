@@ -4,7 +4,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-if ! rustup target list --installed | grep -qx 'wasm32-unknown-unknown'; then
+# Without rustup (e.g. the Nix dev shell) the toolchain already ships the target.
+if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -qx 'wasm32-unknown-unknown'; then
   rustup target add wasm32-unknown-unknown
 fi
 

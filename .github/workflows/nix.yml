@@ -1,0 +1,46 @@
+name: Nix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - .github/workflows/nix.yml
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - .github/workflows/nix.yml
+
+jobs:
+  flake:
+    name: nix flake (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: nix fmt (check)
+        run: nix fmt -- --check flake.nix nix/*.nix
+
+      - name: nix flake check (package + dev shell)
+        run: nix flake check -L
+
+      - name: Installed wit runs
+        run: |
+          nix run . -- --version
+          nix shell . --command wit-mcp --help >/dev/null

@@ -112,7 +112,8 @@ if ! has_search_export "$same_origin"; then
   elif has_search_export "$debug_wasm"; then
     cp "$debug_wasm" "$same_origin"
   else
-    if ! rustup target list --installed | grep -qx 'wasm32-unknown-unknown'; then
+    # Without rustup (e.g. the Nix dev shell) the toolchain already ships the target.
+    if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -qx 'wasm32-unknown-unknown'; then
       rustup target add wasm32-unknown-unknown
     fi
     echo "==> build wit-snapshot wasm for docs smoke"
