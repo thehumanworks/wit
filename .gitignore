@@ -36,3 +36,7 @@ sdk/typescript/dist/
 
 # Lean build output (formal/)
 formal/.lake/
+
+# Nix build output symlinks
+/result
+/result-*

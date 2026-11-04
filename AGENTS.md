@@ -58,6 +58,11 @@ This is a Cargo workspace with several crates:
 - `sdk/python/wit_api/__init__.py`: `wit-api` (urllib-based, `python -m unittest discover -s tests`).
 - Keep both SDKs' method surface identical (`stats`, `tree`, `ls`, `cat(lines)`, `head`, `tail`, `outline`, `rg*`, `refs`, `commits`, `search`, `readSymbol`/`read_symbol`, `context`).
 
+### `flake.nix` + `nix/` — Nix packaging and dev shell
+- `nix/package.nix`: `buildRustPackage` for `wit` + `wit-mcp` (version from `crates/wit/Cargo.toml`, deps from `Cargo.lock`, so no hashes to bump); wraps both with `git` on `PATH`; `defaultCacheUrl` override bakes `WIT_DEFAULT_CACHE_URL`.
+- `nix/modules.nix`: `nixosModules.default` / `homeManagerModules.default` (`programs.wit.{enable,package,cacheUrl}`).
+- `flake.nix`: `packages.{wit,default}`, `apps.{default,wit-mcp}`, `overlays.default`, `devShells.default` (rust-overlay stable + wasm32, cmake, Node 22, elan), `checks`, `formatter` (nixfmt). CI: `.github/workflows/nix.yml`. A new native build dependency (C library, build tool) goes into `nix/package.nix` `nativeBuildInputs`/`buildInputs`.
+
 ### Top-level
 - `tasks/`: Task/planning files (e.g., `sed.txt`).
 - `README.md`: User-facing installation and usage examples.
@@ -87,6 +92,7 @@ Top-level: `wit --version` / `-V` prints the `crates/wit` crate version. Repo co
 ## Build, Test, and Development Commands
 
 - `cargo build --workspace`: Compile all crates.
+- `nix develop`: Enter the reproducible dev shell; `nix build` / `nix flake check`: build the Nix package (`result/bin/wit`).
 - `cargo run -p wit -- search -p "ratatui" -l "Rust" --limit 20`: Run the wit CLI from source.
 - `cargo run -p wits -- -p "ratatui" -l "Rust"`: Run the standalone `wits` search CLI (grep.app only).
 - `cargo install --path crates/wit`: Install `wit` locally from the working tree.

@@ -102,6 +102,32 @@ CI uploads `wit_snapshot.wasm` on every green main/PR run; semver tags attach it
 cargo install --path crates/wit --bins
 ```
 
+### Install with Nix
+
+The repository is a flake. It builds `wit` and `wit-mcp` from `Cargo.lock` (with `git` on their `PATH` for the disk backend).
+
+```bash
+nix run github:thehumanworks/wit -- --version         # Run without installing
+nix profile install github:thehumanworks/wit          # Install into your profile
+```
+
+In a flake-based NixOS or Home Manager configuration, add the input and enable the module:
+
+```nix
+{
+  inputs.wit.url = "github:thehumanworks/wit";
+
+  # NixOS: modules = [ wit.nixosModules.default ];
+  # Home Manager: imports = [ inputs.wit.homeManagerModules.default ];
+  programs.wit.enable = true;
+  # programs.wit.cacheUrl = "off";  # sets WIT_CACHE_URL; null keeps the built-in default
+}
+```
+
+Or use the package directly: `environment.systemPackages = [ inputs.wit.packages.${pkgs.system}.default ];`, or apply `wit.overlays.default` to get `pkgs.wit`. `pkgs.wit.override { defaultCacheUrl = ""; }` builds a binary with the shared cloud cache off by default (`WIT_DEFAULT_CACHE_URL`).
+
+For development, `nix develop` gives the pinned toolchain for every check in this repo: stable Rust with `wasm32-unknown-unknown`, clippy, rustfmt, rust-analyzer, cmake, Node.js 22, and elan for `formal/`.
+
 ## Quick Start
 
 ```bash
