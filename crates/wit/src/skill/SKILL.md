@@ -22,6 +22,7 @@ description: >
 5. Read a whole file with `wit cat` only when you are sure you need all of it. `cat` prints at most 500 lines and then the next `wit sed` command; pass `--full` for the rest.
 
 All repo-scoped commands take the repository as a positional `owner/repo`, with `-r/--repo`, or joined with the path as `owner/repo/PATH` (if both a positional and `-r` are given they must match).
+A wrong path fails with the closest real paths (`File not found: src/x.rs. Did you mean: crate/src/x.rs?`), so retry with a suggested path instead of listing directories.
 When the user asks for a non-default branch, run `wit branches owner/repo` first to list available branch names and metadata before choosing `--ref BRANCH`.
 
 ### Pin the commit you cite
@@ -235,6 +236,7 @@ wit rg -l --long 'Widget' -r ratatui/ratatui         # files with line counts
 | `-m/--max-count` | Max matches to show; omit for unlimited, use `0` for no matches |
 | `-C/-B/-A` | Context lines around matches |
 | `-g/--glob` | Filter files by glob (e.g. `*.rs`) |
+| `-t/--type` | Filter by file type like ripgrep (`rust`, `go`, `py`, `ts`, ...) |
 | `-l/--files-with-matches` | Show only file names |
 | `-c/--count` | Show match count per file |
 | `--long` | Show file sizes alongside names (with `-l`) |

@@ -349,6 +349,10 @@ enum Commands {
         #[arg(long = "long")]
         long_format: bool,
 
+        /// Only search files of this type, like ripgrep: rust, go, py, js, ts, java, c, cpp, md, toml, yaml, json, sh, rb, kt, swift, cs, php
+        #[arg(short = 't', long = "type", value_name = "TYPE")]
+        file_type: Option<String>,
+
         /// Accepted for ripgrep compatibility; line numbers are always shown
         #[arg(short = 'n', long = "line-number", hide = true)]
         _line_number: bool,
@@ -742,6 +746,72 @@ fn cli_command() -> clap::Command {
     WitCli::command().mut_subcommand("cache", |cache| {
         cache.after_help(format!("{CACHE_AFTER_HELP}\n\n{ROOT_AFTER_HELP}"))
     })
+}
+
+/// The glob for a ripgrep-style `-t/--type` name (one extension per type; wit globs have no braces).
+fn rg_type_glob(name: &str) -> anyhow::Result<&'static str> {
+    Ok(match name.to_ascii_lowercase().as_str() {
+        "rust" | "rs" => "*.rs",
+        "go" => "*.go",
+        "py" | "python" => "*.py",
+        "js" | "javascript" => "*.js",
+        "ts" | "typescript" => "*.ts",
+        "tsx" => "*.tsx",
+        "java" => "*.java",
+        "kotlin" | "kt" => "*.kt",
+        "c" => "*.c",
+        "h" => "*.h",
+        "cpp" | "c++" | "cc" => "*.cpp",
+        "cs" | "csharp" => "*.cs",
+        "rb" | "ruby" => "*.rb",
+        "php" => "*.php",
+        "swift" => "*.swift",
+        "sh" | "bash" | "shell" => "*.sh",
+        "md" | "markdown" => "*.md",
+        "toml" => "*.toml",
+        "yaml" | "yml" => "*.yaml",
+        "json" => "*.json",
+        "proto" | "protobuf" => "*.proto",
+        "lua" => "*.lua",
+        "zig" => "*.zig",
+        "scala" => "*.scala",
+        "ex" | "elixir" => "*.ex",
+        "html" => "*.html",
+        "css" => "*.css",
+        "sql" => "*.sql",
+        other => anyhow::bail!(
+            "unknown --type '{other}'; use one of rust, go, py, js, ts, tsx, java, kt, c, h, cpp, cs, rb, php, swift, sh, md, toml, yaml, json, proto, lua, zig, scala, ex, html, css, sql, or pass -g '*.EXT'"
+        ),
+    })
+}
+
+/// Rewrite argument shapes agents commonly try before clap sees them.
+///
+/// - `wit --ref REF CMD ...` (or `--branch`, or `--ref=REF`) moves the flag after the
+///   subcommand, where it is defined.
+/// - `wit grep ...` fails with the equivalent `wit rg` usage instead of clap's generic error.
+fn normalize_agent_argv(
+    mut args: Vec<std::ffi::OsString>,
+) -> anyhow::Result<Vec<std::ffi::OsString>> {
+    let first = args.get(1).and_then(|a| a.to_str()).map(str::to_string);
+    match first.as_deref() {
+        Some("--ref" | "--branch") if args.len() >= 4 => {
+            let flag: Vec<_> = args.drain(1..3).collect();
+            args.splice(2..2, flag);
+        }
+        Some(flag)
+            if (flag.starts_with("--ref=") || flag.starts_with("--branch=")) && args.len() >= 3 =>
+        {
+            let flag = args.remove(1);
+            args.insert(2, flag);
+        }
+        Some("grep") => anyhow::bail!(
+            "wit has no grep subcommand; use `wit rg PATTERN owner/repo[/PATH]` \
+             (line numbers are always shown; -i ignore case, -l file names, -w words, -C N context, -t rust or -g '*.rs' to filter)"
+        ),
+        _ => {}
+    }
+    Ok(args)
 }
 
 /// Default `wit cat` line limit. Above it, cat prints the first lines and a note.
@@ -1330,8 +1400,10 @@ async fn async_main() -> anyhow::Result<()> {
 
     ensure_rustls_provider();
     let argv: Vec<String> = std::env::args().collect();
-    let cli =
-        WitCli::from_arg_matches(&cli_command().get_matches()).unwrap_or_else(|err| err.exit());
+    let cli = WitCli::from_arg_matches(
+        &cli_command().get_matches_from(normalize_agent_argv(std::env::args_os().collect())?),
+    )
+    .unwrap_or_else(|err| err.exit());
     wit_snapshot::auth::configure_host(cli.hostname.as_deref())?;
     let ignore_patterns = cli.ignore;
 
@@ -1419,6 +1491,7 @@ async fn async_main() -> anyhow::Result<()> {
                     let repository =
                         open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
                             .await?;
+                    wit::gitops::ops::ensure_repo_path_exists(&repository, path.as_deref())?;
                     build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
                 }
                 CliSnapshotBackend::Memory => {
@@ -1444,6 +1517,7 @@ async fn async_main() -> anyhow::Result<()> {
                     let repository =
                         open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
                             .await?;
+                    wit::gitops::ops::ensure_repo_path_exists(&repository, path.as_deref())?;
                     let entries =
                         list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
                     print_ls_entries(&entries, long);
@@ -1580,6 +1654,7 @@ async fn async_main() -> anyhow::Result<()> {
             files_with_matches,
             count,
             long_format,
+            file_type,
             _line_number: _,
             _no_heading: _,
             backend,
@@ -1589,6 +1664,11 @@ async fn async_main() -> anyhow::Result<()> {
             {
                 Some(Some((repo, path))) => (Some(repo), Some(path)),
                 _ => (repo_positional, None),
+            };
+            let glob = match (glob, file_type.as_deref().map(rg_type_glob).transpose()?) {
+                (glob, None) => glob,
+                (None, Some(type_glob)) => Some(type_glob.to_string()),
+                (Some(_), Some(_)) => anyhow::bail!("pass either -t/--type or -g/--glob, not both"),
             };
             let glob = match (glob, scope) {
                 (glob, None) => glob,
@@ -2755,6 +2835,39 @@ mod tests {
         .unwrap();
         assert_eq!(extracted.branch.as_deref(), Some("v1.0"));
         assert_eq!(extracted.args.len(), 3);
+    }
+
+    #[test]
+    fn agent_argv_shapes_are_normalized() {
+        let os = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            normalize_agent_argv(os(&["wit", "--ref", "v1", "cat", "o/r", "a"])).unwrap(),
+            os(&["wit", "cat", "--ref", "v1", "o/r", "a"])
+        );
+        assert_eq!(
+            normalize_agent_argv(os(&["wit", "--branch=dev", "ls", "o/r"])).unwrap(),
+            os(&["wit", "ls", "--branch=dev", "o/r"])
+        );
+        assert_eq!(
+            normalize_agent_argv(os(&["wit", "cat", "o/r", "a"])).unwrap(),
+            os(&["wit", "cat", "o/r", "a"])
+        );
+        let grep = normalize_agent_argv(os(&["wit", "grep", "-rn", "x", "o/r"])).unwrap_err();
+        assert!(grep.to_string().contains("wit rg PATTERN"), "{grep}");
+    }
+
+    #[test]
+    fn rg_types_map_to_globs() {
+        assert_eq!(rg_type_glob("rust").unwrap(), "*.rs");
+        assert_eq!(rg_type_glob("Py").unwrap(), "*.py");
+        assert!(
+            rg_type_glob("cobol")
+                .unwrap_err()
+                .to_string()
+                .contains("-g '*.EXT'")
+        );
+        WitCli::try_parse_from(["wit", "rg", "-t", "rust", "fn main", "owner/repo"])
+            .expect("rg -t should parse");
     }
 
     #[test]

@@ -551,6 +551,7 @@ wit rg -l --long 'Widget' -r ratatui/ratatui           # File list with line cou
 | `-B` | `--before-context` | Lines of context before matches |
 | `-A` | `--after-context` | Lines of context after matches |
 | `-g` | `--glob` | Glob pattern to filter files (e.g., `*.rs`) |
+| `-t` | `--type` | File type like ripgrep (`rust`, `go`, `py`, `ts`, ...); an alternative to `-g` |
 | `-l` | `--files-with-matches` | Only show file names with matches |
 | `-c` | `--count` | Only show count of matches per file |
 |      | `--long` | Show file sizes alongside names (useful with `-l`) |

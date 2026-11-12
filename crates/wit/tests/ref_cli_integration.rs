@@ -208,6 +208,39 @@ fn errors_never_print_backtraces() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A wrong path names the real ones, a missing directory fails instead of listing nothing,
+/// and ripgrep-style `-t`, `wit --ref REF CMD`, and `wit grep` work or explain themselves.
+#[test]
+fn wrong_paths_and_flag_shapes_get_actionable_answers() -> anyhow::Result<()> {
+    let fx = fixture()?;
+
+    let missing = wit_command(&fx, &["cat", "owner/repo", "lines.txt"]).output()?;
+    assert!(!missing.status.success());
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains("File not found: lines.txt. Did you mean: src/lines.txt?"),
+        "{stderr}"
+    );
+
+    let dir = wit_command(&fx, &["tree", "owner/repo", "lib"]).output()?;
+    assert!(!dir.status.success());
+    let stderr = String::from_utf8_lossy(&dir.stderr);
+    assert!(stderr.contains("Directory not found: lib."), "{stderr}");
+
+    let typed = run_wit(&fx, &["rg", "-t", "txt", "line2", "owner/repo"]);
+    assert!(typed.is_err(), "txt is not a known type");
+    let typed = run_wit(&fx, &["rg", "-g", "*.txt", "line2", "owner/repo"])?;
+    assert!(stdout(&typed).contains("src/lines.txt:2:line2"));
+
+    let global_ref = run_wit(&fx, &["--ref", "v1.0", "cat", "owner/repo", "VERSION"])?;
+    assert_eq!(stdout(&global_ref), "1\n");
+
+    let grep = wit_command(&fx, &["grep", "-rn", "line2", "owner/repo"]).output()?;
+    assert!(!grep.status.success());
+    assert!(String::from_utf8_lossy(&grep.stderr).contains("wit rg PATTERN"));
+    Ok(())
+}
+
 fn assert_provenance(output: &Output, resolved_ref: &str, commit: &str, cache: &str) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let line = stderr

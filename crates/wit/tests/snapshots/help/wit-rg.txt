@@ -41,6 +41,8 @@ Options:
           Only show count of matches per file
       --long
           Show file sizes alongside file names (useful with -l)
+  -t, --type <TYPE>
+          Only search files of this type, like ripgrep: rust, go, py, js, ts, java, c, cpp, md, toml, yaml, json, sh, rb, kt, swift, cs, php
       --backend <disk|memory>
           Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
   -h, --help
