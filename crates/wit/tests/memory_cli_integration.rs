@@ -178,9 +178,9 @@ fn tree_positional_before_repo_flag_conflicts_before_backend() {
 #[test]
 fn help_documents_memory_rg_sed_head_tail() {
     let output = Command::new(wit_bin())
-        .args(["--help"])
+        .args(["cache", "--help"])
         .output()
-        .expect("wit --help");
+        .expect("wit cache --help");
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(

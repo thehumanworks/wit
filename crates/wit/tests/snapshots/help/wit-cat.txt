@@ -17,15 +17,19 @@ Options:
   -E, --show-ends              Display $ at end of each line
   -T, --show-tabs              Display TAB characters as ^I
   -A, --show-all               Equivalent to -ET (show ends and tabs)
+      --full                   Print the whole file even when it is longer than WIT_CAT_MAX_LINES (default 500)
       --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
   -h, --help                   Print help
 
-Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.
+Read a whole file only when you are sure you need all of it, such as a short config or a file you will summarize. To answer a question about part of a file, search first with `wit rg -n PATTERN owner/repo/PATH`, then read the lines around the match with `wit sed -n 'START,ENDp' owner/repo PATH`.
+
+Files longer than 500 lines print their first 500 lines and a note with the next `wit sed` command. Pass --full to print the whole file. WIT_CAT_MAX_LINES sets the limit; 0 turns it off.
 
 Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
 
 Examples:
   wit cat ratatui/ratatui Cargo.toml
   wit cat -n -r ratatui/ratatui src/lib.rs
-  wit cat -b ratatui/ratatui README.md
+  wit cat ratatui/ratatui/Cargo.toml
+  wit cat --full ratatui/ratatui src/lib.rs
   wit cat octocat/Hello-World README --backend memory

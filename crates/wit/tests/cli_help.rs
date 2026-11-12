@@ -269,11 +269,12 @@ fn agents_command_table_matches_help() {
     );
 }
 
-/// The root help names the commands that take `--backend`; check that list against the
+/// `wit cache --help` names the commands that take `--backend`; check that list against the
 /// commands whose help (or whose subcommands' help) actually offers the flag.
 #[test]
 fn backend_claim_lists_the_commands_with_backend() {
-    let root = wit(&["--help"]);
+    // The backend and cache details live in `wit cache --help`; the root help is a quickstart.
+    let root = wit(&["cache", "--help"]);
     let claimed: BTreeSet<String> = root
         .split_once("repo commands (")
         .and_then(|(_, rest)| rest.split_once(')'))
@@ -295,11 +296,11 @@ fn backend_claim_lists_the_commands_with_backend() {
     assert_eq!(claimed, with_backend);
 }
 
-/// The README restates the cloud cache sentence of `wit --help`, which the Lean proofs check
+/// The README restates the cloud cache sentence of `wit cache --help`, which the Lean proofs check
 /// against `crates/wit/src/gitops/cloud.rs`.
 #[test]
 fn readme_restates_cloud_cache_claims() {
-    let root = wit(&["--help"]);
+    let root = wit(&["cache", "--help"]);
     let between = |start: &str, end: char| -> &str {
         let from = root
             .split_once(start)

@@ -1,4 +1,4 @@
-use clap::{ArgAction, ArgGroup, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use std::collections::BTreeMap;
 use std::fs;
@@ -32,6 +32,24 @@ use wit_snapshot::{
 // means updating the generator; `crates/wit/tests/cli_help.rs` snapshots the rendered help.
 const ROOT_ABOUT: &str = "Explore GitHub repositories without cloning. Reads come from a local shallow bare-repo cache (the default disk backend) or from the GitHub API into RAM (--backend memory).";
 
+// The root help is the first thing an agent reads, so it opens with commands to copy.
+// The backend and cache details (ROOT_AFTER_HELP) are shown by `wit cache --help`.
+const ROOT_QUICKSTART: &str = "\
+Start here:
+  wit rg -n 'fn main' owner/repo              search contents; prints path:line:text
+  wit sed -n '80,140p' owner/repo src/main.rs  read a line range
+  wit head -n 60 owner/repo/README.md          read the start of a file
+  wit tree owner/repo src                      list files under a directory
+  wit cat owner/repo Cargo.toml                print a whole file, only when you need all of it
+
+Search first, then read ranges: rg -n gives line numbers and sed -n 'START,ENDp' reads around them. cat prints at most 500 lines unless you pass --full.
+
+Pass the repository as owner/repo, -r owner/repo, or owner/repo/PATH. Pass --ref REF to read a branch, tag, or full commit SHA (default: the repository default branch). Each read prints `snapshot: ... commit=SHA` on stderr; cite that commit, and pass --ref SHA to read the same commit again.
+
+Find repositories with wit search -p NAME. List branches with wit branches owner/repo. Backends, the disk cache, and the shared cloud cache: wit cache --help.";
+
+const CACHE_AFTER_HELP: &str = "Disk backend (default): force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. The refill resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache (WIT_CACHE_URL; on by default in release builds) and verifies it locally, and falls back to a depth-1 GitHub clone. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes, no shared cloud cache).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast when a disk read must wait for a fresh cache.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --ref main\n  wit cache ratatui/ratatui --ref v0.29.0\n  wit cache octocat/Hello-World --backend memory";
+
 const ROOT_AFTER_HELP: &str = "\
 Snapshot backends: repo commands (cache, branches, tree, ls, cat, rg, sed, head, tail, ast) default to the disk backend. Choose with --backend disk|memory or WIT_SNAPSHOT_BACKEND=disk|memory; --backend wins over WIT_SNAPSHOT_BACKEND. The memory backend loads a public repo over the GitHub REST API into RAM, with no WIT_CACHE_DIR writes and no shared cloud cache; it maps cache to an in-memory pin/prefetch and lists branches via the GitHub API.
 
@@ -53,7 +71,7 @@ const REFRESH_CACHE_HELP: &str = "Refill the disk cache for the branch before re
 
 #[derive(Parser)]
 #[command(name = "wit", version)]
-#[command(about = ROOT_ABOUT, long_about = None, after_help = ROOT_AFTER_HELP)]
+#[command(about = ROOT_ABOUT, long_about = None, after_help = ROOT_QUICKSTART)]
 struct WitCli {
     /// GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
     #[arg(long, global = true)]
@@ -127,7 +145,7 @@ enum Commands {
         about = "Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot",
         override_usage = "wit <cache|c> [OPTIONS] [REPO]",
         group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
-        after_help = "Disk backend (default): force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. The refill resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache (WIT_CACHE_URL; on by default in release builds) and verifies it locally, and falls back to a depth-1 GitHub clone. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes, no shared cloud cache).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast when a disk read must wait for a fresh cache.\n\nRun wit --help for the cloud cache variables and how to disable it.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --ref main\n  wit cache ratatui/ratatui --ref v0.29.0\n  wit cache octocat/Hello-World --backend memory"
+        after_help = CACHE_AFTER_HELP
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -208,7 +226,7 @@ enum Commands {
         name = "cat",
         about = "Print a file's contents. Use -n for line numbers",
         override_usage = "wit cat [OPTIONS] [REPO] <PATH>",
-        after_help = "Use for small-to-medium files. For large files, prefer head/tail/sed to read specific ranges, or rg to search for patterns.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml\n  wit cat -n -r ratatui/ratatui src/lib.rs\n  wit cat -b ratatui/ratatui README.md\n  wit cat octocat/Hello-World README --backend memory"
+        after_help = "Read a whole file only when you are sure you need all of it, such as a short config or a file you will summarize. To answer a question about part of a file, search first with `wit rg -n PATTERN owner/repo/PATH`, then read the lines around the match with `wit sed -n 'START,ENDp' owner/repo PATH`.\n\nFiles longer than 500 lines print their first 500 lines and a note with the next `wit sed` command. Pass --full to print the whole file. WIT_CAT_MAX_LINES sets the limit; 0 turns it off.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml\n  wit cat -n -r ratatui/ratatui src/lib.rs\n  wit cat ratatui/ratatui/Cargo.toml\n  wit cat --full ratatui/ratatui src/lib.rs\n  wit cat octocat/Hello-World README --backend memory"
     )]
     Cat {
         /// Repository in "owner/repo" format
@@ -249,6 +267,10 @@ enum Commands {
         /// Equivalent to -ET (show ends and tabs)
         #[arg(short = 'A', long = "show-all")]
         show_all: bool,
+
+        /// Print the whole file even when it is longer than WIT_CAT_MAX_LINES (default 500)
+        #[arg(long = "full")]
+        full: bool,
 
         #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
@@ -326,6 +348,14 @@ enum Commands {
         /// Show file sizes alongside file names (useful with -l)
         #[arg(long = "long")]
         long_format: bool,
+
+        /// Accepted for ripgrep compatibility; line numbers are always shown
+        #[arg(short = 'n', long = "line-number", hide = true)]
+        _line_number: bool,
+
+        /// Accepted for ripgrep compatibility; output is always one match per line
+        #[arg(long = "no-heading", hide = true)]
+        _no_heading: bool,
 
         #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
@@ -707,6 +737,65 @@ fn nonflag_positional_before_repo_flag(argv: &[impl AsRef<str>]) -> bool {
     false
 }
 
+/// The clap command with `wit cache --help` extended by the backend and cache details.
+fn cli_command() -> clap::Command {
+    WitCli::command().mut_subcommand("cache", |cache| {
+        cache.after_help(format!("{CACHE_AFTER_HELP}\n\n{ROOT_AFTER_HELP}"))
+    })
+}
+
+/// Default `wit cat` line limit. Above it, cat prints the first lines and a note.
+const DEFAULT_CAT_MAX_LINES: usize = 500;
+
+/// Line limit for `wit cat` from WIT_CAT_MAX_LINES (0 turns the limit off).
+fn cat_max_lines() -> usize {
+    std::env::var("WIT_CAT_MAX_LINES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_CAT_MAX_LINES)
+}
+
+/// The note `wit cat` prints after a truncated file, with the exact next command.
+fn cat_truncation_note(
+    repo: &str,
+    path: &str,
+    reference: Option<&str>,
+    shown: usize,
+    total: usize,
+) -> String {
+    let next_end = (shown * 2).min(total);
+    let ref_arg = reference.map(|r| format!(" --ref {r}")).unwrap_or_default();
+    format!(
+        "[wit cat: printed lines 1-{shown} of {total}. Read more with `wit sed -n '{start},{next_end}p' {repo} {path}{ref_arg}`, search with `wit rg -n PATTERN {repo}/{path}{ref_arg}`, or pass --full for the whole file.]",
+        start = shown + 1
+    )
+}
+
+/// Split `owner/repo/path/to/file` into (`owner/repo`, `path/to/file`).
+///
+/// Agents often pass the repository and path as one argument. Only plain
+/// `owner/repo/...` is accepted, so a GitHub URL with `blob/REF` is not
+/// silently misread as a path.
+fn split_repo_and_path(arg: &str) -> Option<(String, String)> {
+    let mut parts = arg.splitn(3, '/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    let path = parts.next()?.trim_matches('/');
+    if owner.is_empty() || repo.is_empty() || path.is_empty() || owner.contains(':') {
+        return None;
+    }
+    Some((format!("{owner}/{repo}"), path.to_string()))
+}
+
+/// `-r owner/repo owner/repo/path` names the same repository twice; keep the path.
+fn strip_repo_prefix(repo: &str, arg: &str) -> Option<String> {
+    arg.strip_prefix(repo)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(|rest| rest.trim_matches('/'))
+        .filter(|rest| !rest.is_empty())
+        .map(str::to_string)
+}
+
 /// Tree/ls style: `wit tree owner/repo [path]` or `wit tree -r owner/repo [path]`.
 ///
 /// `argv` is the original process argv (including binary name) used to detect
@@ -722,7 +811,9 @@ fn resolve_repo_and_optional_path(
             0 => Err(anyhow::anyhow!(
                 "missing repository: pass owner/repo as a positional argument or with -r/--repo"
             )),
-            1 => Ok((args[0].clone(), None)),
+            1 => Ok(split_repo_and_path(&args[0])
+                .map(|(repo, path)| (repo, Some(path)))
+                .unwrap_or_else(|| (args[0].clone(), None))),
             2 => Ok((args[0].clone(), Some(args[1].clone()))),
             _ => Err(anyhow::anyhow!(
                 "too many arguments: expected owner/repo [path]"
@@ -731,6 +822,10 @@ fn resolve_repo_and_optional_path(
         Some(flag_repo) => match args.len() {
             0 => Ok((flag_repo, None)),
             1 if args[0] == flag_repo => Ok((flag_repo, None)),
+            1 if strip_repo_prefix(&flag_repo, &args[0]).is_some() => {
+                let path = strip_repo_prefix(&flag_repo, &args[0]);
+                Ok((flag_repo, path))
+            }
             1 if nonflag_positional_before_repo_flag(argv) => {
                 // Positional appeared before -r/--repo → treat as repo, not path.
                 let repo = resolve_repo(Some(flag_repo), Some(args[0].clone()))?;
@@ -756,15 +851,23 @@ fn resolve_repo_and_required_path(
     match flag {
         None => match args.len() {
             2 => Ok((args[0].clone(), args[1].clone())),
-            0 | 1 => Err(anyhow::anyhow!(
-                "missing arguments: expected owner/repo PATH (or -r owner/repo PATH)"
+            1 => split_repo_and_path(&args[0]).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing arguments: expected owner/repo PATH, owner/repo/PATH, or -r owner/repo PATH"
+                )
+            }),
+            0 => Err(anyhow::anyhow!(
+                "missing arguments: expected owner/repo PATH, owner/repo/PATH, or -r owner/repo PATH"
             )),
             _ => Err(anyhow::anyhow!(
                 "too many arguments: expected owner/repo PATH"
             )),
         },
         Some(flag_repo) => match args.len() {
-            1 => Ok((flag_repo, args[0].clone())),
+            1 => {
+                let path = strip_repo_prefix(&flag_repo, &args[0]).unwrap_or_else(|| args[0].clone());
+                Ok((flag_repo, path))
+            }
             2 => {
                 let repo = resolve_repo(Some(flag_repo), Some(args[0].clone()))?;
                 Ok((repo, args[1].clone()))
@@ -1174,8 +1277,8 @@ async fn run_ast(
 /// immediate stack overflow in `wit --help` on Windows CI).
 const CLI_STACK_BYTES: usize = 32 * 1024 * 1024;
 
-fn main() -> anyhow::Result<()> {
-    let worker = std::thread::Builder::new()
+fn main() {
+    let result = std::thread::Builder::new()
         .name("wit-main".to_string())
         .stack_size(CLI_STACK_BYTES)
         .spawn(|| {
@@ -1183,10 +1286,37 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?;
             runtime.block_on(async_main())
-        })?;
-    worker
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
+        .map_err(anyhow::Error::from)
+        .and_then(|worker| {
+            worker
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+    if let Err(err) = result {
+        eprint!("{}", render_cli_error(&err));
+        std::process::exit(1);
+    }
+}
+
+/// Render an error the way `anyhow` does for `main`, minus the stack backtrace.
+///
+/// `RUST_BACKTRACE=1` is common in agent sandboxes, and a backtrace adds dozens
+/// of lines of internal frames to every failed command an agent reads.
+fn render_cli_error(err: &anyhow::Error) -> String {
+    let mut out = format!("Error: {err}\n");
+    let causes: Vec<String> = err.chain().skip(1).map(|cause| cause.to_string()).collect();
+    if !causes.is_empty() {
+        out.push_str("\nCaused by:\n");
+        if causes.len() == 1 {
+            out.push_str(&format!("    {}\n", causes[0]));
+        } else {
+            for (index, cause) in causes.iter().enumerate() {
+                out.push_str(&format!("    {index}: {cause}\n"));
+            }
+        }
+    }
+    out
 }
 
 async fn async_main() -> anyhow::Result<()> {
@@ -1200,7 +1330,8 @@ async fn async_main() -> anyhow::Result<()> {
 
     ensure_rustls_provider();
     let argv: Vec<String> = std::env::args().collect();
-    let cli = WitCli::parse();
+    let cli =
+        WitCli::from_arg_matches(&cli_command().get_matches()).unwrap_or_else(|err| err.exit());
     wit_snapshot::auth::configure_host(cli.hostname.as_deref())?;
     let ignore_patterns = cli.ignore;
 
@@ -1355,6 +1486,7 @@ async fn async_main() -> anyhow::Result<()> {
             show_ends,
             show_tabs,
             show_all,
+            full,
             backend,
         } => {
             let (repo, path) = resolve_repo_and_required_path(repo, args)?;
@@ -1383,8 +1515,15 @@ async fn async_main() -> anyhow::Result<()> {
 
             let mut line_num = 0usize;
             let mut prev_blank = false;
+            let total_lines = content.lines().count();
+            let limit = if full { 0 } else { cat_max_lines() };
+            let shown = if limit > 0 && total_lines > limit {
+                limit
+            } else {
+                total_lines
+            };
 
-            for line in content.lines() {
+            for line in content.lines().take(shown) {
                 let is_blank = line.is_empty();
 
                 // -s: squeeze multiple blank lines
@@ -1417,6 +1556,11 @@ async fn async_main() -> anyhow::Result<()> {
                     println!("{}", output);
                 }
             }
+            if shown < total_lines {
+                let note = cat_truncation_note(&repo, &path, branch.as_deref(), shown, total_lines);
+                println!("{note}");
+                eprintln!("{note}");
+            }
         }
         Commands::Rg {
             repo,
@@ -1436,8 +1580,23 @@ async fn async_main() -> anyhow::Result<()> {
             files_with_matches,
             count,
             long_format,
+            _line_number: _,
+            _no_heading: _,
             backend,
         } => {
+            // `wit rg PATTERN owner/repo/dir` searches only under dir (or only that file).
+            let (repo_positional, scope) = match repo_positional.as_deref().map(split_repo_and_path)
+            {
+                Some(Some((repo, path))) => (Some(repo), Some(path)),
+                _ => (repo_positional, None),
+            };
+            let glob = match (glob, scope) {
+                (glob, None) => glob,
+                (None, Some(path)) => Some(format!("{path}/**")),
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("pass either a path in owner/repo/PATH or -g/--glob, not both")
+                }
+            };
             let repo = resolve_repo_only(repo, repo_positional)?;
             let mut opts = GrepOptions::new()
                 .ignore_case(ignore_case)
@@ -1760,6 +1919,16 @@ fn parse_sed_invocation(
         }
         // REPO PATH (with -e/-f)
         (None, true, [repo, path]) => (repo.to_string(), None, path.to_string()),
+        // SCRIPT REPO/PATH
+        (None, false, [script, combined]) if split_repo_and_path(combined).is_some() => {
+            let (repo, path) = split_repo_and_path(combined).expect("checked above");
+            (repo, Some(script.to_string()), path)
+        }
+        // REPO/PATH (with -e/-f)
+        (None, true, [combined]) if split_repo_and_path(combined).is_some() => {
+            let (repo, path) = split_repo_and_path(combined).expect("checked above");
+            (repo, None, path)
+        }
         _ => {
             return Err(anyhow::anyhow!(
                 "sed expects [<SCRIPT>] <REPO> <PATH>, or -r <REPO> [<SCRIPT>] <PATH> (use -e/-f for the script)"
@@ -1873,22 +2042,25 @@ fn extract_sed_inline_flags(args: Vec<String>) -> anyhow::Result<SedInlineFlags>
             continue;
         }
 
-        if arg == "--branch" {
+        if arg == "--ref" || arg == "--branch" {
             let value = iter
                 .next()
-                .ok_or_else(|| anyhow::anyhow!("--branch requires a value"))?;
+                .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
             if branch.is_some() {
-                anyhow::bail!("duplicate --branch flag in sed arguments");
+                anyhow::bail!("duplicate --ref/--branch flag in sed arguments");
             }
             branch = Some(value);
             continue;
         }
-        if let Some(value) = arg.strip_prefix("--branch=") {
+        if let Some(value) = arg
+            .strip_prefix("--ref=")
+            .or_else(|| arg.strip_prefix("--branch="))
+        {
             if value.is_empty() {
-                return Err(anyhow::anyhow!("--branch requires a value"));
+                return Err(anyhow::anyhow!("--ref requires a value"));
             }
             if branch.is_some() {
-                anyhow::bail!("duplicate --branch flag in sed arguments");
+                anyhow::bail!("duplicate --ref/--branch flag in sed arguments");
             }
             branch = Some(value.to_string());
             continue;
@@ -2535,9 +2707,95 @@ mod tests {
     }
 
     #[test]
+    fn repo_and_path_can_be_one_argument() {
+        assert_eq!(
+            split_repo_and_path("owner/repo/src/lib.rs"),
+            Some(("owner/repo".to_string(), "src/lib.rs".to_string()))
+        );
+        assert_eq!(split_repo_and_path("owner/repo"), None);
+        assert_eq!(split_repo_and_path("https://github.com/owner/repo"), None);
+        assert_eq!(
+            resolve_repo_and_required_path(None, vec!["owner/repo/a/b.rs".to_string()]).unwrap(),
+            ("owner/repo".to_string(), "a/b.rs".to_string())
+        );
+        assert_eq!(
+            resolve_repo_and_required_path(
+                Some("owner/repo".to_string()),
+                vec!["owner/repo/a/b.rs".to_string()]
+            )
+            .unwrap(),
+            ("owner/repo".to_string(), "a/b.rs".to_string())
+        );
+        let argv = ["wit", "tree", "owner/repo/src"];
+        assert_eq!(
+            resolve_repo_and_optional_path(None, vec!["owner/repo/src".to_string()], &argv)
+                .unwrap(),
+            ("owner/repo".to_string(), Some("src".to_string()))
+        );
+        let (repo, scripts, path) = parse_sed_invocation(
+            None,
+            vec![],
+            vec![],
+            vec!["5,9p".to_string(), "owner/repo/src/lib.rs".to_string()],
+        )
+        .unwrap();
+        assert_eq!((repo.as_str(), path.as_str()), ("owner/repo", "src/lib.rs"));
+        assert_eq!(scripts, vec!["5,9p".to_string()]);
+    }
+
+    #[test]
+    fn sed_accepts_a_trailing_ref() {
+        let extracted = extract_sed_inline_flags(vec![
+            "1,2p".to_string(),
+            "owner/repo".to_string(),
+            "README.md".to_string(),
+            "--ref".to_string(),
+            "v1.0".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(extracted.branch.as_deref(), Some("v1.0"));
+        assert_eq!(extracted.args.len(), 3);
+    }
+
+    #[test]
+    fn rg_accepts_ripgrep_line_number_flags() {
+        WitCli::try_parse_from(["wit", "rg", "-n", "--no-heading", "fn main", "owner/repo"])
+            .expect("rg -n --no-heading should parse");
+    }
+
+    #[test]
+    fn cli_errors_render_without_backtraces() {
+        let err = anyhow::anyhow!("inner cause").context("outer message");
+        assert_eq!(
+            render_cli_error(&err),
+            "Error: outer message\n\nCaused by:\n    inner cause\n"
+        );
+        assert_eq!(
+            render_cli_error(&anyhow::anyhow!("plain")),
+            "Error: plain\n"
+        );
+    }
+
+    #[test]
+    fn cat_note_names_the_next_command() {
+        let note = cat_truncation_note("owner/repo", "src/big.rs", Some("v1"), 500, 1432);
+        assert!(note.contains("printed lines 1-500 of 1432"), "{note}");
+        assert!(
+            note.contains("`wit sed -n '501,1000p' owner/repo src/big.rs --ref v1`"),
+            "{note}"
+        );
+        assert!(note.contains("--full"), "{note}");
+        let tail = cat_truncation_note("owner/repo", "a", None, 500, 700);
+        assert!(tail.contains("'501,700p' owner/repo a`"), "{tail}");
+    }
+
+    #[test]
     fn cli_cache_help_text_mentions_cache_contract() {
-        let mut command = WitCli::command();
-        let help = command.render_long_help().to_string();
+        let command = cli_command();
+        let help = find_subcommand(&command, "cache")
+            .clone()
+            .render_long_help()
+            .to_string();
 
         assert!(help.contains("branch-keyed stale-while-revalidate cache"));
         assert!(help.contains("--ref REF"));
@@ -2878,7 +3136,11 @@ mod tests {
             } if value == "memory"
         ));
 
-        let root_help = WitCli::command().render_long_help().to_string();
+        // Backend details moved from the root help to `wit cache --help`.
+        let root_help = find_subcommand(&cli_command(), "cache")
+            .clone()
+            .render_long_help()
+            .to_string();
         assert!(root_help.contains("--backend disk|memory"));
         assert!(root_help.contains("WIT_SNAPSHOT_BACKEND=disk|memory"));
         assert!(root_help.contains(
