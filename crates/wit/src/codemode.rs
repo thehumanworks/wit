@@ -577,22 +577,24 @@ mod tests {
 
     fn worker_path() -> anyhow::Result<PathBuf> {
         let executable = std::env::current_exe()?;
-        let debug_dir = executable
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| anyhow::anyhow!("test executable has no target/debug parent"))?;
         let name = if cfg!(windows) {
             "wit-quickjs-spike-worker.exe"
         } else {
             "wit-quickjs-spike-worker"
         };
-        let worker = debug_dir.join(name);
-        if !worker.is_file() {
-            anyhow::bail!(
-                "build the experimental worker first: cargo build -p wit-quickjs-spike --bin wit-quickjs-spike-worker"
-            );
-        }
-        Ok(worker)
+        // The unit-test binary lives in target/debug/deps on older Cargo and in
+        // target/debug/build/<pkg>/<hash>/out on Cargo with the new build-dir
+        // layout, so look for the worker in each ancestor, nearest first.
+        executable
+            .ancestors()
+            .skip(1)
+            .map(|dir| dir.join(name))
+            .find(|worker| worker.is_file())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "build the experimental worker first: cargo build -p wit-quickjs-spike --bin wit-quickjs-spike-worker"
+                )
+            })
     }
 
     struct Fixture {

@@ -126,6 +126,88 @@ fn unknown_ref_fails_with_guidance() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Agents pass `owner/repo/PATH` as one argument, add `-n` to rg, and read long files with cat.
+#[test]
+fn agent_shaped_reads_work() -> anyhow::Result<()> {
+    let fx = fixture()?;
+
+    let combined = run_wit(&fx, &["cat", "owner/repo/src/lines.txt"])?;
+    assert_eq!(stdout(&combined), "line1\nline2\nline3\nline4\nline5\n");
+
+    let ranged = run_wit(
+        &fx,
+        &[
+            "sed",
+            "-n",
+            "2,3p",
+            "owner/repo/src/lines.txt",
+            "--ref",
+            "main",
+        ],
+    )?;
+    assert_eq!(stdout(&ranged), "line2\nline3\n");
+
+    let scoped = run_wit(&fx, &["rg", "-n", "line3", "owner/repo/src"])?;
+    assert!(
+        stdout(&scoped).contains("src/lines.txt:3:line3"),
+        "{}",
+        stdout(&scoped)
+    );
+
+    let flagged = run_wit(
+        &fx,
+        &[
+            "head",
+            "-n",
+            "1",
+            "-r",
+            "owner/repo",
+            "owner/repo/src/lines.txt",
+        ],
+    )?;
+    assert_eq!(stdout(&flagged), "line1\n");
+
+    let capped = wit_command(&fx, &["cat", "owner/repo", "src/lines.txt"])
+        .env("WIT_CAT_MAX_LINES", "2")
+        .output()?;
+    assert!(capped.status.success());
+    let text = stdout(&capped);
+    assert!(
+        text.starts_with("line1\nline2\n[wit cat: printed lines 1-2 of 5."),
+        "{text}"
+    );
+    assert!(
+        text.contains("`wit sed -n '3,4p' owner/repo src/lines.txt`"),
+        "{text}"
+    );
+    assert!(!text.contains("line3"), "{text}");
+
+    let full = wit_command(&fx, &["cat", "--full", "owner/repo", "src/lines.txt"])
+        .env("WIT_CAT_MAX_LINES", "2")
+        .output()?;
+    assert_eq!(stdout(&full), "line1\nline2\nline3\nline4\nline5\n");
+    Ok(())
+}
+
+/// Errors stay one readable message even when the environment asks Rust for backtraces.
+#[test]
+fn errors_never_print_backtraces() -> anyhow::Result<()> {
+    let fx = fixture()?;
+    let output = wit_command(&fx, &["cat", "--ref", "v9.9", "owner/repo", "VERSION"])
+        .env("RUST_BACKTRACE", "1")
+        .env("RUST_LIB_BACKTRACE", "1")
+        .output()?;
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error: ref 'v9.9' was not found"),
+        "{stderr}"
+    );
+    assert!(!stderr.to_lowercase().contains("backtrace"), "{stderr}");
+    Ok(())
+}
+
 fn assert_provenance(output: &Output, resolved_ref: &str, commit: &str, cache: &str) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let line = stderr
@@ -198,6 +280,11 @@ fn fixture() -> anyhow::Result<Fixture> {
 
     std::fs::write(worktree.join("VERSION"), "2\n")?;
     std::fs::write(worktree.join("NEW_IN_2"), "later\n")?;
+    std::fs::create_dir_all(worktree.join("src"))?;
+    std::fs::write(
+        worktree.join("src/lines.txt"),
+        "line1\nline2\nline3\nline4\nline5\n",
+    )?;
     commit_all(&worktree, "v2")?;
     let main_sha = git_stdout(&["rev-parse", "HEAD"], &worktree)?;
 

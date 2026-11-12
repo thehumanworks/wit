@@ -24,14 +24,15 @@ Options:
   -h, --help                 Print help
   -V, --version              Print version
 
-Snapshot backends: repo commands (cache, branches, tree, ls, cat, rg, sed, head, tail, ast) default to the disk backend. Choose with --backend disk|memory or WIT_SNAPSHOT_BACKEND=disk|memory; --backend wins over WIT_SNAPSHOT_BACKEND. The memory backend loads a public repo over the GitHub REST API into RAM, with no WIT_CACHE_DIR writes and no shared cloud cache; it maps cache to an in-memory pin/prefetch and lists branches via the GitHub API.
+Start here:
+  wit rg -n 'fn main' owner/repo              search contents; prints path:line:text
+  wit sed -n '80,140p' owner/repo src/main.rs  read a line range
+  wit head -n 60 owner/repo/README.md          read the start of a file
+  wit tree owner/repo src                      list files under a directory
+  wit cat owner/repo Cargo.toml                print a whole file, only when you need all of it
 
-Disk cache: shallow bare repos in .wit/cache under the system temp directory (override with WIT_CACHE_DIR). Disk read order: local cache, then shared cloud pack cache, then GitHub clone. A cold cache, a moved branch, --refresh-cache, or wit cache resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache, verifies it locally, and falls back to a depth-1 GitHub clone when the cloud cache is off, misses, or fails verification.
+Search first, then read ranges: rg -n gives line numbers and sed -n 'START,ENDp' reads around them. cat prints at most 500 lines unless you pass --full.
 
-Cache freshness: disk reads use a branch-keyed stale-while-revalidate cache by default: a warm local cache is served at once and revalidated in the background. Pass --ref REF on cache, tree, ls, cat, rg, sed, head, tail, or ast to read a branch, tag, or full 40-character commit SHA instead of the repository default branch (--branch is an alias). A tag or commit is fetched once into an immutable per-commit cache and never revalidated. Every disk read prints `snapshot: backend=disk repo=OWNER/REPO ref=REF commit=SHA cache=branch|pinned` on stderr; pass --ref SHA to repeat a read at exactly that commit. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.
+Pass the repository as owner/repo, -r owner/repo, or owner/repo/PATH. Pass --ref REF to read a branch, tag, or full commit SHA (default: the repository default branch). Each read prints `snapshot: ... commit=SHA` on stderr; cite that commit, and pass --ref SHA to read the same commit again.
 
-Shared cloud cache: WIT_CACHE_URL sets its base URL (https://, or http:// on loopback); a valid URL turns it on in any build. Release builds default WIT_CACHE_URL to https://wit-cache.rodat-human-ada.workers.dev; debug builds (cargo run, cargo test) default to off. Packagers can bake another default with WIT_DEFAULT_CACHE_URL at build time. Disable it with WIT_CACHE_URL=off (also: empty, 0, false, no, none, disabled; any case). WIT_CACHE_TIMEOUT_MS (default 60000) bounds the pack download and WIT_CACHE_MAX_BYTES (default 536870912) caps its size. Requests to the cloud cache carry no credentials.
-
-Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --ref REF.
-
-search always uses the GitHub REST API (no disk cache). search and the memory backend send GITHUB_TOKEN when set, for higher GitHub rate limits. Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match).
+Find repositories with wit search -p NAME. List branches with wit branches owner/repo. Backends, the disk cache, and the shared cloud cache: wit cache --help.

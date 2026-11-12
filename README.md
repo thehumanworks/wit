@@ -135,7 +135,8 @@ wit search -p 'ratatui' -l 'Rust'                        # Find repos
 wit tree -r ratatui/ratatui                                   # See structure
 wit ls -l -r ratatui/ratatui src                              # Browse with sizes
 wit rg -l 'impl Widget' -r ratatui/ratatui                    # Find files
-wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file
+wit rg -n 'fn render' ratatui/ratatui/src                      # Search one directory; prints path:line:text
+wit cat -n -r ratatui/ratatui src/lib.rs                      # Read a file (first 500 lines; --full for all)
 wit head -n 30 -r ratatui/ratatui Cargo.toml                  # Preview a file
 wit sed -n -r ratatui/ratatui '100,150p' src/lib.rs           # Extract range
 wit ast symbols ratatui/ratatui src/widgets/block.rs          # Definitions with exact line ranges (tree-sitter)
@@ -457,7 +458,7 @@ WIT_CACHE_URL=http://127.0.0.1:8787 wit tree -r openai/codex        # local `wra
 curl -s https://wit-cache.rodat-human-ada.workers.dev/v1/stats       # storage and budget counters
 ```
 
-Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning. Its invariants (single-flight, daily budgets, the storage cap, takedowns, content integrity, and the free-tier arithmetic at the deployed limits) are proved in Lean under `formal/` and checked against the code by `scripts/check_formal.sh` ([ADR 0010](docs/adr/0010-formal-proofs.md)). So are the claims `wit --help` makes about this section and the next (default backend, read order, release and debug defaults, disable values): `formal/Wit/CacheSource.lean` proves them against values extracted from both the help text and the code.
+Hosted limits: 30-day retention, 512 MiB per pack, 3 GB total (oldest evicted first), 300 fills per day, and per-IP rate limits. See [ADR 0009](docs/adr/0009-shared-cloud-pack-cache.md) for the design and cost reasoning. Its invariants (single-flight, daily budgets, the storage cap, takedowns, content integrity, and the free-tier arithmetic at the deployed limits) are proved in Lean under `formal/` and checked against the code by `scripts/check_formal.sh` ([ADR 0010](docs/adr/0010-formal-proofs.md)). So are the claims `wit cache --help` makes about this section and the next (default backend, read order, release and debug defaults, disable values): `formal/Wit/CacheSource.lean` proves them against values extracted from both the help text and the code.
 
 ### Snapshot backends (disk vs memory)
 
@@ -503,10 +504,12 @@ wit ls -l -r ratatui/ratatui src             # With line counts and token estima
 
 ### cat
 
-Print a file's contents. Pass the repository with `-r` / `--repo` (`owner/repo`). For large files, prefer `head`/`tail`/`sed` to read specific ranges, or `rg` to search.
+Print a file's contents. Pass the repository with `-r` / `--repo` (`owner/repo`), positionally, or joined with the path (`owner/repo/PATH`). Use it when you need the whole file; to answer a question about part of a file, search with `rg -n` and read the range with `sed -n`. Files longer than 500 lines print their first 500 lines and a note with the next `wit sed` command; `--full` prints the whole file, and `WIT_CAT_MAX_LINES` sets the limit (0 turns it off).
 
 ```bash
 wit cat -r ratatui/ratatui Cargo.toml             # Print file
+wit cat ratatui/ratatui/Cargo.toml                # Repo and path in one argument
+wit cat --full -r ratatui/ratatui src/lib.rs      # Whole file past the 500-line limit
 wit cat -n -r ratatui/ratatui src/lib.rs           # With line numbers
 wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only
 ```
@@ -521,6 +524,7 @@ wit cat -b -r ratatui/ratatui README.md            # Number non-blank lines only
 | `-E` | `--show-ends` | Show `$` at end of each line |
 | `-T` | `--show-tabs` | Show TAB as `^I` |
 | `-A` | `--show-all` | Equivalent to `-ET` |
+|      | `--full` | Print the whole file even past the `WIT_CAT_MAX_LINES` limit (default 500) |
 
 ### rg
 

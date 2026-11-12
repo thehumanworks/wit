@@ -779,6 +779,50 @@ fn default_cache_target(owner_repo: &str, remote_url: &str) -> anyhow::Result<Re
     })
 }
 
+/// Turn a failed `git ls-remote` into an error an agent can act on.
+///
+/// GitHub answers a missing or private repository with an authentication
+/// prompt, so those stderr markers mean "not found". The stderr text itself
+/// stays out of the message, because git diagnostics can echo credentials.
+fn remote_lookup_error(
+    remote_url: &str,
+    output: &std::process::Output,
+    action: &str,
+) -> anyhow::Error {
+    let repo = remote_url
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplitn(3, '/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    let not_found = [
+        "repository not found",
+        "not found",
+        "could not read username",
+        "terminal prompts disabled",
+        "authentication failed",
+        "invalid username or password",
+    ]
+    .iter()
+    .any(|marker| stderr.contains(marker));
+    if not_found {
+        anyhow::anyhow!(
+            "repository {repo} was not found on GitHub (or it is private and no credentials are set). \
+             Check the owner/repo spelling, or find the repository with `wit search -p NAME`"
+        )
+    } else {
+        anyhow::anyhow!(
+            "could not reach {repo} with git ls-remote while trying to {action} (status: {}); check network access to GitHub",
+            output.status
+        )
+    }
+}
+
 fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
     let output = github_git_command()
         .arg("ls-remote")
@@ -789,14 +833,11 @@ fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
         .context("failed to invoke git for default branch resolution")?;
 
     if !output.status.success() {
-        let stderr = "git diagnostic omitted".trim().to_string();
-        let stdout = "git diagnostic omitted";
-        anyhow::bail!(
-            "git ls-remote failed (status: {}) stderr: '{}' stdout: '{}'",
-            output.status,
-            stderr,
-            stdout
-        );
+        return Err(remote_lookup_error(
+            remote_url,
+            &output,
+            "resolve the default branch",
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -815,12 +856,11 @@ fn resolve_default_branch_with_context(
         .arg("HEAD");
     let output = command_output(context, &mut command, "resolve default branch")?;
     if !output.status.success() {
-        anyhow::bail!(
-            "git ls-remote failed (status: {}) stderr: '{}' stdout: '{}'",
-            output.status,
-            "git diagnostic omitted".trim(),
-            "git diagnostic omitted"
-        );
+        return Err(remote_lookup_error(
+            remote_url,
+            &output,
+            "resolve the default branch",
+        ));
     }
     parse_default_branch_ls_remote(&String::from_utf8_lossy(&output.stdout))
 }
@@ -1529,11 +1569,11 @@ fn resolve_ref_target(
         "resolve the requested ref",
     )?;
     if !output.status.success() {
-        // Git diagnostics can echo credentials, so they stay out of the error, like elsewhere here.
-        anyhow::bail!(
-            "git ls-remote failed for {owner_repo} while resolving ref '{requested}' (status: {})",
-            output.status
-        );
+        return Err(remote_lookup_error(
+            remote_url,
+            &output,
+            &format!("resolve ref '{requested}'"),
+        ));
     }
     let stdout = String::from_utf8(output.stdout).context("git ls-remote returned non-UTF-8")?;
     let (mut branch_sha, mut tag_sha, mut peeled_sha) = (None, None, None);
@@ -4249,6 +4289,42 @@ mod tests {
         let metadata = read_cache_metadata(&resolved.target.metadata_path(&cache_dir)).unwrap();
         assert_eq!(metadata.current_sha, new_sha);
         assert!(metadata.last_error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_lookup_error_names_a_missing_repository() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = |stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(128 << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        let missing = remote_lookup_error(
+            "https://github.com/burntushi/ripgrep.git",
+            &output(
+                "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            ),
+            "resolve the default branch",
+        );
+        assert!(
+            missing
+                .to_string()
+                .starts_with("repository burntushi/ripgrep was not found on GitHub"),
+            "{missing}"
+        );
+        assert!(!missing.to_string().contains("Username"), "{missing}");
+        let offline = remote_lookup_error(
+            "https://github.com/owner/repo",
+            &output("fatal: unable to access: Could not resolve host"),
+            "resolve the default branch",
+        );
+        assert!(
+            offline
+                .to_string()
+                .starts_with("could not reach owner/repo"),
+            "{offline}"
+        );
     }
 
     #[test]

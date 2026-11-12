@@ -17,10 +17,11 @@ description: >
 
 1. Discover repos: `wit search`
 2. Orient yourself: `wit tree` or `wit ls`
-3. Find code: `wit rg`
-4. Read files: `wit cat`, `wit head`, `wit tail`, `wit sed`
+3. Find code: `wit rg -n PATTERN owner/repo` (prints `path:line:text`; add a path to narrow it: `owner/repo/src`)
+4. Read the lines around a match: `wit sed -n 'START,ENDp' owner/repo PATH`, `wit head`, `wit tail`
+5. Read a whole file with `wit cat` only when you are sure you need all of it. `cat` prints at most 500 lines and then the next `wit sed` command; pass `--full` for the rest.
 
-All repo-scoped commands take the repository as a positional `owner/repo` or with `-r/--repo` (both forms work; if both are given they must match).
+All repo-scoped commands take the repository as a positional `owner/repo`, with `-r/--repo`, or joined with the path as `owner/repo/PATH` (if both a positional and `-r` are given they must match).
 When the user asks for a non-default branch, run `wit branches owner/repo` first to list available branch names and metadata before choosing `--ref BRANCH`.
 
 ### Pin the commit you cite
@@ -191,9 +192,11 @@ wit ls -l -r ratatui/ratatui src
 
 ### cat
 
-Print file contents. For large files prefer `head`/`tail`/`sed`.
+Print file contents. Use it when you need the whole file; to answer a question about part of a file, `rg -n` then `sed -n` is cheaper. Files longer than 500 lines print their first 500 lines and a note with the next `wit sed` command (`--full` prints everything; `WIT_CAT_MAX_LINES` sets the limit, 0 turns it off).
 
 ```bash
+wit cat ratatui/ratatui/Cargo.toml              # repo and path in one argument
+wit cat --full -r ratatui/ratatui src/lib.rs    # whole file, past the 500-line limit
 wit cat -r ratatui/ratatui Cargo.toml
 wit cat -n -r ratatui/ratatui src/lib.rs        # numbered lines
 wit cat -b -r ratatui/ratatui README.md         # number non-blank only
@@ -208,6 +211,7 @@ wit cat -b -r ratatui/ratatui README.md         # number non-blank only
 | `-E/--show-ends` | Show `$` at end of each line |
 | `-T/--show-tabs` | Show TAB as `^I` |
 | `-A/--show-all` | Equivalent to `-ET` |
+| `--full` | Print the whole file even past the 500-line limit |
 
 ### rg
 
