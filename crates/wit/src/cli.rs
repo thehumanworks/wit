@@ -10,7 +10,7 @@ use wit::{
     ensure_rustls_provider,
     gitops::ops::{
         BlobWalkOptions, BranchMetadata, CacheAcquisitionMode, CacheBranchSelection, GrepOptions,
-        GrepResult, IgnoreMatcher, build_tree_with_ignore, cache_github_repo,
+        GrepResult, IgnoreMatcher, build_tree_with_ignore, cache_github_ref,
         grep_repo_with_options, head_with_ignore, list_dir_with_ignore, list_remote_branches,
         read_file, read_file_with_ignore, revalidate_github_repo, tail_with_ignore,
         walk_text_blobs,
@@ -37,11 +37,11 @@ Snapshot backends: repo commands (cache, branches, tree, ls, cat, rg, sed, head,
 
 Disk cache: shallow bare repos in .wit/cache under the system temp directory (override with WIT_CACHE_DIR). Disk read order: local cache, then shared cloud pack cache, then GitHub clone. A cold cache, a moved branch, --refresh-cache, or wit cache resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache, verifies it locally, and falls back to a depth-1 GitHub clone when the cloud cache is off, misses, or fails verification.
 
-Cache freshness: disk reads use a branch-keyed stale-while-revalidate cache by default: a warm local cache is served at once and revalidated in the background. Pass --branch BRANCH on cache, tree, ls, cat, rg, sed, head, tail, or ast to read a named branch instead of the repository default. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.
+Cache freshness: disk reads use a branch-keyed stale-while-revalidate cache by default: a warm local cache is served at once and revalidated in the background. Pass --ref REF on cache, tree, ls, cat, rg, sed, head, tail, or ast to read a branch, tag, or full 40-character commit SHA instead of the repository default branch (--branch is an alias). A tag or commit is fetched once into an immutable per-commit cache and never revalidated. Every disk read prints `snapshot: backend=disk repo=OWNER/REPO ref=REF commit=SHA cache=branch|pinned` on stderr; pass --ref SHA to repeat a read at exactly that commit. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast to force refresh the selected branch before reading. Use wit cache owner/repo for an explicit cache refresh. No public TTL/max-age option is exposed.
 
 Shared cloud cache: WIT_CACHE_URL sets its base URL (https://, or http:// on loopback); a valid URL turns it on in any build. Release builds default WIT_CACHE_URL to https://wit-cache.rodat-human-ada.workers.dev; debug builds (cargo run, cargo test) default to off. Packagers can bake another default with WIT_DEFAULT_CACHE_URL at build time. Disable it with WIT_CACHE_URL=off (also: empty, 0, false, no, none, disabled; any case). WIT_CACHE_TIMEOUT_MS (default 60000) bounds the pack download and WIT_CACHE_MAX_BYTES (default 536870912) caps its size. Requests to the cloud cache carry no credentials.
 
-Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --branch BRANCH.
+Branch discovery: run wit branches owner/repo (or -r owner/repo) to list available branch names with ahead/behind, merged, tip, author, and created-time metadata before choosing --ref REF.
 
 search always uses the GitHub REST API (no disk cache). search and the memory backend send GITHUB_TOKEN when set, for higher GitHub rate limits. Repo-scoped commands accept owner/repo as a positional argument or via -r/--repo (if both are given they must match).";
 
@@ -127,7 +127,7 @@ enum Commands {
         about = "Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot",
         override_usage = "wit <cache|c> [OPTIONS] [REPO]",
         group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
-        after_help = "Disk backend (default): force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. The refill resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache (WIT_CACHE_URL; on by default in release builds) and verifies it locally, and falls back to a depth-1 GitHub clone. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes, no shared cloud cache).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast when a disk read must wait for a fresh cache.\n\nRun wit --help for the cloud cache variables and how to disable it.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --branch main\n  wit cache octocat/Hello-World --backend memory"
+        after_help = "Disk backend (default): force-refresh the bare-repo cache for the repository default branch, or the selected branch when --branch is set. The refill resolves the branch commit with git ls-remote, downloads that commit's pack from the shared cloud cache (WIT_CACHE_URL; on by default in release builds) and verifies it locally, and falls back to a depth-1 GitHub clone. Memory backend: open the repo over the GitHub API into RAM (prefetch tree; no WIT_CACHE_DIR writes, no shared cloud cache).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nRepo-reading commands on disk normally serve cached content immediately and revalidate in the background. Pass --refresh-cache on tree, ls, cat, rg, sed, head, tail, or ast when a disk read must wait for a fresh cache.\n\nRun wit --help for the cloud cache variables and how to disable it.\n\nExamples:\n  wit cache ratatui/ratatui\n  wit cache -r ratatui/ratatui --ref main\n  wit cache ratatui/ratatui --ref v0.29.0\n  wit cache octocat/Hello-World --backend memory"
     )]
     Cache {
         /// Repository in "owner/repo" format
@@ -138,8 +138,8 @@ enum Commands {
         #[arg(value_name = "REPO")]
         repo_positional: Option<String>,
 
-        /// Branch name under refs/heads to cache instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to cache (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
@@ -157,8 +157,8 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -186,8 +186,8 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -215,8 +215,8 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -272,8 +272,8 @@ enum Commands {
         #[arg(value_name = "REPO")]
         repo_positional: Option<String>,
 
-        /// Branch name under refs/heads to search instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to search (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -356,8 +356,8 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
@@ -378,8 +378,8 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -411,8 +411,8 @@ enum Commands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -504,8 +504,8 @@ enum AstCommands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -554,8 +554,8 @@ enum AstCommands {
         #[arg(short = 'r', long = "repo")]
         repo: Option<String>,
 
-        /// Branch name under refs/heads to read instead of the repository default branch
-        #[arg(long = "branch", value_name = "BRANCH")]
+        /// Branch, tag, or full commit SHA to read (default: the repository default branch)
+        #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
         branch: Option<String>,
 
         #[arg(long = "refresh-cache", action = ArgAction::SetTrue, help = REFRESH_CACHE_HELP)]
@@ -621,6 +621,19 @@ fn repo_cache_mode(refresh_cache: bool) -> CacheAcquisitionMode {
 
 fn cache_branch_selection(branch: Option<String>) -> CacheBranchSelection {
     branch.map_or(CacheBranchSelection::Default, CacheBranchSelection::named)
+}
+
+/// Open the disk cache for `--ref` (a branch, tag, or full commit SHA; the default branch when
+/// absent) and report the exact commit on stderr, so every disk read can be cited and repeated
+/// with `--ref <commit>`.
+async fn open_disk_repo(
+    repo: &str,
+    reference: Option<&str>,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<gix::Repository> {
+    let (repository, provenance) = cache_github_ref(repo, reference, mode).await?;
+    eprintln!("{}", provenance.render());
+    Ok(repository)
 }
 
 /// Resolve repository from optional `-r/--repo` and optional positional `owner/repo`.
@@ -1092,12 +1105,8 @@ async fn run_ast(
 
     match CliSnapshotBackend::from_env_or_flag(backend.as_deref()).map_err(anyhow::Error::msg)? {
         CliSnapshotBackend::Disk => {
-            let repository = cache_github_repo(
-                &repo,
-                cache_branch_selection(branch),
-                repo_cache_mode(refresh_cache),
-            )
-            .await?;
+            let repository =
+                open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache)).await?;
             walk_text_blobs(&repository, &walk, &mut visit)?;
         }
         CliSnapshotBackend::Memory => {
@@ -1236,9 +1245,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repo = cache_github_repo(
+                    let repo = open_disk_repo(
                         &repo,
-                        cache_branch_selection(branch),
+                        branch.as_deref(),
                         CacheAcquisitionMode::ForceInvalidate,
                     )
                     .await?;
@@ -1276,12 +1285,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
                 }
                 CliSnapshotBackend::Memory => {
@@ -1304,12 +1310,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     let entries =
                         list_dir_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
                     print_ls_entries(&entries, long);
@@ -1359,12 +1362,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     read_file_with_ignore(&repository, &path, &ignore_patterns)?
                 }
                 CliSnapshotBackend::Memory => {
@@ -1464,12 +1464,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     RgSource::Disk(repository)
                 }
                 CliSnapshotBackend::Memory => {
@@ -1580,12 +1577,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     head_with_ignore(&repository, &path, lines, number, &ignore_patterns)?
                 }
                 CliSnapshotBackend::Memory => {
@@ -1625,12 +1619,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     read_file_with_ignore(&repository, &path, &effective_ignore_patterns)?
                 }
                 CliSnapshotBackend::Memory => {
@@ -1668,12 +1659,9 @@ async fn async_main() -> anyhow::Result<()> {
                 .map_err(anyhow::Error::msg)?
             {
                 CliSnapshotBackend::Disk => {
-                    let repository = cache_github_repo(
-                        &repo,
-                        cache_branch_selection(branch),
-                        repo_cache_mode(refresh_cache),
-                    )
-                    .await?;
+                    let repository =
+                        open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
+                            .await?;
                     tail_with_ignore(
                         &repository,
                         &path,
@@ -2358,8 +2346,14 @@ mod tests {
             let branch = find_arg(find_subcommand(&command, command_name), "branch");
             assert_eq!(
                 branch.get_long(),
-                Some("branch"),
-                "{command_name} should expose --branch"
+                Some("ref"),
+                "{command_name} should expose --ref"
+            );
+            assert!(
+                branch
+                    .get_long_and_visible_aliases()
+                    .is_some_and(|names| names.contains(&"branch")),
+                "{command_name} should keep --branch as an alias"
             );
             assert_eq!(
                 branch.get_short(),
@@ -2469,8 +2463,11 @@ mod tests {
 
         let source = include_str!("cli.rs");
         assert!(
-            source.matches("cache_branch_selection(branch)").count() >= 8,
-            "repo-reading handlers should route parsed branches to cache acquisition"
+            source
+                .matches("open_disk_repo(&repo, branch.as_deref()")
+                .count()
+                >= 8,
+            "repo-reading handlers should route parsed refs to cache acquisition"
         );
     }
 
@@ -2543,7 +2540,7 @@ mod tests {
         let help = command.render_long_help().to_string();
 
         assert!(help.contains("branch-keyed stale-while-revalidate cache"));
-        assert!(help.contains("--branch BRANCH"));
+        assert!(help.contains("--ref REF"));
         assert!(help.contains("--refresh-cache"));
         assert!(help.contains("No public TTL/max-age option is exposed."));
 

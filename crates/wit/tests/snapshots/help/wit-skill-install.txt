@@ -3,6 +3,7 @@ Install the wit skill as a directory at the given path
 Usage: wit skill install [OPTIONS] --path <DIR>
 
 Options:
-      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
-      --path <DIR>          Directory in which to create the wit-skill folder
-  -h, --help                Print help
+      --hostname <HOSTNAME>  GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
+      --path <DIR>           Directory in which to create the wit-skill folder
+      --ignore <PATH|GLOB>   Exclude files, directories, or glob patterns (repeatable)
+  -h, --help                 Print help

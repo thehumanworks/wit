@@ -798,6 +798,9 @@ fn host_limit_response(
     }
 }
 
+// Current stable Rust deprecates `fetch_update` in favor of `try_update`; keep the old name until the oldest
+// supported toolchain has `try_update`, so both stable and older toolchains build.
+#[allow(deprecated)]
 fn charge_bytes(total: &AtomicUsize, amount: usize, limit: usize) -> bool {
     total
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {

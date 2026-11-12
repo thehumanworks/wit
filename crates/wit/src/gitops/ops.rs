@@ -1389,6 +1389,316 @@ pub async fn cache_github_repo(
     cache_github_repo_from_remote(owner_repo, &remote_url, &cache_dir, branch, mode)
 }
 
+/// The ref and exact commit a disk read served, so a caller can cite it or pin it later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadProvenance {
+    pub repo: String,
+    /// Fully qualified ref (`refs/heads/main`, `refs/tags/v1.0`), or the commit SHA itself.
+    pub resolved_ref: String,
+    pub commit_sha: String,
+    /// `branch` for the stale-while-revalidate branch cache, `pinned` for an immutable tag or
+    /// commit entry.
+    pub cache: &'static str,
+}
+
+impl ReadProvenance {
+    /// One stderr line in the same shape as the memory backend's provenance line.
+    pub fn render(&self) -> String {
+        format!(
+            "snapshot: backend=disk repo={} ref={} commit={} cache={}",
+            self.repo, self.resolved_ref, self.commit_sha, self.cache
+        )
+    }
+}
+
+/// How a CLI `--ref` value maps onto the disk cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RefTarget {
+    Branch(CacheBranchSelection),
+    /// An immutable commit. `fetch_ref` is what to ask the remote for; `display_ref` is what to
+    /// report.
+    Pinned {
+        commit_sha: String,
+        fetch_ref: String,
+        display_ref: String,
+    },
+}
+
+const PINNED_CACHE_DIR: &str = "commits";
+const PINNED_HEAD_REF: &str = "refs/heads/wit-pinned";
+
+fn is_full_commit_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Disk-cache acquisition for a branch, tag, or full commit SHA.
+///
+/// `None`, an empty value, or `HEAD` reads the repository default branch, exactly like
+/// [`cache_github_repo`] with [`CacheBranchSelection::Default`]. A branch keeps the existing
+/// branch-keyed stale-while-revalidate cache. A tag or full commit SHA is fetched once at depth 1
+/// into an immutable per-commit cache entry that is never revalidated, because a commit cannot
+/// change. Every call returns the commit it served.
+pub async fn cache_github_ref(
+    owner_repo: &str,
+    requested: Option<&str>,
+    mode: CacheAcquisitionMode,
+) -> anyhow::Result<(Repository, ReadProvenance)> {
+    split_owner_repo(owner_repo)?;
+    wit_snapshot::auth::hostname()?;
+    let remote_url = github_remote_url(owner_repo);
+    let cache_dir = wit_cache_dir();
+    let target = resolve_ref_target(owner_repo, &remote_url, &cache_dir, requested)?;
+    match target {
+        RefTarget::Branch(selection) => {
+            let repository = cache_github_repo_from_remote(
+                owner_repo,
+                &remote_url,
+                &cache_dir,
+                selection,
+                mode,
+            )?;
+            let provenance = branch_read_provenance(owner_repo, &repository)?;
+            Ok((repository, provenance))
+        }
+        RefTarget::Pinned {
+            commit_sha,
+            fetch_ref,
+            display_ref,
+        } => {
+            let repository =
+                pinned_commit_repo(owner_repo, &remote_url, &cache_dir, &commit_sha, &fetch_ref)?;
+            Ok((
+                repository,
+                ReadProvenance {
+                    repo: owner_repo.to_string(),
+                    resolved_ref: display_ref,
+                    commit_sha,
+                    cache: "pinned",
+                },
+            ))
+        }
+    }
+}
+
+fn resolve_ref_target(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    requested: Option<&str>,
+) -> anyhow::Result<RefTarget> {
+    let requested = requested.map(str::trim).unwrap_or_default();
+    if requested.is_empty() || requested == "HEAD" {
+        return Ok(RefTarget::Branch(CacheBranchSelection::Default));
+    }
+    if is_full_commit_sha(requested) {
+        let commit_sha = requested.to_ascii_lowercase();
+        return Ok(RefTarget::Pinned {
+            fetch_ref: commit_sha.clone(),
+            display_ref: commit_sha.clone(),
+            commit_sha,
+        });
+    }
+    if let Some(branch) = requested.strip_prefix("refs/heads/") {
+        return Ok(RefTarget::Branch(CacheBranchSelection::named(branch)));
+    }
+    let explicit_tag = requested.strip_prefix("refs/tags/");
+    let name = explicit_tag.unwrap_or(requested);
+
+    // A warm branch cache answers without a network round trip, which keeps the
+    // stale-while-revalidate fast path for `--ref BRANCH` identical to `--branch BRANCH`.
+    if explicit_tag.is_none() {
+        let target = CacheTarget::new(owner_repo, name)?;
+        if target.repo_path(cache_dir).join("HEAD").is_file() {
+            return Ok(RefTarget::Branch(CacheBranchSelection::named(name)));
+        }
+    }
+
+    let branch_ref = format!("refs/heads/{name}");
+    let tag_ref = format!("refs/tags/{name}");
+    // The peeled entry must be requested by name: `refs/tags/NAME` alone does not list it.
+    let peeled_tag_ref = format!("{tag_ref}^{{}}");
+    let output = git_output(
+        [
+            "ls-remote",
+            remote_url,
+            branch_ref.as_str(),
+            tag_ref.as_str(),
+            peeled_tag_ref.as_str(),
+        ],
+        None,
+        "resolve the requested ref",
+    )?;
+    if !output.status.success() {
+        // Git diagnostics can echo credentials, so they stay out of the error, like elsewhere here.
+        anyhow::bail!(
+            "git ls-remote failed for {owner_repo} while resolving ref '{requested}' (status: {})",
+            output.status
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("git ls-remote returned non-UTF-8")?;
+    let (mut branch_sha, mut tag_sha, mut peeled_sha) = (None, None, None);
+    for line in stdout.lines() {
+        let Some((sha, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        if reference == branch_ref {
+            branch_sha = Some(sha.to_string());
+        } else if reference == tag_ref {
+            tag_sha = Some(sha.to_string());
+        } else if reference == peeled_tag_ref {
+            peeled_sha = Some(sha.to_string());
+        }
+    }
+    if explicit_tag.is_none() && branch_sha.is_some() {
+        return Ok(RefTarget::Branch(CacheBranchSelection::named(name)));
+    }
+    // An annotated tag points at a tag object; the peeled entry is the commit it names.
+    if let Some(commit_sha) = peeled_sha.or(tag_sha) {
+        return Ok(RefTarget::Pinned {
+            commit_sha,
+            fetch_ref: tag_ref.clone(),
+            display_ref: tag_ref,
+        });
+    }
+    anyhow::bail!(
+        "ref '{requested}' was not found as a branch or tag of {owner_repo}; pass a branch, a tag, or a full 40-character commit SHA (run `wit branches {owner_repo}` to list branches)"
+    )
+}
+
+fn branch_read_provenance(
+    owner_repo: &str,
+    repository: &Repository,
+) -> anyhow::Result<ReadProvenance> {
+    let commit_sha = repository
+        .head_id()
+        .context("cached repository has no HEAD commit")?
+        .to_string();
+    let resolved_ref = repository
+        .head_name()
+        .ok()
+        .flatten()
+        .map(|name| name.as_bstr().to_string())
+        .unwrap_or_else(|| "HEAD".to_string());
+    Ok(ReadProvenance {
+        repo: owner_repo.to_string(),
+        resolved_ref,
+        commit_sha,
+        cache: "branch",
+    })
+}
+
+fn pinned_commit_dir(
+    cache_dir: &Path,
+    owner_repo: &str,
+    commit_sha: &str,
+) -> anyhow::Result<PathBuf> {
+    Ok(repo_cache_root(cache_dir, owner_repo)?
+        .join(PINNED_CACHE_DIR)
+        .join(commit_sha))
+}
+
+/// Open the immutable cache entry for `commit_sha`, fetching it first when it is missing.
+///
+/// The fetch lands in a temporary sibling directory and is renamed into place only after HEAD is
+/// verified, so a reader never sees a partial entry and two concurrent fills cannot corrupt it.
+fn pinned_commit_repo(
+    owner_repo: &str,
+    remote_url: &str,
+    cache_dir: &Path,
+    commit_sha: &str,
+    fetch_ref: &str,
+) -> anyhow::Result<Repository> {
+    let entry_dir = pinned_commit_dir(cache_dir, owner_repo, commit_sha)?;
+    let repo_path = entry_dir.join("repo.git");
+    if let Some(repository) = open_verified_pinned(&repo_path, commit_sha) {
+        return Ok(repository);
+    }
+
+    std::fs::create_dir_all(&entry_dir)
+        .with_context(|| format!("failed to create '{}'", entry_dir.display()))?;
+    let staging = tempfile::Builder::new()
+        .prefix(".fill-")
+        .tempdir_in(&entry_dir)
+        .with_context(|| format!("failed to stage a fill under '{}'", entry_dir.display()))?;
+    let staged_repo = staging.path().join("repo.git");
+    let staged = staged_repo.to_string_lossy().to_string();
+    run_checked_git(
+        &["init", "--quiet", "--bare", staged.as_str()],
+        None,
+        "initialize pinned cache",
+    )?;
+    run_checked_git(
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--depth",
+            "1",
+            remote_url,
+            fetch_ref,
+        ],
+        Some(&staged_repo),
+        "fetch the requested ref",
+    )
+    .with_context(|| format!("could not fetch '{fetch_ref}' from {owner_repo}"))?;
+    let fetched = git_stdout(
+        ["rev-parse", "FETCH_HEAD^{commit}"],
+        Some(&staged_repo),
+        "resolve the fetched commit",
+    )?
+    .trim()
+    .to_string();
+    if !fetched.eq_ignore_ascii_case(commit_sha) {
+        anyhow::bail!(
+            "{owner_repo}: '{fetch_ref}' fetched commit {fetched}, expected {commit_sha}"
+        );
+    }
+    run_checked_git(
+        &["update-ref", PINNED_HEAD_REF, &fetched],
+        Some(&staged_repo),
+        "pin the commit",
+    )?;
+    run_checked_git(
+        &["symbolic-ref", "HEAD", PINNED_HEAD_REF],
+        Some(&staged_repo),
+        "point HEAD at the commit",
+    )?;
+
+    if std::fs::rename(&staged_repo, &repo_path).is_err() {
+        // Another process filled the entry first; its content is the same immutable commit.
+        if let Some(repository) = open_verified_pinned(&repo_path, commit_sha) {
+            return Ok(repository);
+        }
+        anyhow::bail!(
+            "failed to publish pinned cache entry '{}'",
+            repo_path.display()
+        );
+    }
+    open_verified_pinned(&repo_path, commit_sha).with_context(|| {
+        format!(
+            "pinned cache entry '{}' failed verification",
+            repo_path.display()
+        )
+    })
+}
+
+fn open_verified_pinned(repo_path: &Path, commit_sha: &str) -> Option<Repository> {
+    if !repo_path.join("HEAD").is_file() {
+        return None;
+    }
+    let repository = gix::open(repo_path).ok()?;
+    let head = repository.head_id().ok()?.to_string();
+    head.eq_ignore_ascii_case(commit_sha).then_some(repository)
+}
+
+fn run_checked_git(args: &[&str], workdir: Option<&Path>, action: &str) -> anyhow::Result<()> {
+    let output = git_output(args, workdir, action)?;
+    if !output.status.success() {
+        anyhow::bail!("git failed to {action} (status: {})", output.status);
+    }
+    Ok(())
+}
+
 /// Operation-service cache acquisition. Unlike the human CLI path, every network process and
 /// lock wait observes the parent request and cache publication is staged before atomic rename.
 pub async fn cache_github_repo_with_context(

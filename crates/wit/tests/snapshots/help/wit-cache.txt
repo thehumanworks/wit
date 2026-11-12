@@ -6,9 +6,10 @@ Arguments:
   [REPO]  Repository in "owner/repo" format (alternative to -r/--repo)
 
 Options:
-      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+      --hostname <HOSTNAME>    GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
   -r, --repo <REPO>            Repository in "owner/repo" format
-      --branch <BRANCH>        Branch name under refs/heads to cache instead of the repository default branch
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+      --ref <REF>              Branch, tag, or full commit SHA to cache (default: the repository default branch) [aliases: --branch]
       --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
   -h, --help                   Print help
 
@@ -22,5 +23,6 @@ Run wit --help for the cloud cache variables and how to disable it.
 
 Examples:
   wit cache ratatui/ratatui
-  wit cache -r ratatui/ratatui --branch main
+  wit cache -r ratatui/ratatui --ref main
+  wit cache ratatui/ratatui --ref v0.29.0
   wit cache octocat/Hello-World --backend memory

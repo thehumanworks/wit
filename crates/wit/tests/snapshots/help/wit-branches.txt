@@ -6,9 +6,10 @@ Arguments:
   [REPO]  Repository in "owner/repo" format (alternative to -r/--repo)
 
 Options:
-      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+      --hostname <HOSTNAME>    GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
   -r, --repo <REPO>            Repository in "owner/repo" format
       --backend <disk|memory>  Snapshot backend: disk (default; git fetch from GitHub into a temporary directory) or memory (GitHub REST API). Overrides WIT_SNAPSHOT_BACKEND
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
   -h, --help                   Print help
 
 Lists GitHub branches under refs/heads so you can choose an existing value for --branch on cache/read commands. Ahead, behind, and merged are computed against the repository default branch. Created is inferred from the first commit unique to the branch when one exists; otherwise it falls back to the branch tip commit time.

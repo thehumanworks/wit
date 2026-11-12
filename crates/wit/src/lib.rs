@@ -36,8 +36,8 @@ mod tests {
             "normal reads should keep stale-while-revalidate mode"
         );
         assert!(
-            cli.contains("cache_branch_selection(branch)"),
-            "--branch should route to cache branch selection"
+            cli.contains("open_disk_repo(&repo, branch.as_deref()"),
+            "--ref should route to ref-aware cache acquisition"
         );
     }
 
@@ -45,16 +45,20 @@ mod tests {
     fn cli_branch_flag_parses_and_routes() {
         let cli = include_str!("cli.rs");
         assert!(
-            cli.matches("long = \"branch\"").count() >= 8,
-            "cache and repo-reading commands should expose --branch"
+            cli.matches("long = \"ref\", visible_alias = \"branch\"")
+                .count()
+                >= 8,
+            "cache and repo-reading commands should expose --ref with the --branch alias"
         );
         assert!(
             cli.matches("branch: Option<String>").count() >= 8,
             "branch values should be parsed into command variants"
         );
         assert!(
-            cli.matches("cache_branch_selection(branch)").count() >= 7,
-            "branch values should be routed to cache acquisition"
+            cli.matches("open_disk_repo(&repo, branch.as_deref()")
+                .count()
+                >= 7,
+            "ref values should be routed to cache acquisition"
         );
     }
 
@@ -70,8 +74,8 @@ mod tests {
             "CLI help should describe force cache invalidation"
         );
         assert!(
-            cli.contains("--branch BRANCH"),
-            "CLI help should describe named branch selection"
+            cli.contains("--ref REF"),
+            "CLI help should describe ref selection"
         );
         assert!(
             cli.contains("No public TTL/max-age option is exposed."),
@@ -98,8 +102,8 @@ mod tests {
                 "{name} should document the absence of TTL controls"
             );
             assert!(
-                text.contains("`--branch BRANCH`"),
-                "{name} should document public branch-targeted reads"
+                text.contains("`--ref REF`"),
+                "{name} should document public ref-targeted reads"
             );
         }
     }
@@ -107,7 +111,7 @@ mod tests {
     #[test]
     fn cli_branch_help_text() {
         let cli = include_str!("cli.rs");
-        assert!(cli.contains("--branch BRANCH"));
+        assert!(cli.contains("--ref REF"));
         assert!(cli.contains("repository default"));
         assert!(cli.contains("--refresh-cache"));
         assert!(cli.contains("No public TTL/max-age option is exposed."));
@@ -119,10 +123,7 @@ mod tests {
                 include_str!("skill/SKILL.md"),
             ),
         ] {
-            assert!(
-                text.contains("`--branch BRANCH`"),
-                "{name} should document --branch"
-            );
+            assert!(text.contains("`--ref REF`"), "{name} should document --ref");
             assert!(
                 text.contains("repository default branch"),
                 "{name} should document default branch behavior"
@@ -221,8 +222,8 @@ mod tests {
                 "{name} should document created-time fallback"
             );
             assert!(
-                text.contains("`--branch BRANCH`"),
-                "{name} should preserve existing branch-read docs"
+                text.contains("`--ref REF`"),
+                "{name} should preserve existing ref-read docs"
             );
         }
     }

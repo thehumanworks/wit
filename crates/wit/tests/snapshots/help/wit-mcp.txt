@@ -3,14 +3,17 @@ Start wit MCP (direct by default; Code Mode experimental)
 Usage: wit mcp [OPTIONS]
 
 Options:
-      --ignore <PATH|GLOB>
-          Exclude files, directories, or glob patterns (repeatable)
+      --hostname <HOSTNAME>
+          GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
 
       --transport <TRANSPORT>
           MCP transport to use
           
           [default: stdio]
           [possible values: stdio]
+
+      --ignore <PATH|GLOB>
+          Exclude files, directories, or glob patterns (repeatable)
 
       --mode <MODE>
           MCP tool surface to expose

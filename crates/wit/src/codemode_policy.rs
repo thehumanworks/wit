@@ -243,6 +243,9 @@ impl InvocationBudget {
     }
 }
 
+// Current stable Rust deprecates `fetch_update` in favor of `try_update`; keep the old name until the oldest
+// supported toolchain has `try_update`, so both stable and older toolchains build.
+#[allow(deprecated)]
 fn charge_count(
     counter: &AtomicU32,
     maximum: u32,

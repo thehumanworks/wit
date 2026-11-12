@@ -21,7 +21,20 @@ description: >
 4. Read files: `wit cat`, `wit head`, `wit tail`, `wit sed`
 
 All repo-scoped commands take the repository as a positional `owner/repo` or with `-r/--repo` (both forms work; if both are given they must match).
-When the user asks for a non-default branch, run `wit branches owner/repo` first to list available branch names and metadata before choosing `--branch BRANCH`.
+When the user asks for a non-default branch, run `wit branches owner/repo` first to list available branch names and metadata before choosing `--ref BRANCH`.
+
+### Pin the commit you cite
+
+Every disk read prints one provenance line on stderr:
+
+```text
+snapshot: backend=disk repo=ratatui/ratatui ref=refs/heads/main commit=0f3c…e91 cache=branch
+```
+
+- Cite `commit` with any path and line range you report.
+- Branch reads are revalidated in the background, so two reads can come from different commits. For a multi-step investigation, copy `commit` from the first read and pass `--ref <commit>` to every later read; the line numbers from `rg` then match what `sed`/`cat` print.
+- To read a dependency at the version a project uses, pass its tag: `wit cat --ref v0.29.0 ratatui/ratatui Cargo.toml`.
+- `--ref` takes a branch, a tag, or a full 40-character commit SHA and defaults to the repository default branch. A tag or commit is fetched once into an immutable cache; a commit read needs no network after that, and a tag name is re-resolved on each read. `--branch` is an alias.
 
 ## MCP Server
 
@@ -97,26 +110,27 @@ Recommended order, cheapest first:
 
 ## Cache Behavior
 
-Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Concurrent checks for the same repository and branch are coalesced, so a remote SHA lookup does not hold up other valid warm-cache reads. Without `--branch`, the selected branch is the repository's default branch.
+Repo-reading commands (`tree`, `ls`, `cat`, `rg`, `sed`, `head`, and `tail`) use a branch-keyed stale-while-revalidate cache by default. When a selected-branch cache exists, `wit` serves it immediately, then checks the remote branch in the background and refreshes the cache if the commit SHA changed. Concurrent checks for the same repository and branch are coalesced, so a remote SHA lookup does not hold up other valid warm-cache reads. Without `--ref`, the selected branch is the repository's default branch.
 
-Use `wit branches -r owner/repo` to list branch names under `refs/heads` before passing one to `--branch`. The table shows the default marker, tip SHA, tip commit author, tip commit time, ahead and behind counts, graph-merged status against the repository default branch, created time, and created source. `merged` means the branch tip is reachable from the default branch, not PR or squash-merge state. Created time is inferred from the first unique commit when one exists; otherwise the created source is `tip commit fallback` and the value is the branch tip commit time.
+Use `wit branches -r owner/repo` to list branch names under `refs/heads` before passing one to `--ref`. The table shows the default marker, tip SHA, tip commit author, tip commit time, ahead and behind counts, graph-merged status against the repository default branch, created time, and created source. `merged` means the branch tip is reachable from the default branch, not PR or squash-merge state. Created time is inferred from the first unique commit when one exists; otherwise the created source is `tip commit fallback` and the value is the branch tip commit time.
 
-Use `--branch BRANCH` on `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, or `tail` to target a GitHub branch under `refs/heads` instead of the repository default branch:
+Use `--ref REF` on `cache`, `tree`, `ls`, `cat`, `rg`, `sed`, `head`, `tail`, or `ast` to read a branch, tag, or full commit SHA instead of the repository default branch (`--branch` is an alias):
 
 ```bash
-wit cache -r ratatui/ratatui --branch main
-wit cat --branch main -r ratatui/ratatui README.md
-wit rg --branch main 'impl Widget' -r ratatui/ratatui
+wit cache -r ratatui/ratatui --ref main
+wit cat --ref main -r ratatui/ratatui README.md
+wit rg --ref v0.29.0 'impl Widget' -r ratatui/ratatui
+wit sed -n --ref 0123456789abcdef0123456789abcdef01234567 -r ratatui/ratatui '40,80p' src/lib.rs
 ```
 
 Use `--refresh-cache` on a repo-reading command when the read must wait for a fresh cache for the selected branch:
 
 ```bash
 wit tree --refresh-cache -r ratatui/ratatui src
-wit rg --branch main --refresh-cache 'impl Widget' -r ratatui/ratatui
+wit rg --ref main --refresh-cache 'impl Widget' -r ratatui/ratatui
 ```
 
-`wit cache -r owner/repo` is also a force-refresh command for the default branch; add `--branch BRANCH` to refresh that named branch. Internally, cache entries are stored per repository and branch, with metadata recording the branch name and current SHA. No public `--max-age` or TTL option exists.
+`wit cache -r owner/repo` is also a force-refresh command for the default branch; add `--ref BRANCH` to refresh that named branch. Internally, cache entries are stored per repository and branch, with metadata recording the branch name and current SHA. No public `--max-age` or TTL option exists.
 
 ## Commands
 
@@ -139,7 +153,7 @@ wit search -p 'auth' -q 'user:ory language:Go pushed:>2025-01-01'
 
 ### branches
 
-List branch names and default-branch comparison metadata before choosing `--branch`:
+List branch names and default-branch comparison metadata before choosing `--ref`:
 
 ```bash
 wit branches -r ratatui/ratatui
