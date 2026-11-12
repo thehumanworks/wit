@@ -75,7 +75,7 @@ This is a Cargo workspace with several crates:
 |------------|-------|-------------|-----------|
 | `search`   | `s`   | Repo discovery via the GitHub REST repository search API | `-p`, `-q`, `-l`, `-n` |
 | `branches` |       | List remote branches with default-branch comparison metadata | `-r` / `--repo`, `--backend` |
-| `cache`    | `c`   | Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot | `-r` / `--repo`, `--branch`, `--backend` |
+| `cache`    | `c`   | Refill the disk cache (cloud pack, else GitHub clone) or pin a memory snapshot | `-r` / `--repo`, `--ref` (alias `--branch`), `--backend` |
 | `tree`     | `t`   | Show file tree of a repo (or subtree) | `-r` / `--repo`, `-l` (line counts + token estimates) |
 | `ls`       |       | List directory contents (non-recursive, one level) | `-r` / `--repo`, `-l` (line counts + token estimates) |
 | `cat`      |       | Print file contents (POSIX cat flags: -n, -b, -s, -E, -T, -A) | `-r` / `--repo` |
@@ -87,7 +87,7 @@ This is a Cargo workspace with several crates:
 | `skill`    |       | Print or install the bundled agent skill | `load`, `install --path` |
 | `mcp`      |       | Start the MCP server (direct by default; Code Mode experimental) | `--transport stdio`, `--mode` |
 
-Top-level: `wit --version` / `-V` prints the `crates/wit` crate version. Repo commands take `--backend disk|memory` (default disk, or `WIT_SNAPSHOT_BACKEND`); disk reads try the local cache, then the shared cloud pack cache (`WIT_CACHE_URL`, on in release builds, off in debug builds), then a GitHub clone. `wit --help` states this, `formal/Wit/CacheSource.lean` proves the claims against the code, and `crates/wit/tests/cli_help.rs` checks this table, the README command table, and per-command help snapshots against the binary.
+Top-level: `wit --version` / `-V` prints the `crates/wit` crate version. Repo-reading commands and `cache` take `--ref REF` (branch, tag, or full commit SHA; default branch when absent; `--branch` is an alias): branches use the stale-while-revalidate branch cache, tags and commits an immutable per-commit cache (`gitops::ops::cache_github_ref`), and every disk read prints `snapshot: backend=disk ... commit=SHA cache=branch|pinned` on stderr (`tests/ref_cli_integration.rs`). Repo commands take `--backend disk|memory` (default disk, or `WIT_SNAPSHOT_BACKEND`); disk reads try the local cache, then the shared cloud pack cache (`WIT_CACHE_URL`, on in release builds, off in debug builds), then a GitHub clone. `wit --help` states this, `formal/Wit/CacheSource.lean` proves the claims against the code, and `crates/wit/tests/cli_help.rs` checks this table, the README command table, and per-command help snapshots against the binary.
 
 ## Build, Test, and Development Commands
 

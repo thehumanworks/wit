@@ -6,9 +6,10 @@ Arguments:
   [REPO|PATH]...  Repository and path: `owner/repo PATH`, or just `PATH` when using -r/--repo
 
 Options:
-      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+      --hostname <HOSTNAME>    GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
   -r, --repo <REPO>            Repository in "owner/repo" format
-      --branch <BRANCH>        Branch name under refs/heads to read instead of the repository default branch
+      --ignore <PATH|GLOB>     Exclude files, directories, or glob patterns (repeatable)
+      --ref <REF>              Branch, tag, or full commit SHA to read (default: the repository default branch) [aliases: --branch]
       --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
   -n, --lines <LINES>          Number of lines to show (default: 10) [default: 10]
   -N, --number                 Number all output lines

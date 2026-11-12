@@ -7,12 +7,14 @@ Arguments:
   [REPO]     Repository in "owner/repo" format (alternative to -r/--repo)
 
 Options:
-      --ignore <PATH|GLOB>
-          Exclude files, directories, or glob patterns (repeatable)
+      --hostname <HOSTNAME>
+          GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
   -r, --repo <REPO>
           Repository in "owner/repo" format
-      --branch <BRANCH>
-          Branch name under refs/heads to search instead of the repository default branch
+      --ignore <PATH|GLOB>
+          Exclude files, directories, or glob patterns (repeatable)
+      --ref <REF>
+          Branch, tag, or full commit SHA to search (default: the repository default branch) [aliases: --branch]
       --refresh-cache
           Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
   -i, --ignore-case

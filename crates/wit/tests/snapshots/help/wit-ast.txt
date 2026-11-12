@@ -8,8 +8,9 @@ Commands:
   help     Print this message or the help of the given subcommand(s)
 
 Options:
-      --ignore <PATH|GLOB>  Exclude files, directories, or glob patterns (repeatable)
-  -h, --help                Print help
+      --hostname <HOSTNAME>  GitHub hostname (--hostname > GH_HOST > GITHUB_HOST > github.com)
+      --ignore <PATH|GLOB>   Exclude files, directories, or glob patterns (repeatable)
+  -h, --help                 Print help
 
 Structural search built on tree-sitter (rust, python, javascript, typescript, tsx, go, java, c). `symbols` indexes definitions with exact line ranges and nesting so you can read precisely the lines you need; `query` runs a raw tree-sitter S-expression query and prints every capture with its position.
 
