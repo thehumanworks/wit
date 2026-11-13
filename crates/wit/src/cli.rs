@@ -1027,6 +1027,50 @@ fn resolve_repo_only(flag: Option<String>, positional: Option<String>) -> anyhow
     resolve_repo(flag, positional)
 }
 
+/// Record the failing command line so a not-found error can print it again with
+/// the suggested path in place (`Run: wit cat -n owner/repo real/path.rs`).
+///
+/// The path is the one argv token equal to `path`, or `repo/path` when the
+/// repository and path were passed as one argument.
+fn remember_retry_command(argv: &[String], repo: &str, path: &str) {
+    let path = path.trim_matches('/');
+    let combined = format!("{repo}/{path}");
+    let mut found = false;
+    let words: Vec<String> = argv
+        .iter()
+        .enumerate()
+        .map(|(index, word)| {
+            let trimmed = word.trim_matches('/');
+            if index == 0 {
+                "wit".to_string()
+            } else if !found && trimmed == path {
+                found = true;
+                "{path}".to_string()
+            } else if !found && trimmed == combined {
+                found = true;
+                format!("{repo}/{{path}}")
+            } else {
+                shell_quote(word)
+            }
+        })
+        .collect();
+    if found {
+        wit::gitops::ops::set_retry_template(path, words.join(" "));
+    }
+}
+
+fn shell_quote(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,@+%".contains(c))
+    {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
 /// Resolve `wit rg` positionals into the repository and the paths to search.
 ///
 /// Accepts the shapes agents carry over from ripgrep and from the other wit
@@ -1622,6 +1666,9 @@ async fn async_main() -> anyhow::Result<()> {
             backend,
         } => {
             let (repo, path) = resolve_repo_and_optional_path(repo, args, &argv)?;
+            if let Some(path) = path.as_deref() {
+                remember_retry_command(&argv, &repo, path);
+            }
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1673,6 +1720,9 @@ async fn async_main() -> anyhow::Result<()> {
             backend,
         } => {
             let (repo, path) = resolve_repo_and_optional_path(repo, args, &argv)?;
+            if let Some(path) = path.as_deref() {
+                remember_retry_command(&argv, &repo, path);
+            }
             match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1728,6 +1778,7 @@ async fn async_main() -> anyhow::Result<()> {
             backend,
         } => {
             let (repo, path) = resolve_repo_and_required_path(repo, args)?;
+            remember_retry_command(&argv, &repo, &path);
             let content = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -1842,6 +1893,9 @@ async fn async_main() -> anyhow::Result<()> {
             backend,
         } => {
             let (repo, paths) = rg_repo_and_paths(repo, repo_positional, paths)?;
+            if let Some(path) = paths.first() {
+                remember_retry_command(&argv, &repo, path);
+            }
             let glob = match (glob, file_type.as_deref().map(rg_type_glob).transpose()?) {
                 (glob, None) => glob,
                 (None, Some(type_glob)) => Some(type_glob.to_string()),
@@ -1983,6 +2037,7 @@ async fn async_main() -> anyhow::Result<()> {
             backend,
         } => {
             let (repo, path) = resolve_repo_and_required_path(repo, args)?;
+            remember_retry_command(&argv, &repo, &path);
             let output = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -2065,6 +2120,7 @@ async fn async_main() -> anyhow::Result<()> {
             backend,
         } => {
             let (repo, path) = resolve_repo_and_required_path(repo, args)?;
+            remember_retry_command(&argv, &repo, &path);
             let output = match CliSnapshotBackend::from_env_or_flag(backend.as_deref())
                 .map_err(anyhow::Error::msg)?
             {
@@ -3141,6 +3197,13 @@ mod tests {
         let ranged = cat_truncation_note("owner/repo", "a", None, (100, 599), 2000, 3000);
         assert!(ranged.contains("printed lines 100-599 of 3000"), "{ranged}");
         assert!(ranged.contains("--lines 600-1099 "), "{ranged}");
+    }
+
+    #[test]
+    fn retry_commands_quote_and_keep_flags() {
+        assert_eq!(shell_quote("--lines"), "--lines");
+        assert_eq!(shell_quote("fn main"), "'fn main'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 
     #[test]

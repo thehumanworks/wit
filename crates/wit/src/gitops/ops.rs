@@ -3005,11 +3005,34 @@ pub fn not_found_message(repo: &gix::Repository, requested: &str, dirs: bool) ->
             "{what} not found: {requested}. Paths are relative to the repository root; list them with `wit tree` or find files with `wit rg -l PATTERN`."
         )
     } else {
-        format!(
+        let mut message = format!(
             "{what} not found: {requested}. Did you mean: {}?",
             suggestions.join(", ")
-        )
+        );
+        if let Some(retry) = retry_command(requested, &suggestions[0]) {
+            message.push_str(&format!("\nRun: {retry}"));
+        }
+        message
     }
+}
+
+/// The command line that failed, with `{path}` where the missing path was
+/// (see [`set_retry_template`]).
+static RETRY_TEMPLATE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+/// Remember the failing command so a not-found error can print it again with
+/// the suggested path. Agents that get only "Did you mean: tokio/src/x.rs"
+/// often pass that path without the repository; a full command to copy
+/// avoids the extra round trip.
+///
+/// `template` is the command with `{path}` in place of `requested`.
+pub fn set_retry_template(requested: &str, template: String) {
+    let _ = RETRY_TEMPLATE.set((requested.trim_matches('/').to_string(), template));
+}
+
+fn retry_command(requested: &str, suggestion: &str) -> Option<String> {
+    let (path, template) = RETRY_TEMPLATE.get()?;
+    (path == requested.trim_matches('/')).then(|| template.replace("{path}", suggestion))
 }
 
 /// Output the first N lines of a file (like POSIX head)
