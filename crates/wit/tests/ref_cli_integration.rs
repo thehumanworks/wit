@@ -239,6 +239,16 @@ fn wrong_paths_and_flag_shapes_get_actionable_answers() -> anyhow::Result<()> {
         stderr.contains("File not found: lines.txt. Did you mean: src/lines.txt?"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains("Run: wit cat owner/repo src/lines.txt"),
+        "{stderr}"
+    );
+    let joined = wit_command(&fx, &["cat", "-n", "owner/repo/lines.txt"]).output()?;
+    let stderr = String::from_utf8_lossy(&joined.stderr);
+    assert!(
+        stderr.contains("Run: wit cat -n owner/repo/src/lines.txt"),
+        "{stderr}"
+    );
 
     let dir = wit_command(&fx, &["tree", "owner/repo", "lib"]).output()?;
     assert!(!dir.status.success());
