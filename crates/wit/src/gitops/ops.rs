@@ -2807,15 +2807,122 @@ pub fn read_file_with_ignore(
 
     let tree = repo.head_commit()?.tree()?;
 
-    let entry = tree
-        .lookup_entry_by_path(path)?
-        .ok_or_else(|| anyhow::anyhow!("File not found: {}", path))?;
+    let entry = match tree.lookup_entry_by_path(path)? {
+        Some(entry) => entry,
+        None => anyhow::bail!("{}", not_found_message(repo, path, false)),
+    };
 
     let object = entry.object()?;
     let blob = object.into_blob();
     let content = blob.data.to_str()?;
 
     Ok(content.to_string())
+}
+
+/// Up to five repository paths an agent probably meant when `requested` does not exist.
+///
+/// Agents often drop or add a leading directory (`src/x.rs` for `tokio/src/x.rs` in a
+/// workspace, or `tokio/tokio/src/x.rs` copied from a clone). Ranking: a candidate that
+/// ends with the request, then a request that ends with the candidate, then the same file
+/// name, each preferring more shared trailing components and then shorter paths.
+pub(crate) fn rank_path_suggestions(
+    candidates: impl IntoIterator<Item = String>,
+    requested: &str,
+) -> Vec<String> {
+    let requested = requested.trim_matches('/');
+    if requested.is_empty() {
+        return Vec::new();
+    }
+    let req_parts: Vec<&str> = requested.split('/').collect();
+    let req_name = *req_parts.last().unwrap_or(&requested);
+    let mut scored: Vec<(u8, usize, String)> = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let shared = candidate
+                .split('/')
+                .rev()
+                .zip(req_parts.iter().rev())
+                .take_while(|(a, b)| a == *b)
+                .count();
+            let kind = if candidate.ends_with(&format!("/{requested}")) {
+                3
+            } else if requested.ends_with(&format!("/{candidate}")) {
+                2
+            } else if candidate.rsplit('/').next() == Some(req_name) {
+                1
+            } else {
+                return None;
+            };
+            Some((kind, shared, candidate))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then(a.2.len().cmp(&b.2.len()))
+            .then(a.2.cmp(&b.2))
+    });
+    scored
+        .into_iter()
+        .take(5)
+        .map(|(_, _, path)| path)
+        .collect()
+}
+
+/// Paths in the snapshot that `requested` probably meant (files, or directories when `dirs`).
+pub fn suggest_repo_paths(repo: &gix::Repository, requested: &str, dirs: bool) -> Vec<String> {
+    let Some(tree) = repo
+        .head_commit()
+        .ok()
+        .and_then(|commit| commit.tree().ok())
+    else {
+        return Vec::new();
+    };
+    let mut recorder = gix::traverse::tree::Recorder::default();
+    if tree.traverse().breadthfirst(&mut recorder).is_err() {
+        return Vec::new();
+    }
+    let candidates = recorder
+        .records
+        .iter()
+        .filter(|entry| {
+            if dirs {
+                entry.mode.is_tree()
+            } else {
+                entry.mode.is_blob()
+            }
+        })
+        .filter_map(|entry| entry.filepath.to_str().ok().map(str::to_string));
+    rank_path_suggestions(candidates, &normalize_repo_path(requested))
+}
+
+/// Fail with suggestions when a tree/ls path does not exist, instead of printing an empty listing.
+pub fn ensure_repo_path_exists(repo: &gix::Repository, path: Option<&str>) -> anyhow::Result<()> {
+    let Some(path) = path.map(normalize_repo_path).filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    let tree = repo.head_commit()?.tree()?;
+    if tree.lookup_entry_by_path(&path)?.is_none() {
+        anyhow::bail!("{}", not_found_message(repo, &path, true));
+    }
+    Ok(())
+}
+
+/// "File not found" (or "Directory not found") with the closest real paths, so an agent
+/// can retry once instead of listing directories.
+pub fn not_found_message(repo: &gix::Repository, requested: &str, dirs: bool) -> String {
+    let what = if dirs { "Directory" } else { "File" };
+    let suggestions = suggest_repo_paths(repo, requested, dirs);
+    if suggestions.is_empty() {
+        format!(
+            "{what} not found: {requested}. Paths are relative to the repository root; list them with `wit tree` or find files with `wit rg -l PATTERN`."
+        )
+    } else {
+        format!(
+            "{what} not found: {requested}. Did you mean: {}?",
+            suggestions.join(", ")
+        )
+    }
 }
 
 /// Output the first N lines of a file (like POSIX head)
@@ -4289,6 +4396,31 @@ mod tests {
         let metadata = read_cache_metadata(&resolved.target.metadata_path(&cache_dir)).unwrap();
         assert_eq!(metadata.current_sha, new_sha);
         assert!(metadata.last_error.is_none());
+    }
+
+    #[test]
+    fn path_suggestions_fix_common_agent_guesses() {
+        let paths = || {
+            [
+                "tokio/src/runtime/builder.rs",
+                "tokio/src/task/builder.rs",
+                "tokio-util/src/lib.rs",
+                "README.md",
+            ]
+            .map(str::to_string)
+        };
+        // A missing workspace prefix.
+        assert_eq!(
+            rank_path_suggestions(paths(), "src/runtime/builder.rs"),
+            vec!["tokio/src/runtime/builder.rs", "tokio/src/task/builder.rs"]
+        );
+        // A clone directory prefix.
+        assert_eq!(
+            rank_path_suggestions(paths(), "tokio/tokio/src/runtime/builder.rs")[0],
+            "tokio/src/runtime/builder.rs"
+        );
+        assert!(rank_path_suggestions(paths(), "nothing/like/this.go").is_empty());
+        assert!(rank_path_suggestions(paths(), "/").is_empty());
     }
 
     #[cfg(unix)]
