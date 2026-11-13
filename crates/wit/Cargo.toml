@@ -56,6 +56,9 @@ tree-sitter-java = "0.23"
 tree-sitter-c = "0.24"
 streaming-iterator = "0.1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 wiremock = "0.6"
 rmcp = { version = "2", features = ["client", "transport-child-process"] }

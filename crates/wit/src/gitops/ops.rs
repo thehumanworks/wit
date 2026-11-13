@@ -1286,11 +1286,32 @@ pub struct GrepOptions {
     pub count: bool,
     /// Ignore patterns (files, directories, globs)
     pub ignore: Vec<String>,
+    /// Repository-relative files or directories to search, like ripgrep's
+    /// positional paths (empty = whole repository)
+    pub paths: Vec<String>,
 }
 
 impl GrepOptions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn paths(mut self, paths: Vec<String>) -> Self {
+        self.paths = paths;
+        self
+    }
+
+    /// Whether `path` passes the path and glob filters.
+    pub fn selects(&self, path: &str) -> bool {
+        (self.paths.is_empty()
+            || self
+                .paths
+                .iter()
+                .any(|prefix| path_under_prefix(path, prefix)))
+            && self
+                .glob
+                .as_ref()
+                .is_none_or(|glob| matches_glob(path, glob))
     }
 
     pub fn ignore_case(mut self, yes: bool) -> Self {
@@ -2646,12 +2667,8 @@ pub fn grep_repo_with_options(
             continue;
         }
 
-        // Apply glob filter if specified
-        if opts
-            .glob
-            .as_ref()
-            .is_some_and(|glob| !matches_glob(&path, glob))
-        {
+        // Apply path and glob filters if specified
+        if !opts.selects(&path) {
             continue;
         }
 
@@ -2904,6 +2921,26 @@ pub fn ensure_repo_path_exists(repo: &gix::Repository, path: Option<&str>) -> an
     let tree = repo.head_commit()?.tree()?;
     if tree.lookup_entry_by_path(&path)?.is_none() {
         anyhow::bail!("{}", not_found_message(repo, &path, true));
+    }
+    Ok(())
+}
+
+/// Fail with suggestions when any `wit rg` search path is missing, instead of
+/// printing no matches (which reads as "the pattern is not in the repo").
+pub fn ensure_search_paths_exist(repo: &gix::Repository, paths: &[String]) -> anyhow::Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let tree = repo.head_commit()?.tree()?;
+    for path in paths {
+        let path = normalize_repo_path(path);
+        if !path.is_empty() && tree.lookup_entry_by_path(&path)?.is_none() {
+            let looks_like_file = path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name.contains('.'));
+            anyhow::bail!("{}", not_found_message(repo, &path, !looks_like_file));
+        }
     }
     Ok(())
 }

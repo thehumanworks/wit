@@ -278,9 +278,9 @@ enum Commands {
     #[command(
         name = "rg",
         about = "Search file contents (ripgrep-style). Use -l to find files, -g to filter by type",
-        override_usage = "wit rg [OPTIONS] <PATTERN> [REPO]",
+        override_usage = "wit rg [OPTIONS] <PATTERN> [REPO] [PATH]...",
         group(ArgGroup::new("repo_input").args(["repo", "repo_positional"]).required(true).multiple(true)),
-        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nPass the repository as a positional `owner/repo` after the pattern, or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit rg 'impl Widget' ratatui/ratatui\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui\n  wit rg -g '*.rs' -i 'todo' ratatui/ratatui\n  wit rg -C 3 'fn render' ratatui/ratatui\n  wit rg 'Hello' octocat/Hello-World --backend memory"
+        after_help = "The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.\n\nPass the repository as a positional `owner/repo` after the pattern, or with -r/--repo. If both are given they must match. Paths after the repository limit the search to those files or directories, like ripgrep.\n\nExamples:\n  wit rg 'impl Widget' ratatui/ratatui\n  wit rg -n 'fn render' ratatui/ratatui src/widgets src/lib.rs\n  wit rg -l 'struct.*Frame' -r ratatui/ratatui\n  wit rg -g '*.rs' -i 'todo' ratatui/ratatui\n  wit rg -C 3 'fn render' ratatui/ratatui\n  wit rg 'Hello' octocat/Hello-World --backend memory"
     )]
     Rg {
         /// Regex pattern to search for
@@ -293,6 +293,10 @@ enum Commands {
         /// Repository in "owner/repo" format (alternative to -r/--repo)
         #[arg(value_name = "REPO")]
         repo_positional: Option<String>,
+
+        /// Files or directories to search, relative to the repository root (default: all)
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
 
         /// Branch, tag, or full commit SHA to search (default: the repository default branch)
         #[arg(long = "ref", visible_alias = "branch", value_name = "REF")]
@@ -957,6 +961,44 @@ fn resolve_repo_only(flag: Option<String>, positional: Option<String>) -> anyhow
     resolve_repo(flag, positional)
 }
 
+/// Resolve `wit rg` positionals into the repository and the paths to search.
+///
+/// Accepts the shapes agents carry over from ripgrep and from the other wit
+/// commands: `PATTERN owner/repo [PATH]...`, `PATTERN owner/repo/PATH [PATH]...`,
+/// `PATTERN -r owner/repo [PATH]...`, and paths written as `owner/repo/PATH`.
+fn rg_repo_and_paths(
+    flag: Option<String>,
+    positional: Option<String>,
+    mut paths: Vec<String>,
+) -> anyhow::Result<(String, Vec<String>)> {
+    let positional = match (flag.as_deref(), positional) {
+        // With -r/--repo, `wit rg PAT -r owner/repo src/` puts the first path in
+        // the repo slot; only the repo itself is kept there.
+        (Some(flag_repo), Some(first)) if first != flag_repo => {
+            paths.insert(0, first);
+            None
+        }
+        (_, Some(first)) => match split_repo_and_path(&first) {
+            Some((repo, path)) => {
+                paths.insert(0, path);
+                Some(repo)
+            }
+            None => Some(first),
+        },
+        (_, None) => None,
+    };
+    let repo = resolve_repo_only(flag, positional)?;
+    let paths = paths
+        .into_iter()
+        .map(|path| {
+            strip_repo_prefix(&repo, &path)
+                .unwrap_or_else(|| path.trim_start_matches("./").trim_matches('/').to_string())
+        })
+        .filter(|path| !path.is_empty() && path != ".")
+        .collect();
+    Ok((repo, paths))
+}
+
 async fn open_memory_snapshot(
     repo: &str,
     branch: Option<&str>,
@@ -1348,6 +1390,7 @@ async fn run_ast(
 const CLI_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 fn main() {
+    restore_default_sigpipe();
     let result = std::thread::Builder::new()
         .name("wit-main".to_string())
         .stack_size(CLI_STACK_BYTES)
@@ -1366,6 +1409,23 @@ fn main() {
     if let Err(err) = result {
         eprint!("{}", render_cli_error(&err));
         std::process::exit(1);
+    }
+}
+
+/// Let `wit cat ... | head` end quietly when the reader closes the pipe.
+///
+/// Rust ignores SIGPIPE, so every `println!` after `head` exits panics with
+/// "failed printing to stdout: Broken pipe" and a backtrace on stderr, which
+/// agents then read as a failure. Restoring the default handler makes wit stop
+/// like other Unix tools. `wit mcp` keeps Rust's behaviour: its stdout writer
+/// reports a closed pipe as an error and shuts down cleanly.
+fn restore_default_sigpipe() {
+    #[cfg(unix)]
+    if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new("mcp")) {
+        // SAFETY: called first thing in main, before any other thread exists.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
     }
 }
 
@@ -1639,6 +1699,7 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::Rg {
             repo,
             repo_positional,
+            paths,
             branch,
             refresh_cache,
             pattern,
@@ -1659,25 +1720,12 @@ async fn async_main() -> anyhow::Result<()> {
             _no_heading: _,
             backend,
         } => {
-            // `wit rg PATTERN owner/repo/dir` searches only under dir (or only that file).
-            let (repo_positional, scope) = match repo_positional.as_deref().map(split_repo_and_path)
-            {
-                Some(Some((repo, path))) => (Some(repo), Some(path)),
-                _ => (repo_positional, None),
-            };
+            let (repo, paths) = rg_repo_and_paths(repo, repo_positional, paths)?;
             let glob = match (glob, file_type.as_deref().map(rg_type_glob).transpose()?) {
                 (glob, None) => glob,
                 (None, Some(type_glob)) => Some(type_glob.to_string()),
                 (Some(_), Some(_)) => anyhow::bail!("pass either -t/--type or -g/--glob, not both"),
             };
-            let glob = match (glob, scope) {
-                (glob, None) => glob,
-                (None, Some(path)) => Some(format!("{path}/**")),
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("pass either a path in owner/repo/PATH or -g/--glob, not both")
-                }
-            };
-            let repo = resolve_repo_only(repo, repo_positional)?;
             let mut opts = GrepOptions::new()
                 .ignore_case(ignore_case)
                 .smart_case(smart_case)
@@ -1686,6 +1734,7 @@ async fn async_main() -> anyhow::Result<()> {
                 .before_context(if context > 0 { context } else { before_context })
                 .after_context(if context > 0 { context } else { after_context })
                 .glob(glob)
+                .paths(paths)
                 .ignore(ignore_patterns.clone())
                 .files_with_matches(files_with_matches)
                 .count(count);
@@ -1706,6 +1755,7 @@ async fn async_main() -> anyhow::Result<()> {
                     let repository =
                         open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
                             .await?;
+                    wit::gitops::ops::ensure_search_paths_exist(&repository, &opts.paths)?;
                     RgSource::Disk(repository)
                 }
                 CliSnapshotBackend::Memory => {
@@ -2854,6 +2904,61 @@ mod tests {
         );
         let grep = normalize_agent_argv(os(&["wit", "grep", "-rn", "x", "o/r"])).unwrap_err();
         assert!(grep.to_string().contains("wit rg PATTERN"), "{grep}");
+    }
+
+    #[test]
+    fn rg_positional_paths_follow_the_repo() {
+        let owned = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        type Case<'a> = (
+            Option<&'a str>,
+            Option<&'a str>,
+            &'a [&'a str],
+            &'a [&'a str],
+        );
+        let cases: [Case; 6] = [
+            (
+                None,
+                Some("o/r"),
+                &["src/lib.rs", "./docs/"],
+                &["src/lib.rs", "docs"],
+            ),
+            (None, Some("o/r/src"), &["tests"], &["src", "tests"]),
+            (None, Some("o/r"), &["o/r/src/a/b.rs"], &["src/a/b.rs"]),
+            (
+                Some("o/r"),
+                Some("src/runtime/builder.rs"),
+                &[],
+                &["src/runtime/builder.rs"],
+            ),
+            (Some("o/r"), Some("o/r"), &["src"], &["src"]),
+            (None, Some("o/r"), &["."], &[]),
+        ];
+        for (flag, positional, paths, expected) in cases {
+            let (repo, resolved) = rg_repo_and_paths(
+                flag.map(str::to_string),
+                positional.map(str::to_string),
+                owned(paths),
+            )
+            .expect("resolves");
+            assert_eq!(repo, "o/r");
+            assert_eq!(
+                resolved,
+                owned(expected),
+                "{flag:?} {positional:?} {paths:?}"
+            );
+        }
+        let parsed = WitCli::try_parse_from([
+            "wit", "rg", "-n", "fn", "o/r", "src/a.rs", "src/b", "--ref", "v1",
+        ])
+        .expect("rg with paths parses");
+        assert!(
+            matches!(parsed.command, Commands::Rg { paths, .. } if paths == ["src/a.rs", "src/b"])
+        );
     }
 
     #[test]

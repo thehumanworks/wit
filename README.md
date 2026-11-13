@@ -536,7 +536,10 @@ wit rg -l 'struct.*Frame' -r ratatui/ratatui          # List files containing pa
 wit rg -g '*.rs' -i 'todo' -r ratatui/ratatui         # Case-insensitive in .rs files
 wit rg -C 3 'fn render' -r ratatui/ratatui             # 3 lines of context
 wit rg -l --long 'Widget' -r ratatui/ratatui           # File list with line counts
+wit rg -n 'fn render' ratatui/ratatui src/widgets      # Only under these paths (like ripgrep)
 ```
+
+Paths after the repository limit the search to those files or directories; a missing path fails with the closest real paths.
 
 | Flag | Long | Description |
 |------|------|-------------|
