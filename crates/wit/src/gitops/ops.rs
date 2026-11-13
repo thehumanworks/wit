@@ -329,6 +329,60 @@ fn github_remote_url(owner_repo: &str) -> String {
     )
 }
 
+/// Set once an authenticated lookup failed and the same lookup worked without
+/// the token. Later git commands in this process then skip the token too.
+static GITHUB_TOKEN_REJECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn github_token_in_use() -> bool {
+    !GITHUB_TOKEN_REJECTED.load(std::sync::atomic::Ordering::Relaxed)
+        && wit_snapshot::auth::hostname()
+            .ok()
+            .and_then(|host| wit_snapshot::auth::token(&host))
+            .is_some()
+}
+
+/// GitHub answers a missing or private repository, and a token it rejects,
+/// with an authentication failure.
+fn looks_like_missing_repo(output: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    [
+        "repository not found",
+        "not found",
+        "could not read username",
+        "terminal prompts disabled",
+        "authentication failed",
+        "invalid username or password",
+    ]
+    .iter()
+    .any(|marker| stderr.contains(marker))
+}
+
+/// Run a remote lookup, and when a token is set and GitHub answers "not found",
+/// run it again without the token.
+///
+/// Agent sandboxes often export a GH_TOKEN scoped to other repositories or
+/// expired; GitHub then rejects public repositories that read fine
+/// anonymously, and wit would report them as missing.
+fn remote_lookup_output(
+    mut run: impl FnMut() -> anyhow::Result<std::process::Output>,
+) -> anyhow::Result<std::process::Output> {
+    let output = run()?;
+    if output.status.success() || !github_token_in_use() || !looks_like_missing_repo(&output) {
+        return Ok(output);
+    }
+    GITHUB_TOKEN_REJECTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    let anonymous = run()?;
+    if anonymous.status.success() {
+        eprintln!(
+            "note: GitHub rejected the configured token (GH_TOKEN/GITHUB_TOKEN) for this repository; reading it without the token"
+        );
+        return Ok(anonymous);
+    }
+    GITHUB_TOKEN_REJECTED.store(false, std::sync::atomic::Ordering::Relaxed);
+    Ok(output)
+}
+
 // Configuration is process-local: never written to git config or remote URLs.
 pub(crate) fn github_git_command() -> Command {
     use base64::Engine;
@@ -347,6 +401,7 @@ pub(crate) fn github_git_command() -> Command {
     }
     if let Ok(host) = wit_snapshot::auth::hostname()
         && let Some(token) = wit_snapshot::auth::token(&host)
+        && !GITHUB_TOKEN_REJECTED.load(std::sync::atomic::Ordering::Relaxed)
     {
         let header = format!(
             "Authorization: Basic {}",
@@ -799,18 +854,7 @@ fn remote_lookup_error(
         .rev()
         .collect::<Vec<_>>()
         .join("/");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-    let not_found = [
-        "repository not found",
-        "not found",
-        "could not read username",
-        "terminal prompts disabled",
-        "authentication failed",
-        "invalid username or password",
-    ]
-    .iter()
-    .any(|marker| stderr.contains(marker));
-    if not_found {
+    if looks_like_missing_repo(output) {
         anyhow::anyhow!(
             "repository {repo} was not found on GitHub (or it is private and no credentials are set). \
              Check the owner/repo spelling, or find the repository with `wit search -p NAME`"
@@ -824,13 +868,15 @@ fn remote_lookup_error(
 }
 
 fn resolve_default_branch(remote_url: &str) -> anyhow::Result<ResolvedBranch> {
-    let output = github_git_command()
-        .arg("ls-remote")
-        .arg("--symref")
-        .arg(remote_url)
-        .arg("HEAD")
-        .output()
-        .context("failed to invoke git for default branch resolution")?;
+    let output = remote_lookup_output(|| {
+        github_git_command()
+            .arg("ls-remote")
+            .arg("--symref")
+            .arg(remote_url)
+            .arg("HEAD")
+            .output()
+            .context("failed to invoke git for default branch resolution")
+    })?;
 
     if !output.status.success() {
         return Err(remote_lookup_error(
@@ -848,13 +894,15 @@ fn resolve_default_branch_with_context(
     context: &OperationContext,
     remote_url: &str,
 ) -> anyhow::Result<ResolvedBranch> {
-    let mut command = github_git_command();
-    command
-        .arg("ls-remote")
-        .arg("--symref")
-        .arg(remote_url)
-        .arg("HEAD");
-    let output = command_output(context, &mut command, "resolve default branch")?;
+    let output = remote_lookup_output(|| {
+        let mut command = github_git_command();
+        command
+            .arg("ls-remote")
+            .arg("--symref")
+            .arg(remote_url)
+            .arg("HEAD");
+        command_output(context, &mut command, "resolve default branch")
+    })?;
     if !output.status.success() {
         return Err(remote_lookup_error(
             remote_url,
@@ -1578,17 +1626,19 @@ fn resolve_ref_target(
     let tag_ref = format!("refs/tags/{name}");
     // The peeled entry must be requested by name: `refs/tags/NAME` alone does not list it.
     let peeled_tag_ref = format!("{tag_ref}^{{}}");
-    let output = git_output(
-        [
-            "ls-remote",
-            remote_url,
-            branch_ref.as_str(),
-            tag_ref.as_str(),
-            peeled_tag_ref.as_str(),
-        ],
-        None,
-        "resolve the requested ref",
-    )?;
+    let output = remote_lookup_output(|| {
+        git_output(
+            [
+                "ls-remote",
+                remote_url,
+                branch_ref.as_str(),
+                tag_ref.as_str(),
+                peeled_tag_ref.as_str(),
+            ],
+            None,
+            "resolve the requested ref",
+        )
+    })?;
     if !output.status.success() {
         return Err(remote_lookup_error(
             remote_url,

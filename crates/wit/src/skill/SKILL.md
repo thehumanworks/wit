@@ -18,7 +18,7 @@ description: >
 1. Discover repos: `wit search`
 2. Orient yourself: `wit tree` or `wit ls`
 3. Find code: `wit rg -n PATTERN owner/repo` (prints `path:line:text`; add paths to narrow it, like ripgrep: `wit rg -n PATTERN owner/repo src tests/x.rs`)
-4. Read the lines around a match: `wit sed -n 'START,ENDp' owner/repo PATH`, `wit head`, `wit tail`
+4. Read the lines around a match with their line numbers: `wit cat -n --lines START-END owner/repo PATH` (cite the numbers it prints), or `wit sed -n 'START,ENDp'`, `wit head`, `wit tail`
 5. Read a whole file with `wit cat` only when you are sure you need all of it. `cat` prints at most 500 lines and then the next `wit sed` command; pass `--full` for the rest.
 
 All repo-scoped commands take the repository as a positional `owner/repo`, with `-r/--repo`, or joined with the path as `owner/repo/PATH` (if both a positional and `-r` are given they must match).
@@ -193,7 +193,7 @@ wit ls -l -r ratatui/ratatui src
 
 ### cat
 
-Print file contents. Use it when you need the whole file; to answer a question about part of a file, `rg -n` then `sed -n` is cheaper. Files longer than 500 lines print their first 500 lines and a note with the next `wit sed` command (`--full` prints everything; `WIT_CAT_MAX_LINES` sets the limit, 0 turns it off).
+Print file contents. Use it when you need the whole file; to answer a question about part of a file, `rg -n` then `sed -n` is cheaper. `-n --lines START-END` prints one range with the file's own line numbers. Files longer than 500 lines print their first 500 lines and a note with the next command (`--full` prints everything; `WIT_CAT_MAX_LINES` sets the limit, 0 turns it off).
 
 ```bash
 wit cat ratatui/ratatui/Cargo.toml              # repo and path in one argument

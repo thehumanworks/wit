@@ -504,7 +504,7 @@ wit ls -l -r ratatui/ratatui src             # With line counts and token estima
 
 ### cat
 
-Print a file's contents. Pass the repository with `-r` / `--repo` (`owner/repo`), positionally, or joined with the path (`owner/repo/PATH`). Use it when you need the whole file; to answer a question about part of a file, search with `rg -n` and read the range with `sed -n`. Files longer than 500 lines print their first 500 lines and a note with the next `wit sed` command; `--full` prints the whole file, and `WIT_CAT_MAX_LINES` sets the limit (0 turns it off).
+Print a file's contents. Pass the repository with `-r` / `--repo` (`owner/repo`), positionally, or joined with the path (`owner/repo/PATH`). Use it when you need the whole file; to answer a question about part of a file, search with `rg -n` and read the range with `sed -n`. `-n --lines START-END` (also `START,END` or `START-`) prints one range with the file's own line numbers, which is the cheapest way to read and cite part of a file. Files longer than 500 lines print their first 500 lines and a note with the next command; `--full` prints the whole file, and `WIT_CAT_MAX_LINES` sets the limit (0 turns it off).
 
 ```bash
 wit cat -r ratatui/ratatui Cargo.toml             # Print file
@@ -655,7 +655,10 @@ Credentials follow [GitHub CLI environment precedence](https://cli.github.com/ma
 Empty token variables are skipped. Enterprise variables never fall back to
 public-host variables. These variables select credentials for the chosen host;
 use separate local gh logins when working with multiple enterprise hosts.
-With no credential, wit attempts anonymous access.
+With no credential, wit attempts anonymous access. When GitHub rejects the
+credential for a repository (an expired token, or one scoped to other
+repositories), disk-backend reads retry without it and print a note on stderr,
+so public repositories stay readable.
 
 To save a login **on your own machine**, run `gh auth login --hostname HOST`.
 wit reads it using `gh auth token --hostname HOST`; it never writes credentials.

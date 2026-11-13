@@ -36,13 +36,13 @@ const ROOT_ABOUT: &str = "Explore GitHub repositories without cloning. Reads com
 // The backend and cache details (ROOT_AFTER_HELP) are shown by `wit cache --help`.
 const ROOT_QUICKSTART: &str = "\
 Start here:
-  wit rg -n 'fn main' owner/repo              search contents; prints path:line:text
-  wit sed -n '80,140p' owner/repo src/main.rs  read a line range
-  wit head -n 60 owner/repo/README.md          read the start of a file
-  wit tree owner/repo src                      list files under a directory
-  wit cat owner/repo Cargo.toml                print a whole file, only when you need all of it
+  wit rg -n 'fn main' owner/repo                       search contents; prints path:line:text
+  wit cat -n --lines 80-140 owner/repo src/main.rs      read a line range with its line numbers
+  wit head -n 60 owner/repo/README.md                   read the start of a file
+  wit tree owner/repo src                               list files under a directory
+  wit cat owner/repo Cargo.toml                         print a whole file, only when you need all of it
 
-Search first, then read ranges: rg -n gives line numbers and sed -n 'START,ENDp' reads around them. cat prints at most 500 lines unless you pass --full.
+Search first, then read ranges: rg -n gives line numbers and cat -n --lines START-END reads around them with the same numbers, so cite the numbers you see. cat prints at most 500 lines unless you pass --full. sed, head, and tail work like their POSIX versions.
 
 Pass the repository as owner/repo, -r owner/repo, or owner/repo/PATH. Pass --ref REF to read a branch, tag, or full commit SHA (default: the repository default branch). Each read prints `snapshot: ... commit=SHA` on stderr; cite that commit, and pass --ref SHA to read the same commit again.
 
@@ -226,7 +226,7 @@ enum Commands {
         name = "cat",
         about = "Print a file's contents. Use -n for line numbers",
         override_usage = "wit cat [OPTIONS] [REPO] <PATH>",
-        after_help = "Read a whole file only when you are sure you need all of it, such as a short config or a file you will summarize. To answer a question about part of a file, search first with `wit rg -n PATTERN owner/repo/PATH`, then read the lines around the match with `wit sed -n 'START,ENDp' owner/repo PATH`.\n\nFiles longer than 500 lines print their first 500 lines and a note with the next `wit sed` command. Pass --full to print the whole file. WIT_CAT_MAX_LINES sets the limit; 0 turns it off.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml\n  wit cat -n -r ratatui/ratatui src/lib.rs\n  wit cat ratatui/ratatui/Cargo.toml\n  wit cat --full ratatui/ratatui src/lib.rs\n  wit cat octocat/Hello-World README --backend memory"
+        after_help = "Read a whole file only when you are sure you need all of it, such as a short config or a file you will summarize. To answer a question about part of a file, search first with `wit rg -n PATTERN owner/repo/PATH`, then read the lines around the match with `wit cat -n --lines START-END owner/repo PATH`. -n prints the file's own line numbers, so cite those.\n\nFiles longer than 500 lines print their first 500 lines and a note with the next command to run. Pass --full to print the whole file. WIT_CAT_MAX_LINES sets the limit; 0 turns it off.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit cat ratatui/ratatui Cargo.toml\n  wit cat -n -r ratatui/ratatui src/lib.rs\n  wit cat -n --lines 80-140 ratatui/ratatui src/lib.rs\n  wit cat ratatui/ratatui/Cargo.toml\n  wit cat --full ratatui/ratatui src/lib.rs\n  wit cat octocat/Hello-World README --backend memory"
     )]
     Cat {
         /// Repository in "owner/repo" format
@@ -271,6 +271,10 @@ enum Commands {
         /// Print the whole file even when it is longer than WIT_CAT_MAX_LINES (default 500)
         #[arg(long = "full")]
         full: bool,
+
+        /// Print only lines START-END (also START,END or START-); with -n the numbers are the file's own line numbers
+        #[arg(short = 'L', long = "lines", value_name = "START-END", value_parser = parse_line_range)]
+        lines: Option<(usize, usize)>,
 
         #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
@@ -834,15 +838,42 @@ fn cat_truncation_note(
     repo: &str,
     path: &str,
     reference: Option<&str>,
-    shown: usize,
+    (first, shown_end): (usize, usize),
+    last: usize,
     total: usize,
 ) -> String {
-    let next_end = (shown * 2).min(total);
+    let start = shown_end + 1;
+    let next_end = (shown_end + (shown_end + 1 - first)).min(last);
     let ref_arg = reference.map(|r| format!(" --ref {r}")).unwrap_or_default();
     format!(
-        "[wit cat: printed lines 1-{shown} of {total}. Read more with `wit sed -n '{start},{next_end}p' {repo} {path}{ref_arg}`, search with `wit rg -n PATTERN {repo}/{path}{ref_arg}`, or pass --full for the whole file.]",
-        start = shown + 1
+        "[wit cat: printed lines {first}-{shown_end} of {total}. Read more with `wit cat -n --lines {start}-{next_end} {repo} {path}{ref_arg}`, search with `wit rg -n PATTERN {repo} {path}{ref_arg}`, or pass --full for the whole file.]"
     )
+}
+
+/// Parse `--lines` as `START-END`, `START,END`, `START:END`, `START-`, or `N`.
+fn parse_line_range(value: &str) -> Result<(usize, usize), String> {
+    let value = value.trim();
+    let (start, end) = match value.find(['-', ',', ':']) {
+        Some(index) => (&value[..index], Some(value[index + 1..].trim())),
+        None => (value, None),
+    };
+    let number = |text: &str| {
+        text.trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("expected line numbers like 80-140, got '{value}'"))
+    };
+    let start = number(start)?;
+    let end = match end {
+        None => start,
+        Some("") => usize::MAX,
+        Some(end) => number(end)?,
+    };
+    if end < start {
+        return Err(format!("the range '{value}' ends before it starts"));
+    }
+    Ok((start, end))
 }
 
 /// Split `owner/repo/path/to/file` into (`owner/repo`, `path/to/file`).
@@ -1632,6 +1663,7 @@ async fn async_main() -> anyhow::Result<()> {
             show_tabs,
             show_all,
             full,
+            lines,
             backend,
         } => {
             let (repo, path) = resolve_repo_and_required_path(repo, args)?;
@@ -1658,17 +1690,27 @@ async fn async_main() -> anyhow::Result<()> {
             // -b overrides -n
             let number_lines = number && !number_nonblank;
 
-            let mut line_num = 0usize;
-            let mut prev_blank = false;
             let total_lines = content.lines().count();
+            let (first, last) = match lines {
+                Some((start, end)) => (start, end.min(total_lines)),
+                None => (1, total_lines),
+            };
+            if first > total_lines.max(1) {
+                anyhow::bail!(
+                    "{path} has {total_lines} lines; --lines starts at {first}. Read the end with `wit tail -n 40 {repo} {path}`"
+                );
+            }
+            let mut line_num = first - 1;
+            let mut prev_blank = false;
+            let selected = (last + 1).saturating_sub(first);
             let limit = if full { 0 } else { cat_max_lines() };
-            let shown = if limit > 0 && total_lines > limit {
+            let shown = if limit > 0 && selected > limit {
                 limit
             } else {
-                total_lines
+                selected
             };
 
-            for line in content.lines().take(shown) {
+            for line in content.lines().skip(first - 1).take(shown) {
                 let is_blank = line.is_empty();
 
                 // -s: squeeze multiple blank lines
@@ -1701,8 +1743,15 @@ async fn async_main() -> anyhow::Result<()> {
                     println!("{}", output);
                 }
             }
-            if shown < total_lines {
-                let note = cat_truncation_note(&repo, &path, branch.as_deref(), shown, total_lines);
+            if shown < selected {
+                let note = cat_truncation_note(
+                    &repo,
+                    &path,
+                    branch.as_deref(),
+                    (first, first + shown - 1),
+                    last,
+                    total_lines,
+                );
                 println!("{note}");
                 eprintln!("{note}");
             }
@@ -3018,15 +3067,31 @@ mod tests {
 
     #[test]
     fn cat_note_names_the_next_command() {
-        let note = cat_truncation_note("owner/repo", "src/big.rs", Some("v1"), 500, 1432);
+        let note =
+            cat_truncation_note("owner/repo", "src/big.rs", Some("v1"), (1, 500), 1432, 1432);
         assert!(note.contains("printed lines 1-500 of 1432"), "{note}");
         assert!(
-            note.contains("`wit sed -n '501,1000p' owner/repo src/big.rs --ref v1`"),
+            note.contains("`wit cat -n --lines 501-1000 owner/repo src/big.rs --ref v1`"),
             "{note}"
         );
         assert!(note.contains("--full"), "{note}");
-        let tail = cat_truncation_note("owner/repo", "a", None, 500, 700);
-        assert!(tail.contains("'501,700p' owner/repo a`"), "{tail}");
+        let tail = cat_truncation_note("owner/repo", "a", None, (1, 500), 700, 700);
+        assert!(tail.contains("--lines 501-700 owner/repo a`"), "{tail}");
+        let ranged = cat_truncation_note("owner/repo", "a", None, (100, 599), 2000, 3000);
+        assert!(ranged.contains("printed lines 100-599 of 3000"), "{ranged}");
+        assert!(ranged.contains("--lines 600-1099 "), "{ranged}");
+    }
+
+    #[test]
+    fn line_ranges_parse_like_agents_write_them() {
+        assert_eq!(parse_line_range("80-140"), Ok((80, 140)));
+        assert_eq!(parse_line_range("80,140"), Ok((80, 140)));
+        assert_eq!(parse_line_range("80:140"), Ok((80, 140)));
+        assert_eq!(parse_line_range("80"), Ok((80, 80)));
+        assert_eq!(parse_line_range("80-"), Ok((80, usize::MAX)));
+        assert!(parse_line_range("0-5").is_err());
+        assert!(parse_line_range("9-5").is_err());
+        assert!(parse_line_range("abc").is_err());
     }
 
     #[test]
