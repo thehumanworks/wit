@@ -1,10 +1,11 @@
 Search file contents (ripgrep-style). Use -l to find files, -g to filter by type
 
-Usage: wit rg [OPTIONS] <PATTERN> [REPO]
+Usage: wit rg [OPTIONS] <PATTERN> [REPO] [PATH]...
 
 Arguments:
   <PATTERN>  Regex pattern to search for
   [REPO]     Repository in "owner/repo" format (alternative to -r/--repo)
+  [PATH]...  Files or directories to search, relative to the repository root (default: all)
 
 Options:
       --hostname <HOSTNAME>
@@ -50,10 +51,11 @@ Options:
 
 The primary tool for locating code. Use -l to discover which files contain a pattern (cheaper than full matches). Use -g to restrict to file types. Combine -C for context around matches.
 
-Pass the repository as a positional `owner/repo` after the pattern, or with -r/--repo. If both are given they must match.
+Pass the repository as a positional `owner/repo` after the pattern, or with -r/--repo. If both are given they must match. Paths after the repository limit the search to those files or directories, like ripgrep.
 
 Examples:
   wit rg 'impl Widget' ratatui/ratatui
+  wit rg -n 'fn render' ratatui/ratatui src/widgets src/lib.rs
   wit rg -l 'struct.*Frame' -r ratatui/ratatui
   wit rg -g '*.rs' -i 'todo' ratatui/ratatui
   wit rg -C 3 'fn render' ratatui/ratatui

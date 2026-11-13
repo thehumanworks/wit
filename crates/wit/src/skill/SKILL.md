@@ -17,7 +17,7 @@ description: >
 
 1. Discover repos: `wit search`
 2. Orient yourself: `wit tree` or `wit ls`
-3. Find code: `wit rg -n PATTERN owner/repo` (prints `path:line:text`; add a path to narrow it: `owner/repo/src`)
+3. Find code: `wit rg -n PATTERN owner/repo` (prints `path:line:text`; add paths to narrow it, like ripgrep: `wit rg -n PATTERN owner/repo src tests/x.rs`)
 4. Read the lines around a match: `wit sed -n 'START,ENDp' owner/repo PATH`, `wit head`, `wit tail`
 5. Read a whole file with `wit cat` only when you are sure you need all of it. `cat` prints at most 500 lines and then the next `wit sed` command; pass `--full` for the rest.
 

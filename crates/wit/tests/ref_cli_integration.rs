@@ -235,6 +235,20 @@ fn wrong_paths_and_flag_shapes_get_actionable_answers() -> anyhow::Result<()> {
     let global_ref = run_wit(&fx, &["--ref", "v1.0", "cat", "owner/repo", "VERSION"])?;
     assert_eq!(stdout(&global_ref), "1\n");
 
+    let scoped = run_wit(&fx, &["rg", "-n", "line2", "owner/repo", "src", "VERSION"])?;
+    assert_eq!(stdout(&scoped), "src/lines.txt:2:line2\n");
+    let scoped = run_wit(&fx, &["rg", "line2", "-r", "owner/repo", "src/lines.txt"])?;
+    assert_eq!(stdout(&scoped), "src/lines.txt:2:line2\n");
+    let outside = run_wit(&fx, &["rg", "line2", "owner/repo", "VERSION"])?;
+    assert_eq!(stdout(&outside), "");
+    let missing = wit_command(&fx, &["rg", "line2", "owner/repo", "lines.txt"]).output()?;
+    assert!(!missing.status.success());
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains("File not found: lines.txt. Did you mean: src/lines.txt?"),
+        "{stderr}"
+    );
+
     let grep = wit_command(&fx, &["grep", "-rn", "line2", "owner/repo"]).output()?;
     assert!(!grep.status.success());
     assert!(String::from_utf8_lossy(&grep.stderr).contains("wit rg PATTERN"));

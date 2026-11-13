@@ -33,11 +33,7 @@ pub async fn grep_memory_snapshot<C: GitHubHttpClient + 'static>(
         if ignore_matcher.is_ignored(&path) {
             continue;
         }
-        if opts
-            .glob
-            .as_ref()
-            .is_some_and(|glob| !matches_glob(&path, glob))
-        {
+        if !opts.selects(&path) {
             continue;
         }
 
