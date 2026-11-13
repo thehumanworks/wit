@@ -12,10 +12,13 @@ Options:
       --ref <REF>              Branch, tag, or full commit SHA to read (default: the repository default branch) [aliases: --branch]
       --refresh-cache          Refill the disk cache for the branch before reading (cloud pack, else GitHub clone); ignored with --backend memory
   -l, --long                   Show file sizes: lines and approximate token count
+      --full                   Print every file even when the tree is longer than WIT_TREE_MAX_LINES (default 300)
       --backend <disk|memory>  Snapshot backend: disk (default; local bare-repo cache filled from the shared cloud pack cache, else a GitHub clone) or memory (GitHub API into RAM, no disk writes). Overrides WIT_SNAPSHOT_BACKEND
   -h, --help                   Print help
 
 Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.
+
+A tree longer than 300 lines prints only its top levels, with the file count of each deeper directory, and a note with the next command. Pass --full for every file; WIT_TREE_MAX_LINES sets the limit (0 turns it off).
 
 Pass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.
 

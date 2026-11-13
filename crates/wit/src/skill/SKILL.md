@@ -173,7 +173,7 @@ wit cache -r ratatui/ratatui
 
 ### tree (alias: t)
 
-Show recursive file tree. Use `-l` for line counts and token estimates to decide what to read.
+Show recursive file tree. Use `-l` for line counts and token estimates to decide what to read. A tree longer than 300 lines prints only its top levels, with the file count of each deeper directory, and a note with the next command; `--full` prints every file, and `WIT_TREE_MAX_LINES` sets the limit (0 turns it off).
 
 ```bash
 wit tree -r ratatui/ratatui

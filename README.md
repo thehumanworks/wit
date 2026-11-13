@@ -483,7 +483,7 @@ See `docs/nofS-snapshot.md` and `bash scripts/nofS_demo.sh` for the no-FS demo.
 
 ### tree (alias: t)
 
-Show the file tree of a repository (or subtree). Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-l` for line counts and token estimates.
+Show the file tree of a repository (or subtree). Pass the repository with `-r` / `--repo` (`owner/repo`). Use `-l` for line counts and token estimates. A tree longer than 300 lines prints only its top levels, with the file count of each deeper directory, and a note with the next command; `--full` prints every file, and `WIT_TREE_MAX_LINES` sets the limit (0 turns it off).
 
 ```bash
 wit tree ratatui/ratatui                # Full repo tree

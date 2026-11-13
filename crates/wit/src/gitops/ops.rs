@@ -3341,6 +3341,122 @@ pub fn build_tree_with_ignore(
     Ok(())
 }
 
+/// A depth-limited view of a tree that would print more than `max_lines`
+/// entries, or `None` when the whole tree fits.
+///
+/// Whole-repository trees of mid-size projects run to thousands of lines; an
+/// agent reads them once, keeps them in context for every later turn, and
+/// usually needed only the top levels. Directories cut off at the chosen depth
+/// show how many files they hold.
+pub fn tree_overview(
+    repo: &gix::Repository,
+    subdir: Option<&str>,
+    ignore_patterns: &[String],
+    max_lines: usize,
+) -> anyhow::Result<Option<TreeOverview>> {
+    if max_lines == 0 {
+        return Ok(None);
+    }
+    let ignore_matcher = IgnoreMatcher::new(ignore_patterns)?;
+    let tree = repo.head_commit()?.tree()?;
+    let mut recorder = gix::traverse::tree::Recorder::default();
+    tree.traverse().breadthfirst(&mut recorder)?;
+    let prefix = subdir
+        .map(|s| s.trim_matches('/'))
+        .filter(|s| !s.is_empty());
+    let mut paths: Vec<Vec<String>> = recorder
+        .records
+        .iter()
+        .filter(|entry| entry.mode.is_blob())
+        .filter_map(|entry| entry.filepath.to_str().ok())
+        .filter(|path| !ignore_matcher.is_ignored(path))
+        .filter_map(|path| match prefix {
+            Some(prefix) => path
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .map(str::to_string),
+            None => Some(path.to_string()),
+        })
+        .map(|path| path.split('/').map(str::to_string).collect())
+        .collect();
+    paths.sort();
+    if tree_line_count(&paths, usize::MAX) <= max_lines {
+        return Ok(None);
+    }
+    let deepest = paths.iter().map(Vec::len).max().unwrap_or(1);
+    let depth = (1..deepest)
+        .rev()
+        .find(|depth| tree_line_count(&paths, *depth) <= max_lines)
+        .unwrap_or(1);
+
+    // Files under each directory cut off at `depth`.
+    let mut collapsed: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+    let mut root = TreeTextNode::default();
+    for parts in &paths {
+        if parts.len() > depth {
+            *collapsed.entry(parts[..depth].to_vec()).or_default() += 1;
+        }
+        root.insert(&parts[..parts.len().min(depth)]);
+    }
+    let label = prefix
+        .map(|dir| dir.rsplit('/').next().unwrap_or(dir).to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let mut lines = vec![label];
+    render_overview(&root.children, &mut Vec::new(), &collapsed, "", &mut lines);
+    let shown = lines.len() - 1;
+    lines.truncate(max_lines + 1);
+    Ok(Some(TreeOverview {
+        text: lines.join("\n"),
+        depth,
+        files: paths.len(),
+        clipped: shown > max_lines,
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeOverview {
+    pub text: String,
+    pub depth: usize,
+    pub files: usize,
+    /// Even depth 1 had more entries than the limit, so the list was cut.
+    pub clipped: bool,
+}
+
+/// Lines a tree prints when paths are cut to `depth` components.
+fn tree_line_count(paths: &[Vec<String>], depth: usize) -> usize {
+    let mut nodes = std::collections::HashSet::new();
+    for parts in paths {
+        for end in 1..=parts.len().min(depth) {
+            nodes.insert(&parts[..end]);
+        }
+    }
+    nodes.len()
+}
+
+fn render_overview(
+    children: &BTreeMap<String, TreeTextNode>,
+    path: &mut Vec<String>,
+    collapsed: &BTreeMap<Vec<String>, usize>,
+    prefix: &str,
+    lines: &mut Vec<String>,
+) {
+    let len = children.len();
+    for (index, (name, child)) in children.iter().enumerate() {
+        let is_last = index + 1 == len;
+        let connector = if is_last { "└── " } else { "├── " };
+        path.push(name.clone());
+        let label = match collapsed.get(path.as_slice()) {
+            Some(1) => format!("{name}/ (1 file)"),
+            Some(files) => format!("{name}/ ({files} files)"),
+            None => name.clone(),
+        };
+        lines.push(format!("{prefix}{connector}{label}"));
+        let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
+        render_overview(&child.children, path, collapsed, &child_prefix, lines);
+        path.pop();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeText {
     pub text: String,
