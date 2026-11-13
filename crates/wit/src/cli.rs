@@ -1390,7 +1390,7 @@ async fn run_ast(
 const CLI_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 fn main() {
-    restore_default_sigpipe();
+    exit_quietly_on_closed_stdout();
     let result = std::thread::Builder::new()
         .name("wit-main".to_string())
         .stack_size(CLI_STACK_BYTES)
@@ -1414,19 +1414,30 @@ fn main() {
 
 /// Let `wit cat ... | head` end quietly when the reader closes the pipe.
 ///
-/// Rust ignores SIGPIPE, so every `println!` after `head` exits panics with
+/// Rust ignores SIGPIPE, so a `println!` after `head` exits panics with
 /// "failed printing to stdout: Broken pipe" and a backtrace on stderr, which
-/// agents then read as a failure. Restoring the default handler makes wit stop
-/// like other Unix tools. `wit mcp` keeps Rust's behaviour: its stdout writer
-/// reports a closed pipe as an error and shuts down cleanly.
-fn restore_default_sigpipe() {
-    #[cfg(unix)]
-    if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new("mcp")) {
-        // SAFETY: called first thing in main, before any other thread exists.
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+/// agents then read as a failure. Restoring the default SIGPIPE action is not
+/// an option: it would also kill wit when a git child process closes its
+/// stdin early. Instead, that one panic ends the process silently with the
+/// status a shell reports for SIGPIPE (128 + 13).
+fn exit_quietly_on_closed_stdout() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if is_closed_stdout_panic(message) {
+            std::process::exit(141);
         }
-    }
+        default_hook(info);
+    }));
+}
+
+fn is_closed_stdout_panic(message: &str) -> bool {
+    message.starts_with("failed printing to stdout") && message.contains("Broken pipe")
 }
 
 /// Render an error the way `anyhow` does for `main`, minus the stack backtrace.
@@ -2904,6 +2915,17 @@ mod tests {
         );
         let grep = normalize_agent_argv(os(&["wit", "grep", "-rn", "x", "o/r"])).unwrap_err();
         assert!(grep.to_string().contains("wit rg PATTERN"), "{grep}");
+    }
+
+    #[test]
+    fn only_closed_stdout_panics_exit_quietly() {
+        assert!(is_closed_stdout_panic(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+        assert!(!is_closed_stdout_panic(
+            "failed printing to stdout: No space left on device"
+        ));
+        assert!(!is_closed_stdout_panic("index out of bounds"));
     }
 
     #[test]
