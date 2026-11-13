@@ -267,6 +267,24 @@ fn wrong_paths_and_flag_shapes_get_actionable_answers() -> anyhow::Result<()> {
         "{stderr}"
     );
 
+    let overview = wit_command(&fx, &["tree", "owner/repo"])
+        .env("WIT_TREE_MAX_LINES", "3")
+        .output()?;
+    assert!(overview.status.success());
+    let text = stdout(&overview);
+    assert!(text.contains("src/ (1 file)"), "{text}");
+    assert!(!text.contains("lines.txt"), "{text}");
+    assert!(
+        text.contains("[wit tree: 3 files, more than 3 lines; showing depth 1"),
+        "{text}"
+    );
+    let full = wit_command(&fx, &["tree", "--full", "owner/repo"])
+        .env("WIT_TREE_MAX_LINES", "3")
+        .output()?;
+    assert!(stdout(&full).contains("lines.txt"));
+    let fits = run_wit(&fx, &["tree", "owner/repo"])?;
+    assert!(stdout(&fits).contains("lines.txt"));
+
     let grep = wit_command(&fx, &["grep", "-rn", "line2", "owner/repo"]).output()?;
     assert!(!grep.status.success());
     assert!(String::from_utf8_lossy(&grep.stderr).contains("wit rg PATTERN"));

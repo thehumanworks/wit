@@ -168,7 +168,7 @@ enum Commands {
         visible_alias = "t",
         about = "Show the file tree of a repository (or subtree). Use -l for line counts",
         override_usage = "wit <tree|t> [OPTIONS] [REPO] [PATH]",
-        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit tree ratatui/ratatui\n  wit tree ratatui/ratatui src/widgets\n  wit tree -r ratatui/ratatui src\n  wit tree -l ratatui/ratatui src\n  wit tree octocat/Hello-World --backend memory"
+        after_help = "Start here to understand a repo's structure. Narrow with a path to avoid noise on large repos. Use -l to see file sizes and decide whether to cat or head.\n\nA tree longer than 300 lines prints only its top levels, with the file count of each deeper directory, and a note with the next command. Pass --full for every file; WIT_TREE_MAX_LINES sets the limit (0 turns it off).\n\nPass the repository as a positional `owner/repo` or with -r/--repo. If both are given they must match.\n\nExamples:\n  wit tree ratatui/ratatui\n  wit tree ratatui/ratatui src/widgets\n  wit tree -r ratatui/ratatui src\n  wit tree -l ratatui/ratatui src\n  wit tree octocat/Hello-World --backend memory"
     )]
     Tree {
         /// Repository in "owner/repo" format
@@ -189,6 +189,10 @@ enum Commands {
         /// Show file sizes: lines and approximate token count
         #[arg(short = 'l', long = "long")]
         long: bool,
+
+        /// Print every file even when the tree is longer than WIT_TREE_MAX_LINES (default 300)
+        #[arg(long = "full")]
+        full: bool,
 
         #[arg(long = "backend", value_name = "disk|memory", help = BACKEND_HELP)]
         backend: Option<String>,
@@ -824,6 +828,37 @@ fn normalize_agent_argv(
 
 /// Default `wit cat` line limit. Above it, cat prints the first lines and a note.
 const DEFAULT_CAT_MAX_LINES: usize = 500;
+const DEFAULT_TREE_MAX_LINES: usize = 300;
+
+fn tree_max_lines() -> usize {
+    std::env::var("WIT_TREE_MAX_LINES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_TREE_MAX_LINES)
+}
+
+/// The note after a depth-limited `wit tree`, with the commands to go deeper.
+fn tree_overview_note(
+    repo: &str,
+    path: Option<&str>,
+    reference: Option<&str>,
+    overview: &wit::gitops::ops::TreeOverview,
+    limit: usize,
+) -> String {
+    let ref_arg = reference.map(|r| format!(" --ref {r}")).unwrap_or_default();
+    let dir = path
+        .map(|p| format!("{}/", p.trim_matches('/')))
+        .unwrap_or_default();
+    let shown = if overview.clipped {
+        format!("the first {limit} entries")
+    } else {
+        format!("depth {}", overview.depth)
+    };
+    format!(
+        "[wit tree: {files} files, more than {limit} lines; showing {shown}, with file counts for deeper directories. List one with `wit tree {repo} {dir}DIR{ref_arg}`, find files with `wit rg -l PATTERN {repo}{ref_arg}`, or pass --full.]",
+        files = overview.files
+    )
+}
 
 /// Line limit for `wit cat` from WIT_CAT_MAX_LINES (0 turns the limit off).
 fn cat_max_lines() -> usize {
@@ -1583,6 +1618,7 @@ async fn async_main() -> anyhow::Result<()> {
             refresh_cache,
             args,
             long,
+            full,
             backend,
         } => {
             let (repo, path) = resolve_repo_and_optional_path(repo, args, &argv)?;
@@ -1594,7 +1630,32 @@ async fn async_main() -> anyhow::Result<()> {
                         open_disk_repo(&repo, branch.as_deref(), repo_cache_mode(refresh_cache))
                             .await?;
                     wit::gitops::ops::ensure_repo_path_exists(&repository, path.as_deref())?;
-                    build_tree_with_ignore(&repository, path.as_deref(), long, &ignore_patterns)?;
+                    let limit = if full { 0 } else { tree_max_lines() };
+                    match wit::gitops::ops::tree_overview(
+                        &repository,
+                        path.as_deref(),
+                        &ignore_patterns,
+                        limit,
+                    )? {
+                        Some(overview) => {
+                            println!("{}", overview.text);
+                            let note = tree_overview_note(
+                                &repo,
+                                path.as_deref(),
+                                branch.as_deref(),
+                                &overview,
+                                limit,
+                            );
+                            println!("{note}");
+                            eprintln!("{note}");
+                        }
+                        None => build_tree_with_ignore(
+                            &repository,
+                            path.as_deref(),
+                            long,
+                            &ignore_patterns,
+                        )?,
+                    }
                 }
                 CliSnapshotBackend::Memory => {
                     let snap = open_memory_snapshot(&repo, branch.as_deref()).await?;
