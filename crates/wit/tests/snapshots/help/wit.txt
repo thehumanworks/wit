@@ -25,13 +25,13 @@ Options:
   -V, --version              Print version
 
 Start here:
-  wit rg -n 'fn main' owner/repo              search contents; prints path:line:text
-  wit sed -n '80,140p' owner/repo src/main.rs  read a line range
-  wit head -n 60 owner/repo/README.md          read the start of a file
-  wit tree owner/repo src                      list files under a directory
-  wit cat owner/repo Cargo.toml                print a whole file, only when you need all of it
+  wit rg -n 'fn main' owner/repo                       search contents; prints path:line:text
+  wit cat -n --lines 80-140 owner/repo src/main.rs      read a line range with its line numbers
+  wit head -n 60 owner/repo/README.md                   read the start of a file
+  wit tree owner/repo src                               list files under a directory
+  wit cat owner/repo Cargo.toml                         print a whole file, only when you need all of it
 
-Search first, then read ranges: rg -n gives line numbers and sed -n 'START,ENDp' reads around them. cat prints at most 500 lines unless you pass --full.
+Search first, then read ranges: rg -n gives line numbers and cat -n --lines START-END reads around them with the same numbers, so cite the numbers you see. cat prints at most 500 lines unless you pass --full. sed, head, and tail work like their POSIX versions.
 
 Pass the repository as owner/repo, -r owner/repo, or owner/repo/PATH. Pass --ref REF to read a branch, tag, or full commit SHA (default: the repository default branch). Each read prints `snapshot: ... commit=SHA` on stderr; cite that commit, and pass --ref SHA to read the same commit again.
 

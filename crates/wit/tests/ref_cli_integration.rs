@@ -177,10 +177,28 @@ fn agent_shaped_reads_work() -> anyhow::Result<()> {
         "{text}"
     );
     assert!(
-        text.contains("`wit sed -n '3,4p' owner/repo src/lines.txt`"),
+        text.contains("`wit cat -n --lines 3-4 owner/repo src/lines.txt`"),
         "{text}"
     );
     assert!(!text.contains("line3"), "{text}");
+
+    let ranged = run_wit(
+        &fx,
+        &["cat", "-n", "--lines", "2-3", "owner/repo", "src/lines.txt"],
+    )?;
+    assert_eq!(stdout(&ranged), "     2  line2\n     3  line3\n");
+    let open_ended = run_wit(
+        &fx,
+        &["cat", "--lines", "4-", "owner/repo", "src/lines.txt"],
+    )?;
+    assert_eq!(stdout(&open_ended), "line4\nline5\n");
+    let past_end = wit_command(
+        &fx,
+        &["cat", "--lines", "9-12", "owner/repo", "src/lines.txt"],
+    )
+    .output()?;
+    assert!(!past_end.status.success());
+    assert!(String::from_utf8_lossy(&past_end.stderr).contains("has 5 lines"));
 
     let full = wit_command(&fx, &["cat", "--full", "owner/repo", "src/lines.txt"])
         .env("WIT_CAT_MAX_LINES", "2")
