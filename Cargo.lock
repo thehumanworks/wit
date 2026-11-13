@@ -6685,7 +6685,6 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
- "libc",
  "octocrab",
  "ptree",
  "regex",
