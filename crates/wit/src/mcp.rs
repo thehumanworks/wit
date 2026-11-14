@@ -108,7 +108,7 @@ impl WitMcpServer {
     fn operation_tool_router() -> ToolRouter<Self> {
         let mut router = ToolRouter::new();
         for descriptor in OPERATIONS {
-            let input_schema = descriptor.input_schema();
+            let input_schema = crate::mcp_text::compact_input_schema(descriptor.input_schema());
             let output_schema = descriptor.output_schema();
             let tool = Tool::new_with_raw(
                 descriptor.name,

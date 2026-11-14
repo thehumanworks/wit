@@ -27,6 +27,51 @@ const HEADER: &[&str] = &[
     "path",
 ];
 
+/// Input properties that only shape the JSON response. The text content block is already
+/// compact, so direct-mode agents never need them; they stay accepted for older clients.
+const HIDDEN_INPUTS: &[&str] = &["include_rendered_text", "number_lines", "format"];
+
+/// The tool list is sent to the model on every turn: eight direct tools cost about 9.9k
+/// characters, more than most tool results. Drop schema metadata a model does not use
+/// (`$schema`, `title`, `format: uint`, `minimum: 0`) and response-shaping inputs. The
+/// `format` input is kept on wit_list, where `paths` really is shorter.
+pub fn compact_input_schema(mut schema: Value) -> Value {
+    fn strip(node: &mut Value) {
+        match node {
+            Value::Object(map) => {
+                map.remove("$schema");
+                map.remove("title");
+                if map.get("format").and_then(Value::as_str) == Some("uint") {
+                    map.remove("format");
+                    if map.get("minimum").and_then(Value::as_u64) == Some(0) {
+                        map.remove("minimum");
+                    }
+                }
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let keep_format = schema.pointer("/$defs/ListFormat").is_some();
+    if let Some(Value::Object(properties)) = schema.get_mut("properties") {
+        for key in HIDDEN_INPUTS {
+            if *key == "format" && keep_format {
+                continue;
+            }
+            properties.remove(*key);
+        }
+    }
+    if let Some(Value::Object(defs)) = schema.get_mut("$defs") {
+        defs.remove("ReadFormat");
+        if defs.is_empty() {
+            schema.as_object_mut().map(|map| map.remove("$defs"));
+        }
+    }
+    strip(&mut schema);
+    schema
+}
+
 pub fn json_content_requested() -> bool {
     std::env::var("WIT_MCP_CONTENT").is_ok_and(|value| value.eq_ignore_ascii_case("json"))
 }
@@ -424,6 +469,29 @@ mod tests {
                 "x".repeat(297)
             )),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn advertised_input_schemas_drop_metadata_and_response_shaping_inputs() {
+        use crate::operation_registry::operation;
+        let read = super::compact_input_schema(operation("wit_read").unwrap().input_schema());
+        let text = read.to_string();
+        for absent in [
+            "$schema",
+            "\"title\"",
+            "uint",
+            "include_rendered_text",
+            "number_lines",
+            "ReadFormat",
+        ] {
+            assert!(!text.contains(absent), "{absent} in {text}");
+        }
+        assert!(read["properties"]["start_line"].is_object());
+        let list = super::compact_input_schema(operation("wit_list").unwrap().input_schema());
+        assert!(
+            list["properties"]["format"].is_object(),
+            "wit_list keeps format: {list}"
         );
     }
 
