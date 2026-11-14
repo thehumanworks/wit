@@ -99,7 +99,7 @@ export interface WitCodeModeApi {
   list(arguments: ListInput & { format?: "structured" }): Promise<StructuredListPage>;
   /** Search one immutable snapshot with regex queries; narrow results with path_prefix, glob/globs, and exclude filters */
   searchCode(arguments: SearchCodeInput): Promise<SearchCodeResult>;
-  /** Read an explicit one-based inclusive line range; Code Mode defaults to compact text and supports lines or structured formats */
+  /** Read a one-based inclusive line range of one file */
   read(arguments: ReadInput & { format: "structured" }): Promise<StructuredReadPage>;
   read(arguments: ReadInput & { format: "lines" }): Promise<CompactReadLinesPage>;
   read(arguments: ReadInput & { format?: "text" }): Promise<CompactReadTextPage>;

@@ -162,7 +162,7 @@ declare_operations! {
     Read {
         name: "wit_read",
         code_method: "read",
-        description: "Read a one-based inclusive line range of one file; lines print as `N: text`",
+        description: "Read a one-based inclusive line range of one file",
         classification: Read,
         handler: read,
         input: ReadArgs,
