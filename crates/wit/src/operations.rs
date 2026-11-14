@@ -2591,7 +2591,7 @@ pub struct FindRepositoriesArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ListArgs {
-    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
+    /// owner/repo@ref (opens it), or the id wit_open returned.
     pub snapshot_id: String,
     /// Directory or file path; omit for repository root.
     pub path: Option<String>,
@@ -2612,7 +2612,7 @@ pub struct ListArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SearchCodeArgs {
-    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
+    /// owner/repo@ref (opens it), or the id wit_open returned.
     pub snapshot_id: String,
     /// One or more Rust regular expressions. Results identify the matching query.
     pub queries: Vec<String>,
@@ -2638,7 +2638,7 @@ pub struct SearchCodeArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ReadArgs {
-    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
+    /// owner/repo@ref (opens it), or the id wit_open returned.
     pub snapshot_id: String,
     pub path: String,
     /// One-based inclusive start line. Defaults to 1.
@@ -2660,7 +2660,7 @@ pub struct ReadArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ContextArgs {
-    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
+    /// owner/repo@ref (opens it), or the id wit_open returned.
     pub snapshot_id: String,
     pub queries: Vec<String>,
     #[serde(default)]
@@ -2685,7 +2685,7 @@ pub enum AstMode {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct AstArgs {
-    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
+    /// owner/repo@ref (opens it), or the id wit_open returned.
     pub snapshot_id: String,
     /// symbols (default) lists definitions; query runs a tree-sitter query.
     #[serde(default)]
