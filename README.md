@@ -601,7 +601,7 @@ wit tail -p 100 -r ratatui/ratatui src/lib.rs       # From line 100 to end
 - Every push to `main` triggers `.github/workflows/auto-tag.yml`, which increments the patch version in `Cargo.toml`, creates a new `vX.Y.Z` tag, and pushes it.
 - Push a semver tag (for example `v0.2.0`) to trigger `.github/workflows/release.yml`.
 - `.github/workflows/release.yml` can also be triggered manually with `workflow_dispatch` (select a `vX.Y.Z` tag ref).
-- `.github/workflows/release.yml` validates the tag ref (and that it equals the `crates/wit/Cargo.toml` version), builds Linux/macOS/Windows artifacts on GitHub-hosted runners, checks that the natively smoked binaries' `wit --version` prints the tag version, uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
+- `.github/workflows/release.yml` validates the tag ref (and that it equals the `crates/wit/Cargo.toml` version), builds Linux/macOS/Windows artifacts on GitHub-hosted runners, checks that the natively smoked binaries' `wit --version` prints the tag version, refuses to publish unless every archive listed in `npm/targets.json` was built (a release missing a platform would become "latest" and break `install.sh` and npm there), uploads `wit-<platform>-<arch>` archives plus `wit-checksums.txt`, and then invokes `.github/workflows/publish-npm.yml`.
 - `.github/workflows/publish-npm.yml` publishes `@nothumanwork/wit` from the attached GitHub release assets (the npm version is the tag version), checks that the installed `wit --version` prints it, and can be re-run manually for an existing release tag without rebuilding Rust binaries.
 - `install.sh` downloads the matching archive and verifies it against the checksum manifest when available.
 

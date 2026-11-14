@@ -57,7 +57,7 @@ jobs:
             platform: linux
             arch: aarch64
           - target: x86_64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             archive: tar.gz
             bin: wit
             mcp_bin: wit-mcp
@@ -66,7 +66,7 @@ jobs:
             platform: macos
             arch: x86_64
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             archive: tar.gz
             bin: wit
             mcp_bin: wit-mcp
@@ -225,8 +225,11 @@ jobs:
 
   release:
     name: publish release
-    # Keep needs: build so successful native artifacts are still available, but do not
-    # require the whole matrix green — a failed cell (e.g. windows-x86_64) must not skip publish.
+    # Runs even when a build cell did not succeed, so the "Require every native
+    # archive" step below can name the missing platforms. That step stops the
+    # publish: a release without an archive for a platform in npm/targets.json
+    # would become "latest" and break install.sh and npm on that platform
+    # (v0.1.61-v0.1.70 shipped without macOS after GitHub retired that runner image).
     if: ${{ !cancelled() && needs.build-wasm.result == 'success' }}
     runs-on: ubuntu-latest
     needs:
@@ -252,14 +255,28 @@ jobs:
           name: wit_snapshot.wasm
           path: dist
 
+      - name: Require every native archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          while IFS= read -r artifact; do
+            [ -f "dist/${artifact}" ] || missing+=("${artifact}")
+          done < <(node -e 'for (const t of require("./npm/targets.json").targets) console.log(t.artifact)')
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for artifact in "${missing[@]}"; do
+              echo "::error title=release incomplete::${artifact} was not built (check the build job for that platform); not publishing ${GITHUB_REF_NAME}"
+            done
+            exit 1
+          fi
+          echo "all native archives present"
+
       - name: Build checksum manifest
         shell: bash
         run: |
           set -euo pipefail
           cd dist
           test -f wit_snapshot.wasm
-          # Hash whatever native archives exist; always require wit_snapshot.wasm.
-          # A missing matrix cell is a skipped download, not a failed publish.
           shopt -s nullglob
           natives=(wit-*.tar.gz wit-*.zip)
           sha256sum "${natives[@]}" wit_snapshot.wasm > wit-checksums.txt

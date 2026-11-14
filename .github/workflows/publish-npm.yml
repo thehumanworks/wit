@@ -131,7 +131,7 @@ jobs:
         include:
           - runner: ubuntu-latest
             allow_failure: false
-          - runner: macos-14
+          - runner: macos-15
             allow_failure: false
           - runner: windows-latest
             allow_failure: false

@@ -242,13 +242,13 @@ jobs:
             bin: wit
             mcp_bin: wit-mcp
           - target: x86_64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             use_cross: false
             archive: tar.gz
             bin: wit
             mcp_bin: wit-mcp
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             use_cross: false
             archive: tar.gz
             bin: wit
