@@ -103,7 +103,7 @@ macro_rules! declare_operations {
                 match descriptor.dispatch_target {
                     $(DispatchTarget::$target => encode(
                         name,
-                        self.$handler(context, decode::<$input>(name, arguments)?)
+                        self.$handler(context, decode::<$input>(descriptor, arguments)?)
                             .await
                             .map_err(|error| OperationDispatchError::failed(name, error))?,
                     )),+
@@ -217,11 +217,11 @@ impl OperationDispatchError {
         }
     }
 
-    fn invalid(operation: &str) -> Self {
+    fn invalid(operation: &str, detail: &serde_json::Error) -> Self {
         Self {
             code: DispatchErrorCode::InvalidArguments,
             operation: operation.to_string(),
-            message: "arguments do not match the operation schema".to_string(),
+            message: format!("arguments do not match the operation schema: {detail}"),
         }
     }
 
@@ -250,8 +250,63 @@ impl fmt::Display for OperationDispatchError {
 
 impl std::error::Error for OperationDispatchError {}
 
-fn decode<T: DeserializeOwned>(name: &str, arguments: Value) -> Result<T, OperationDispatchError> {
-    serde_json::from_value(arguments).map_err(|_| OperationDispatchError::invalid(name))
+fn decode<T: DeserializeOwned>(
+    descriptor: &OperationDescriptor,
+    arguments: Value,
+) -> Result<T, OperationDispatchError> {
+    let first = match serde_json::from_value(arguments.clone()) {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    // Many models send numbers and booleans as strings ({"depth": "2"}). In round 8 of the agent
+    // eval a third of one model's MCP calls did, and every one failed. Retry once with those
+    // strings converted where the schema allows only a number or a boolean.
+    if let Some(coerced) = coerce_scalar_strings(&descriptor.input_schema(), &arguments)
+        && let Ok(value) = serde_json::from_value(coerced)
+    {
+        return Ok(value);
+    }
+    Err(OperationDispatchError::invalid(descriptor.name, &first))
+}
+
+/// Converts top-level string arguments to numbers or booleans when the property's schema type
+/// allows that scalar and not a string. Returns `None` when nothing changed.
+fn coerce_scalar_strings(schema: &Value, arguments: &Value) -> Option<Value> {
+    let properties = schema.get("properties")?.as_object()?;
+    let mut arguments = arguments.as_object()?.clone();
+    let mut changed = false;
+    for (key, value) in arguments.iter_mut() {
+        let Value::String(text) = value else {
+            continue;
+        };
+        let types: Vec<&str> = match properties.get(key).and_then(|p| p.get("type")) {
+            Some(Value::String(kind)) => vec![kind.as_str()],
+            Some(Value::Array(kinds)) => kinds.iter().filter_map(Value::as_str).collect(),
+            _ => continue,
+        };
+        if types.contains(&"string") {
+            continue;
+        }
+        let text = text.trim();
+        let replacement = if types.contains(&"integer") {
+            text.parse::<i64>().ok().map(Value::from)
+        } else if types.contains(&"number") {
+            text.parse::<f64>().ok().map(Value::from)
+        } else {
+            None
+        };
+        let replacement = replacement.or_else(|| {
+            types
+                .contains(&"boolean")
+                .then(|| text.parse::<bool>().ok().map(Value::Bool))
+                .flatten()
+        });
+        if let Some(replacement) = replacement {
+            *value = replacement;
+            changed = true;
+        }
+    }
+    changed.then_some(Value::Object(arguments))
 }
 
 fn encode<T: Serialize>(name: &str, result: T) -> Result<Value, OperationDispatchError> {
@@ -463,6 +518,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn numeric_and_boolean_strings_are_coerced_only_where_the_schema_allows() {
+        let list = operation("wit_list").unwrap();
+        let args: ListArgs = decode(
+            list,
+            json!({"snapshot_id": "o/r@1", "path": "2024", "depth": "3", "include_rendered_text": "true"}),
+        )
+        .unwrap();
+        assert_eq!(args.depth, Some(3));
+        assert_eq!(args.path.as_deref(), Some("2024"));
+        assert!(args.include_rendered_text);
+        let error = decode::<ListArgs>(list, json!({"snapshot_id": "o/r@1", "depth": "two"}))
+            .err()
+            .unwrap();
+        assert!(
+            error.message.contains("expected usize"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
     fn registry_operation_names_and_code_methods_are_unique() {
         let names = OPERATIONS
             .iter()
@@ -509,7 +585,7 @@ mod tests {
             json!({
                 "code": "invalid_arguments",
                 "operation": "wit_open",
-                "message": "arguments do not match the operation schema"
+                "message": "arguments do not match the operation schema: invalid type: integer `42`, expected a string"
             })
         );
     }

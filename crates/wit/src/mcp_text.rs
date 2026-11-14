@@ -142,6 +142,7 @@ pub fn agent_text(value: &Value) -> String {
             out.push(format!("{number}: {text}"));
         }
     } else if !items.is_empty() {
+        let items = coalesce_snippets(items.clone());
         let mut previous_had_lines = true;
         for item in &items {
             let has_lines = item.get("lines").is_some_and(Value::is_array);
@@ -180,6 +181,74 @@ pub fn agent_text(value: &Value) -> String {
     out.join("\n").trim().to_string()
 }
 
+/// Merge consecutive snippets of one file whose line windows overlap or touch, so nearby matches
+/// print their shared context once. The merged item lists every match line in `match_lines`.
+fn coalesce_snippets(items: Vec<Map<String, Value>>) -> Vec<Map<String, Value>> {
+    let line_range = |item: &Map<String, Value>| {
+        Some((
+            item.get("start_line")?.as_u64()?,
+            item.get("end_line")?.as_u64()?,
+        ))
+    };
+    let mut out: Vec<Map<String, Value>> = Vec::with_capacity(items.len());
+    for mut item in items {
+        let mergeable = match (out.last(), line_range(&item)) {
+            (Some(previous), Some((start, _))) => {
+                previous.get("lines").is_some_and(Value::is_array)
+                    && item.get("lines").is_some_and(Value::is_array)
+                    && previous.get("path") == item.get("path")
+                    && line_range(previous).is_some_and(|(_, end)| start <= end + 1)
+            }
+            _ => false,
+        };
+        if !mergeable {
+            out.push(item);
+            continue;
+        }
+        let previous = out.last_mut().expect("checked above");
+        let mut matches: Vec<String> = match previous.remove("match_lines") {
+            Some(Value::String(list)) => list.split(',').map(str::to_string).collect(),
+            _ => previous
+                .remove("match_line")
+                .and_then(|v| scalar(&v))
+                .into_iter()
+                .collect(),
+        };
+        if let Some(line) = item.remove("match_line").and_then(|v| scalar(&v))
+            && !matches.contains(&line)
+        {
+            matches.push(line);
+        }
+        previous.insert("match_lines".into(), Value::String(matches.join(",")));
+        let (Some(Value::Array(lines)), Some(Value::Array(more))) =
+            (previous.get_mut("lines"), item.remove("lines"))
+        else {
+            continue;
+        };
+        let last = lines
+            .last()
+            .and_then(|line| line.get("line_number")?.as_u64())
+            .unwrap_or(0);
+        lines.extend(
+            more.into_iter()
+                .filter(|line| line.get("line_number").and_then(Value::as_u64) > Some(last)),
+        );
+        if let Some(end) = item.get("end_line").cloned() {
+            let longer = line_range(&item).map(|(_, e)| e) > line_range(previous).map(|(_, e)| e);
+            if longer {
+                previous.insert("end_line".into(), end);
+            }
+        }
+        if previous.get("query") != item.get("query")
+            && let (Some(Value::String(a)), Some(Value::String(b))) =
+                (previous.get("query").cloned(), item.get("query"))
+        {
+            previous.insert("query".into(), Value::String(format!("{a} | {b}")));
+        }
+    }
+    out
+}
+
 fn header_len(out: &[String]) -> usize {
     out.iter().take_while(|line| !line.is_empty()).count()
 }
@@ -207,8 +276,25 @@ fn render_item(item: &Map<String, Value>) -> Vec<String> {
         head.push(rest);
     }
     let mut out = vec![head.join("  ")];
-    out.extend(render_lines(&lines));
+    out.extend(render_lines(&lines).into_iter().map(clip_snippet_line));
     out
+}
+
+/// Search and context snippets are for finding code, not reading it, and generated files (API
+/// specs, vendored bundles) put tens of kilobytes on one line. A long line is cut, and the cut is
+/// marked so the agent can read the full line with wit_read.
+const MAX_SNIPPET_LINE_CHARS: usize = 300;
+
+fn clip_snippet_line(line: String) -> String {
+    let total = line.chars().count();
+    if total <= MAX_SNIPPET_LINE_CHARS {
+        return line;
+    }
+    let kept: String = line.chars().take(MAX_SNIPPET_LINE_CHARS).collect();
+    format!(
+        "{kept} …[+{} chars; wit_read shows the full line]",
+        total - MAX_SNIPPET_LINE_CHARS
+    )
 }
 
 fn render_lines(lines: &[Value]) -> Vec<String> {
@@ -305,6 +391,39 @@ mod tests {
         assert_eq!(
             agent_text(&value),
             "repo: o/r\nkind=file\n\npath=a.rs\npath=b.rs"
+        );
+    }
+
+    #[test]
+    fn overlapping_matches_in_one_file_share_context() {
+        let lines = |range: std::ops::RangeInclusive<u64>| {
+            range
+                .map(|n| json!({"line_number": n, "text": format!("l{n}")}))
+                .collect::<Vec<_>>()
+        };
+        let value = json!({"items": [
+            {"repo": "o/r", "path": "a.rs", "start_line": 1, "end_line": 5, "match_line": 3, "query": "x", "lines": lines(1..=5)},
+            {"repo": "o/r", "path": "a.rs", "start_line": 4, "end_line": 8, "match_line": 6, "query": "x", "lines": lines(4..=8)},
+            {"repo": "o/r", "path": "a.rs", "start_line": 20, "end_line": 22, "match_line": 21, "query": "x", "lines": lines(20..=22)}
+        ]});
+        assert_eq!(
+            agent_text(&value),
+            "repo: o/r\npath: a.rs\nquery=x\n\nmatch_lines=3,6\n1: l1\n2: l2\n3: l3\n4: l4\n5: l5\n6: l6\n7: l7\n8: l8\n\nmatch_line=21\n20: l20\n21: l21\n22: l22"
+        );
+    }
+
+    #[test]
+    fn long_snippet_lines_are_clipped() {
+        let long = "x".repeat(350);
+        let value = json!({"items": [{"path": "a.json", "start_line": 1, "end_line": 1,
+            "lines": [{"line_number": 1, "text": long}]}]});
+        let text = agent_text(&value);
+        assert!(
+            text.ends_with(&format!(
+                "1: {} …[+53 chars; wit_read shows the full line]",
+                "x".repeat(297)
+            )),
+            "{text}"
         );
     }
 

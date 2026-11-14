@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(caught["operation"], "wit_read");
         assert_eq!(
             caught["message"],
-            "arguments do not match the operation schema"
+            "arguments do not match the operation schema: missing field `snapshot_id`"
         );
 
         for (source, expected_code) in [
