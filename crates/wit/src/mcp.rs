@@ -382,7 +382,7 @@ mod tests {
             assert_eq!(tool.description.as_deref(), Some(descriptor.description));
             assert_eq!(
                 serde_json::Value::Object((*tool.input_schema).clone()),
-                descriptor.input_schema()
+                crate::mcp_text::compact_input_schema(descriptor.input_schema())
             );
             assert_eq!(
                 tool.output_schema
