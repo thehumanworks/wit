@@ -55,8 +55,14 @@ assert_not_contains "$npm_workflow" 'release:' \
 
 assert_contains "$release_workflow" 'runner: ubuntu-latest' \
   "release workflow must build Linux artifacts on an Ubuntu runner"
-assert_contains "$release_workflow" 'runner: macos-14' \
+assert_contains "$release_workflow" 'runner: macos-15' \
   "release workflow must build macOS artifacts on a macOS runner"
+# GitHub retired the macos-14 image (2026-11); jobs that ask for it are
+# cancelled at once with no runner, which silently drops the macOS archives.
+for workflow in .github/workflows/*.yml; do
+  assert_not_contains "$workflow" 'macos-14' \
+    "$workflow must not use the retired macos-14 runner image"
+done
 assert_contains "$release_workflow" 'runner: windows-latest' \
   "release workflow must build Windows artifacts on a Windows runner"
 assert_contains "$release_workflow" 'mcp_bin: wit-mcp' \
@@ -136,7 +142,11 @@ assert_contains "$release_workflow" 'sha256sum "${natives[@]}" wit_snapshot.wasm
 assert_contains "$release_workflow" 'natives=(wit-*.tar.gz wit-*.zip)' \
   "release checksums must only consider native archives that actually downloaded"
 assert_contains "$release_workflow" 'test -f wit_snapshot.wasm' \
-  "release publish must require wit_snapshot.wasm even when some native cells fail"
+  "release publish must require wit_snapshot.wasm"
+assert_contains "$release_workflow" 'name: Require every native archive' \
+  "release publish must refuse to publish when a native archive is missing"
+assert_contains "$release_workflow" 'require("./npm/targets.json").targets' \
+  "release completeness gate must check every target in npm/targets.json"
 assert_contains "$release_workflow" 'cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features' \
   "release workflow must build wit_snapshot.wasm without default features"
 assert_contains "$release_workflow" 'name: wit_snapshot.wasm' \
@@ -146,13 +156,13 @@ assert_contains "$release_workflow" 'dist/wit_snapshot.wasm' \
 assert_contains "$release_workflow" 'needs:'$'\n''      - build'$'\n''      - build-wasm' \
   "publish release must still list needs for native build and build-wasm"
 assert_contains "$release_workflow" 'if: ${{ !cancelled() && needs.build-wasm.result == '\''success'\'' }}' \
-  "publish must run when build-wasm succeeds even if the native matrix has a failed cell"
+  "publish job must run when build-wasm succeeds so its completeness gate can name missing native archives"
 assert_contains "$release_workflow" 'if: ${{ !cancelled() && needs.release.result == '\''success'\'' }}' \
   "npm publish must run when the GitHub release job succeeds even if a native matrix cell is red"
 assert_contains "$release_workflow" 'if-no-files-found: ignore' \
-  "publish must tolerate missing native dist-* artifacts from failed matrix cells"
+  "artifact download must not fail first, so the completeness gate reports every missing archive"
 assert_not_contains "$release_workflow" 'needs.build.result' \
-  "publish must not gate on needs.build.result (that would skip attach when one native cell is red)"
+  "publish must not gate on needs.build.result (the completeness gate reports missing archives by name instead)"
 assert_contains "$ci_workflow" 'cargo build -p wit-snapshot --release --target wasm32-unknown-unknown --no-default-features' \
   "CI must build the release wit_snapshot.wasm artifact"
 assert_contains "$ci_workflow" 'name: wit_snapshot.wasm' \
