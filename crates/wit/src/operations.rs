@@ -844,6 +844,7 @@ fn search_snapshot_window(
 ) -> Result<Vec<SearchItem>, String> {
     let mut seen = 0usize;
     let mut items = Vec::with_capacity(limit.min(MAX_CONTEXT_CANDIDATES));
+    let mut blobs = BlobBatch::open(snapshot)?;
     walk_tree(context, snapshot, |entry| {
         if entry.kind != "blob"
             || !path_has_prefix(&entry.path, &filters.prefix)
@@ -864,7 +865,7 @@ fn search_snapshot_window(
         if size > 4 * 1024 * 1024 {
             return Ok(true);
         }
-        let Ok(text) = blob_text(context, snapshot, &entry.oid, 4 * 1024 * 1024) else {
+        let Some(text) = blobs.text(context, &entry.oid, 4 * 1024 * 1024)? else {
             return Ok(true);
         };
         let lines = text.lines().collect::<Vec<_>>();
@@ -1033,6 +1034,85 @@ fn read_snapshot_window(
             text: lines[line_number - 1].to_string(),
         })
         .collect())
+}
+
+/// Reads many blobs through one long-lived `git cat-file --batch` process.
+///
+/// Spawning `git cat-file` twice per file made `wit_search_code` take about 16 seconds per call on
+/// tokio-rs/tokio (some 800 files), against well under a second for the same search in the CLI.
+struct BlobBatch {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl BlobBatch {
+    fn open(snapshot: &SnapshotHandle) -> Result<Self, String> {
+        let SnapshotHandle::Disk { repo_path, .. } = snapshot else {
+            return Err("BlobBatch requires a disk snapshot".to_string());
+        };
+        let mut command = crate::gitops::ops::github_git_command();
+        command
+            .arg("-C")
+            .arg(repo_path)
+            .args(["cat-file", "--batch"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        crate::operation_context::configure_process_group(&mut command);
+        let mut child = command
+            .spawn()
+            .map_err(|_| "failed to start git cat-file --batch".to_string())?;
+        let stdin = child.stdin.take().expect("stdin was configured as piped");
+        let stdout = child.stdout.take().expect("stdout was configured as piped");
+        Ok(Self {
+            child,
+            stdin,
+            stdout: std::io::BufReader::new(stdout),
+        })
+    }
+
+    /// `Ok(None)` skips a missing, oversized, binary, or non-UTF-8 object; `Err` means the
+    /// operation was cancelled or the batch process failed.
+    fn text(
+        &mut self,
+        context: &OperationContext,
+        oid: &str,
+        max_bytes: usize,
+    ) -> Result<Option<String>, String> {
+        use std::io::{BufRead, Read, Write};
+        context.check()?;
+        let failed = |_| "git cat-file --batch stopped responding".to_string();
+        writeln!(self.stdin, "{oid}").map_err(failed)?;
+        self.stdin.flush().map_err(failed)?;
+        let mut header = String::new();
+        self.stdout.read_line(&mut header).map_err(failed)?;
+        let fields = header.split_whitespace().collect::<Vec<_>>();
+        let [_, kind, size] = fields.as_slice() else {
+            if header.trim_end().ends_with(" missing") {
+                return Ok(None);
+            }
+            return Err("git cat-file --batch returned an unexpected header".to_string());
+        };
+        let size = size
+            .parse::<usize>()
+            .map_err(|_| "git cat-file returned an invalid blob size".to_string())?;
+        // Always consume the object and its trailing newline so the stream stays in step.
+        let mut bytes = vec![0; size + 1];
+        self.stdout.read_exact(&mut bytes).map_err(failed)?;
+        bytes.truncate(size);
+        if *kind != "blob" || size > max_bytes || bytes.contains(&0) {
+            return Ok(None);
+        }
+        Ok(String::from_utf8(bytes).ok())
+    }
+}
+
+impl Drop for BlobBatch {
+    fn drop(&mut self) {
+        crate::operation_context::terminate_process_tree(&mut self.child);
+        let _ = self.child.wait();
+    }
 }
 
 fn blob_text(
@@ -3368,6 +3448,11 @@ impl WitOperations {
         let limit = max_items + 1;
         let mut seen = 0usize;
         let mut items: Vec<AstItem> = Vec::new();
+        let mut blobs = if snapshot.memory().is_some() {
+            None
+        } else {
+            Some(BlobBatch::open(&snapshot)?)
+        };
         'files: for (path, oid, file_language) in candidates {
             context.check()?;
             let text = if let Some(memory) = snapshot.memory() {
@@ -3378,11 +3463,13 @@ impl WitOperations {
                     Ok(text) => text,
                     Err(_) => continue,
                 }
-            } else {
-                match blob_text(context, &snapshot, &oid, ast::MAX_AST_SOURCE_BYTES) {
-                    Ok(text) => text,
-                    Err(_) => continue,
+            } else if let Some(blobs) = blobs.as_mut() {
+                match blobs.text(context, &oid, ast::MAX_AST_SOURCE_BYTES)? {
+                    Some(text) => text,
+                    None => continue,
                 }
+            } else {
+                continue;
             };
             let file_items: Vec<AstItem> = match &query {
                 Some((target, query_text)) => match ast::run_query(*target, &text, query_text) {
