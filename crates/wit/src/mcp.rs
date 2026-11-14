@@ -10,7 +10,7 @@ use rmcp::{
         tool::ToolCallContext,
     },
     model::{
-        CallToolResult, Implementation, ListResourcesResult, PaginatedRequestParams,
+        CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
         ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
         ServerCapabilities, ServerInfo, Tool,
     },
@@ -54,7 +54,7 @@ Direct mode is the default and current recommendation. Use it for a simple open,
 5. Call `wit_context` when one deterministic operation should rank and merge evidence across files. It does not invoke a model or embeddings.
 6. Call `wit_ast` for structure instead of text: `mode: "symbols"` (default) returns every definition in a file or directory with exact one-based line ranges, nesting, and signatures, so the next `wit_read` can be precise; `mode: "query"` with `language` runs a raw tree-sitter query (for example `(call_expression function: (identifier) @callee (#eq? @callee "render"))`) for questions regex cannot express. Supported: rust, python, javascript, typescript, tsx, go, java, c.
 7. When `has_more` is true, pass `next_cursor` back with otherwise unchanged arguments. Changed arguments or snapshots invalidate a cursor.
-8. Responses are structured by default and bounded to 64 KiB. Set `include_rendered_text` only for compatibility with text-oriented consumers.
+8. Responses are structured by default and bounded to 64 KiB. `structuredContent` carries the full response; the text content block states shared provenance once and prints lines as `N: text`, which costs agents far fewer tokens. Set `WIT_MCP_CONTENT=json` to receive the serialized structured response as text instead.
 
 ## Experimental Code Mode
 
@@ -154,7 +154,15 @@ impl WitMcpServer {
                             }),
                         };
                         match result {
-                            Ok(result) => Ok(CallToolResult::structured(result)),
+                            Ok(result) => {
+                                let text = (!crate::mcp_text::json_content_requested())
+                                    .then(|| crate::mcp_text::agent_text(&result));
+                                let mut result = CallToolResult::structured(result);
+                                if let Some(text) = text {
+                                    result.content = vec![ContentBlock::text(text)];
+                                }
+                                Ok(result)
+                            }
                             Err(error) => Ok(CallToolResult::structured_error(
                                 serde_json::to_value(error)
                                     .expect("dispatch errors must serialize"),
