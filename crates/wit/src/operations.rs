@@ -37,6 +37,10 @@ const MAX_LIST_DEPTH: usize = 32;
 const DEFAULT_AST_MAX_FILES: usize = 200;
 const MAX_AST_MAX_FILES: usize = 1000;
 const DEFAULT_CONTEXT_LINES: usize = 4;
+/// wit_search_code defaults, smaller than other pages: agents narrow and page searches, and the
+/// 100-match, 4-line default filled a 20k-character tool result on one in twenty eval calls.
+const DEFAULT_SEARCH_RESULTS: usize = 20;
+const DEFAULT_SEARCH_CONTEXT_LINES: usize = 2;
 const MAX_CONTEXT_LINES: usize = 100;
 const DEFAULT_CONTEXT_RESULTS: usize = 20;
 const MAX_CONTEXT_RESULTS: usize = 100;
@@ -2515,7 +2519,9 @@ pub struct SearchCodeArgs {
     /// Git-style globs to exclude after include filtering.
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Lines of context around each match. Defaults to 2.
     pub context_lines: Option<usize>,
+    /// Matches per page. Defaults to 20; pass next_cursor for more, or narrow with path_prefix or glob.
     pub max_results: Option<usize>,
     pub cursor: Option<String>,
     pub max_bytes: Option<usize>,
@@ -3233,13 +3239,13 @@ impl WitOperations {
         let excludes = compile_globs(&args.exclude)?;
         let context_lines = validate_range(
             args.context_lines,
-            DEFAULT_CONTEXT_LINES,
+            DEFAULT_SEARCH_CONTEXT_LINES,
             MAX_CONTEXT_LINES,
             "context_lines",
         )?;
         let max_results = validate_range(
             args.max_results,
-            DEFAULT_PAGE_ITEMS,
+            DEFAULT_SEARCH_RESULTS,
             MAX_PAGE_ITEMS,
             "max_results",
         )?;
