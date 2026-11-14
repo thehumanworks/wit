@@ -108,7 +108,7 @@ impl WitMcpServer {
     fn operation_tool_router() -> ToolRouter<Self> {
         let mut router = ToolRouter::new();
         for descriptor in OPERATIONS {
-            let input_schema = descriptor.input_schema();
+            let input_schema = crate::mcp_text::compact_input_schema(descriptor.input_schema());
             let output_schema = descriptor.output_schema();
             let tool = Tool::new_with_raw(
                 descriptor.name,
@@ -382,7 +382,7 @@ mod tests {
             assert_eq!(tool.description.as_deref(), Some(descriptor.description));
             assert_eq!(
                 serde_json::Value::Object((*tool.input_schema).clone()),
-                descriptor.input_schema()
+                crate::mcp_text::compact_input_schema(descriptor.input_schema())
             );
             assert_eq!(
                 tool.output_schema
