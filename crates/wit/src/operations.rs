@@ -49,6 +49,8 @@ const MAX_CONTEXT_CANDIDATES: usize = 5000;
 #[derive(Clone)]
 pub struct WitOperations {
     snapshots: Arc<Mutex<HashMap<String, SnapshotRecord>>>,
+    /// `owner/repo@ref` aliases that opened implicitly → canonical snapshot_id.
+    aliases: Arc<Mutex<HashMap<String, String>>>,
     snapshot_backend: CliSnapshotBackend,
     /// Optional injected GitHub HTTP client for the memory backend (tests / custom base URL).
     memory_github: Option<ReqwestGitHubClient>,
@@ -58,6 +60,7 @@ impl WitOperations {
     pub fn new() -> Self {
         Self {
             snapshots: Arc::new(Mutex::new(HashMap::new())),
+            aliases: Arc::new(Mutex::new(HashMap::new())),
             snapshot_backend: CliSnapshotBackend::from_env_or_flag(None)
                 .unwrap_or(CliSnapshotBackend::Disk),
             memory_github: None,
@@ -68,6 +71,7 @@ impl WitOperations {
     pub fn with_backend(snapshot_backend: CliSnapshotBackend) -> Self {
         Self {
             snapshots: Arc::new(Mutex::new(HashMap::new())),
+            aliases: Arc::new(Mutex::new(HashMap::new())),
             snapshot_backend,
             memory_github: None,
         }
@@ -77,6 +81,7 @@ impl WitOperations {
     pub fn with_memory_github_client(client: ReqwestGitHubClient) -> Self {
         Self {
             snapshots: Arc::new(Mutex::new(HashMap::new())),
+            aliases: Arc::new(Mutex::new(HashMap::new())),
             snapshot_backend: CliSnapshotBackend::Memory,
             memory_github: Some(client),
         }
@@ -105,6 +110,52 @@ impl WitOperations {
                     "unknown or expired snapshot_id '{snapshot_id}'; call wit_open in this server session"
                 )
             })
+    }
+
+    /// Resolve a snapshot_id, opening `owner/repo` or `owner/repo@ref` on first use. Agents
+    /// otherwise spend a whole turn on wit_open, and often send their first search in parallel
+    /// with it using a made-up id. The alias stays pinned to the commit it first resolved to for
+    /// the rest of the server session, like an explicit wit_open.
+    async fn snapshot_or_open(
+        &self,
+        context: &OperationContext,
+        snapshot_id: &str,
+    ) -> Result<SnapshotHandle, String> {
+        if let Ok(handle) = self.snapshot(snapshot_id) {
+            return Ok(handle);
+        }
+        let alias = self
+            .aliases
+            .lock()
+            .map_err(|_| "snapshot alias lock was poisoned".to_string())?
+            .get(snapshot_id)
+            .cloned();
+        if let Some(canonical) = alias {
+            return self.snapshot(&canonical);
+        }
+        let Some((repo, reference)) = implicit_open_target(snapshot_id) else {
+            return self.snapshot(snapshot_id).map_err(|_| {
+                format!(
+                    "unknown snapshot_id '{snapshot_id}'; pass the snapshot_id from wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call"
+                )
+            });
+        };
+        let opened = Box::pin(self.open(
+            context,
+            OpenArgs {
+                repo,
+                reference,
+                freshness: Freshness::default(),
+            },
+        ))
+        .await?;
+        let handle = self.snapshot(&opened.snapshot_id)?;
+        self.aliases
+            .lock()
+            .map_err(|_| "snapshot alias lock was poisoned".to_string())?
+            .entry(snapshot_id.to_string())
+            .or_insert(opened.snapshot_id);
+        Ok(handle)
     }
 
     fn publish_snapshot(
@@ -189,6 +240,18 @@ fn github_remote_url(repo: &str) -> Result<String, String> {
     wit_snapshot::auth::hostname()
         .map(|host| format!("https://{host}/{repo}"))
         .map_err(|e| e.to_string())
+}
+
+/// `owner/repo` or `owner/repo@ref` → (repo, ref). None for anything else.
+fn implicit_open_target(snapshot_id: &str) -> Option<(String, Option<String>)> {
+    let (repo, reference) = match snapshot_id.trim().split_once('@') {
+        Some((repo, reference)) => (repo, Some(reference.trim())),
+        None => (snapshot_id.trim(), None),
+    };
+    if validate_repo(repo).is_err() || reference.is_some_and(str::is_empty) {
+        return None;
+    }
+    Some((repo.to_string(), reference.map(str::to_string)))
 }
 
 fn snapshot_id(repo: &str, commit_sha: &str) -> String {
@@ -1836,6 +1899,48 @@ mod tests {
         (operations, id)
     }
 
+    #[test]
+    fn implicit_open_target_accepts_only_repo_and_optional_ref() {
+        assert_eq!(
+            implicit_open_target("tokio-rs/tokio@tokio-1.40.0"),
+            Some((
+                "tokio-rs/tokio".to_string(),
+                Some("tokio-1.40.0".to_string())
+            ))
+        );
+        assert_eq!(
+            implicit_open_target("vitejs/vite"),
+            Some(("vitejs/vite".to_string(), None))
+        );
+        assert_eq!(implicit_open_target("placeholder"), None);
+        assert_eq!(implicit_open_target("pending"), None);
+        assert_eq!(implicit_open_target("owner/repo@"), None);
+        assert_eq!(implicit_open_target("a/b/c@main"), None);
+    }
+
+    #[tokio::test]
+    async fn snapshot_aliases_resolve_and_unknown_ids_explain_the_shortcut() {
+        let (operations, snapshot_id) = operations_with_memory_snapshot();
+        operations
+            .aliases
+            .lock()
+            .unwrap()
+            .insert("owner/repo@main".to_string(), snapshot_id.clone());
+        let context = OperationContext::default();
+        assert!(
+            operations
+                .snapshot_or_open(&context, "owner/repo@main")
+                .await
+                .is_ok()
+        );
+        let error = operations
+            .snapshot_or_open(&context, "placeholder")
+            .await
+            .err()
+            .unwrap();
+        assert!(error.contains("owner/repo@ref"), "{error}");
+    }
+
     #[tokio::test]
     async fn memory_snapshot_list_and_read_without_disk() {
         let probe = tempfile::tempdir().unwrap();
@@ -2486,6 +2591,7 @@ pub struct FindRepositoriesArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ListArgs {
+    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
     pub snapshot_id: String,
     /// Directory or file path; omit for repository root.
     pub path: Option<String>,
@@ -2506,6 +2612,7 @@ pub struct ListArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SearchCodeArgs {
+    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
     pub snapshot_id: String,
     /// One or more Rust regular expressions. Results identify the matching query.
     pub queries: Vec<String>,
@@ -2531,6 +2638,7 @@ pub struct SearchCodeArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ReadArgs {
+    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
     pub snapshot_id: String,
     pub path: String,
     /// One-based inclusive start line. Defaults to 1.
@@ -2552,6 +2660,7 @@ pub struct ReadArgs {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ContextArgs {
+    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
     pub snapshot_id: String,
     pub queries: Vec<String>,
     #[serde(default)]
@@ -2576,6 +2685,7 @@ pub enum AstMode {
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct AstArgs {
+    /// From wit_open, or owner/repo@ref (for example tokio-rs/tokio@main) to open it in this call.
     pub snapshot_id: String,
     /// symbols (default) lists definitions; query runs a tree-sitter query.
     #[serde(default)]
@@ -3157,7 +3267,7 @@ impl WitOperations {
         args: ListArgs,
     ) -> Result<ListResponse, String> {
         context.check()?;
-        let snapshot = self.snapshot(&args.snapshot_id)?;
+        let snapshot = self.snapshot_or_open(context, &args.snapshot_id).await?;
         let depth = validate_range(args.depth, DEFAULT_LIST_DEPTH, MAX_LIST_DEPTH, "depth")?;
         let max_items = validate_page_items(args.max_items)?;
         let max_bytes = validate_budget(args.max_bytes)?;
@@ -3228,7 +3338,7 @@ impl WitOperations {
         args: SearchCodeArgs,
     ) -> Result<Page<SearchItem>, String> {
         context.check()?;
-        let snapshot = self.snapshot(&args.snapshot_id)?;
+        let snapshot = self.snapshot_or_open(context, &args.snapshot_id).await?;
         let queries = compile_queries(&args.queries)?;
         let mut include_globs = args.globs.clone();
         if let Some(glob) = args.glob.as_deref() {
@@ -3315,7 +3425,7 @@ impl WitOperations {
         args: AstArgs,
     ) -> Result<Page<AstItem>, String> {
         context.check()?;
-        let snapshot = self.snapshot(&args.snapshot_id)?;
+        let snapshot = self.snapshot_or_open(context, &args.snapshot_id).await?;
         let path_prefix = normalize_repo_path(args.path.as_deref().unwrap_or(""))?;
         let includes = compile_globs(&args.globs)?;
         let excludes = compile_globs(&args.exclude)?;
@@ -3533,7 +3643,7 @@ impl WitOperations {
         args: ReadArgs,
     ) -> Result<ReadResponse, String> {
         context.check()?;
-        let snapshot = self.snapshot(&args.snapshot_id)?;
+        let snapshot = self.snapshot_or_open(context, &args.snapshot_id).await?;
         let path = normalize_repo_path(&args.path)?;
         if path.is_empty() {
             return Err("path must identify a file".to_string());
@@ -3620,7 +3730,7 @@ impl WitOperations {
         args: ContextArgs,
     ) -> Result<Page<ContextItem>, String> {
         context.check()?;
-        let snapshot = self.snapshot(&args.snapshot_id)?;
+        let snapshot = self.snapshot_or_open(context, &args.snapshot_id).await?;
         let queries = compile_queries(&args.queries)?;
         let globs = compile_globs(&args.globs)?;
         let context_lines = validate_range(

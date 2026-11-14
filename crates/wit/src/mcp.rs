@@ -48,7 +48,7 @@ Direct mode is the default and current recommendation. Use it for a simple open,
 ## Direct mode
 
 1. If `owner/repo` is unknown, call `wit_find_repositories` with narrow GitHub qualifiers.
-2. Call `wit_refs` when branch or tag discovery matters, then call `wit_open`. Reuse the returned immutable `snapshot_id` throughout the task.
+2. Call `wit_refs` when branch or tag discovery matters. Every snapshot tool accepts `snapshot_id: "owner/repo@ref"` (or `owner/repo` for the default branch) and opens it in the same call, so `wit_open` is optional; the first call pins that ref to one commit for the server session. Call `wit_open` when you need the resolved commit up front, and reuse the same `snapshot_id` throughout the task.
 3. Call `wit_list` to orient with an explicit depth, or `wit_search_code` when symbols or text are known.
 4. Call `wit_read` with explicit one-based line ranges for precise evidence.
 5. Call `wit_context` when one deterministic operation should rank and merge evidence across files. It does not invoke a model or embeddings.
@@ -193,7 +193,7 @@ impl ServerHandler for WitMcpServer {
         )
         .with_server_info(Implementation::new("wit-mcp", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "wit MCP v2 is snapshot-first and structured-first. Call wit_open once, reuse snapshot_id for immutable reads, use wit_list for structure, wit_search_code for exact matches, wit_ast for definitions with exact line ranges or tree-sitter queries, wit_read for explicit line ranges, and wit_context for deterministic multi-file evidence. Collection tools are byte-bounded and return next_cursor when has_more is true. Fetch wit://skill/SKILL.md for the full workflow.",
+            "wit MCP v2 is snapshot-first and structured-first. Pass snapshot_id as owner/repo@ref (for example tokio-rs/tokio@v1.40.0) to any snapshot tool and it opens in the same call, so wit_open is optional; reuse the same snapshot_id for the whole task, use wit_list for structure, wit_search_code for exact matches, wit_ast for definitions with exact line ranges or tree-sitter queries, wit_read for explicit line ranges, and wit_context for deterministic multi-file evidence. Collection tools are byte-bounded and return next_cursor when has_more is true. Fetch wit://skill/SKILL.md for the full workflow.",
         )
     }
 
