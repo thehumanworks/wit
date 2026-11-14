@@ -276,8 +276,25 @@ fn render_item(item: &Map<String, Value>) -> Vec<String> {
         head.push(rest);
     }
     let mut out = vec![head.join("  ")];
-    out.extend(render_lines(&lines));
+    out.extend(render_lines(&lines).into_iter().map(clip_snippet_line));
     out
+}
+
+/// Search and context snippets are for finding code, not reading it, and generated files (API
+/// specs, vendored bundles) put tens of kilobytes on one line. A long line is cut, and the cut is
+/// marked so the agent can read the full line with wit_read.
+const MAX_SNIPPET_LINE_CHARS: usize = 300;
+
+fn clip_snippet_line(line: String) -> String {
+    let total = line.chars().count();
+    if total <= MAX_SNIPPET_LINE_CHARS {
+        return line;
+    }
+    let kept: String = line.chars().take(MAX_SNIPPET_LINE_CHARS).collect();
+    format!(
+        "{kept} …[+{} chars; wit_read shows the full line]",
+        total - MAX_SNIPPET_LINE_CHARS
+    )
 }
 
 fn render_lines(lines: &[Value]) -> Vec<String> {
@@ -392,6 +409,21 @@ mod tests {
         assert_eq!(
             agent_text(&value),
             "repo: o/r\npath: a.rs\nquery=x\n\nmatch_lines=3,6\n1: l1\n2: l2\n3: l3\n4: l4\n5: l5\n6: l6\n7: l7\n8: l8\n\nmatch_line=21\n20: l20\n21: l21\n22: l22"
+        );
+    }
+
+    #[test]
+    fn long_snippet_lines_are_clipped() {
+        let long = "x".repeat(350);
+        let value = json!({"items": [{"path": "a.json", "start_line": 1, "end_line": 1,
+            "lines": [{"line_number": 1, "text": long}]}]});
+        let text = agent_text(&value);
+        assert!(
+            text.ends_with(&format!(
+                "1: {} …[+53 chars; wit_read shows the full line]",
+                "x".repeat(297)
+            )),
+            "{text}"
         );
     }
 
