@@ -3,6 +3,7 @@ pub mod codemode;
 pub mod codemode_policy;
 pub mod gitops;
 pub mod mcp;
+mod mcp_text;
 pub mod operation_context;
 pub mod operation_registry;
 pub mod operations;
