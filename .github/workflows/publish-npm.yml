@@ -161,9 +161,10 @@ jobs:
             sleep 15
           done
           # The version document can resolve before its tarball does (E404).
-          for attempt in 1 2 3 4 5; do
+          # v0.1.72's tarball returned 404 for about eight minutes, so wait up to ten.
+          for attempt in $(seq 1 40); do
             npm install -g "${package}" && break
-            if [ "${attempt}" -eq 5 ]; then
+            if [ "${attempt}" -eq 40 ]; then
               exit 1
             fi
             sleep 15
@@ -200,12 +201,13 @@ jobs:
               Start-Sleep -Seconds 15
             }
           }
+          # The tarball can 404 for minutes after the version document resolves.
           for ($installAttempt = 1; ; $installAttempt++) {
             try {
               npm install -g $package
               break
             } catch {
-              if ($installAttempt -ge 5) {
+              if ($installAttempt -ge 40) {
                 throw
               }
               Start-Sleep -Seconds 15
